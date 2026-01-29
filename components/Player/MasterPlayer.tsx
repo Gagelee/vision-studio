@@ -24,8 +24,16 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
   }, [currentShotIndex]);
 
   useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
-    if (isPlaying) {
+    if (isPlaying && currentShot) {
       interval = setInterval(() => {
         setProgress(p => {
             if (p >= 100) {
@@ -44,9 +52,7 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
       }, 100);
     }
     return () => clearInterval(interval);
-  }, [isPlaying, currentShotIndex, currentShot.duration, allShots.length]);
-
-  if (!currentShot) return null;
+  }, [isPlaying, currentShotIndex, currentShot?.duration, allShots.length]);
 
   return (
     <div className="fixed inset-0 z-[100] bg-black flex flex-col animate-in fade-in duration-300 font-sans">
@@ -54,12 +60,20 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
       <div className="flex-1 relative flex items-center justify-center overflow-hidden">
         {/* Blurred Ambient Background */}
         <div className="absolute inset-0 opacity-30 blur-3xl scale-110 pointer-events-none">
-            {!imgError && <img src={currentShot.thumbnailUrl} className="w-full h-full object-cover" alt="ambient" />}
+            {!imgError && currentShot && <img src={currentShot.thumbnailUrl} className="w-full h-full object-cover" alt="ambient" />}
         </div>
         
         {/* Main Content Frame */}
         <div className="relative z-10 max-h-full max-w-full aspect-video shadow-2xl bg-black flex items-center justify-center">
-             {imgError ? (
+             {!currentShot ? (
+                 <div className="flex flex-col items-center justify-center text-zinc-500 gap-3 p-10 text-center">
+                     <AlertCircle className="w-12 h-12 opacity-60" />
+                     <div className="text-xs uppercase font-bold tracking-wider">No Shots Available</div>
+                     <div className="text-sm text-zinc-500 max-w-md leading-relaxed">
+                       This project has no shots to play yet. Create shots in a sequence, then come back to Screen Master.
+                     </div>
+                 </div>
+             ) : imgError ? (
                  <div className="flex flex-col items-center justify-center text-zinc-600 gap-2">
                      <AlertCircle className="w-12 h-12 opacity-50" />
                      <span className="text-xs uppercase font-bold tracking-wider">Visual Source Unavailable</span>
@@ -74,18 +88,20 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
              )}
              
              {/* Cinematic Subtitles / Context Overlay */}
-             <div className="absolute bottom-12 left-0 right-0 text-center pb-12 pt-24 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
-                  <h3 className="text-white text-xl font-bold drop-shadow-md mb-2 tracking-wide px-20">{currentShot.description}</h3>
-                  <div className="flex items-center justify-center gap-2 text-white/60 text-xs font-mono uppercase tracking-widest">
-                        <span>Shot {currentShot.sequence}</span>
-                        <span>•</span>
-                        <span>{story.sequences.find(s => s.shots.some(shot => shot.id === currentShot.id))?.title}</span>
-                  </div>
-             </div>
+             {currentShot && (
+               <div className="absolute bottom-12 left-0 right-0 text-center pb-12 pt-24 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
+                    <h3 className="text-white text-xl font-bold drop-shadow-md mb-2 tracking-wide px-20">{currentShot.description}</h3>
+                    <div className="flex items-center justify-center gap-2 text-white/60 text-xs font-mono uppercase tracking-widest">
+                          <span>Shot {currentShot.sequence}</span>
+                          <span>•</span>
+                          <span>{story.sequences.find(s => s.shots.some(shot => shot.id === currentShot.id))?.title}</span>
+                    </div>
+               </div>
+             )}
         </div>
 
-        {/* Top Controls Overlay */}
-        <div className="absolute top-0 left-0 right-0 p-6 flex justify-between items-start bg-gradient-to-b from-black/60 to-transparent opacity-0 hover:opacity-100 transition-opacity z-20">
+        {/* Top Controls (Always visible to guarantee exit) */}
+        <div className="absolute top-0 left-0 right-0 p-6 flex justify-between items-start bg-gradient-to-b from-black/70 to-transparent opacity-100 z-20">
             <div className="text-white">
                 <h1 className="font-bold text-lg tracking-tight">{story.title}</h1>
                 <p className="text-xs text-white/50 font-medium uppercase tracking-wider">Director's Master Cut</p>
@@ -110,14 +126,33 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
 
            <div className="flex items-center justify-between text-white">
                <div className="flex items-center gap-6">
-                   <button onClick={() => setIsPlaying(!isPlaying)} className="hover:text-[#ee4d2d] transition-colors hover:scale-110 active:scale-95">
+                   <button
+                     disabled={!currentShot}
+                     onClick={() => setIsPlaying(!isPlaying)}
+                     className="hover:text-[#ee4d2d] transition-colors hover:scale-110 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                   >
                        {isPlaying ? <Pause className="w-8 h-8 fill-current" /> : <Play className="w-8 h-8 fill-current" />}
                    </button>
-                   <button onClick={() => { setCurrentShotIndex(Math.min(allShots.length - 1, currentShotIndex + 1)); setProgress(0); }} className="hover:text-[#ee4d2d] transition-colors hover:scale-110 active:scale-95">
+                   <button
+                     disabled={!currentShot}
+                     onClick={() => {
+                       setCurrentShotIndex(Math.min(allShots.length - 1, currentShotIndex + 1));
+                       setProgress(0);
+                     }}
+                     className="hover:text-[#ee4d2d] transition-colors hover:scale-110 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                   >
                        <SkipForward className="w-6 h-6 fill-current" />
                    </button>
                    <div className="text-xs font-mono text-zinc-400 tabular-nums">
-                       {currentShotIndex + 1} / {allShots.length} <span className="text-zinc-600 mx-1">|</span> {Math.floor(((currentShotIndex) / allShots.length) * 100)}%
+                       {allShots.length === 0 ? (
+                         <span>0 / 0</span>
+                       ) : (
+                         <>
+                           {currentShotIndex + 1} / {allShots.length}{' '}
+                           <span className="text-zinc-600 mx-1">|</span>{' '}
+                           {Math.floor((currentShotIndex / allShots.length) * 100)}%
+                         </>
+                       )}
                    </div>
                </div>
                

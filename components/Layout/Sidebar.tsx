@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate } from 'lucide-react';
+import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug } from 'lucide-react';
 import { Story, SelectionState } from '../../types';
 
 interface SidebarProps {
@@ -8,6 +8,9 @@ interface SidebarProps {
   theme: 'dark' | 'light';
   toggleTheme: () => void;
   onSelect: (sel: SelectionState) => void;
+  onBackToLibrary?: () => void;
+  onOpenAiSettings?: () => void;
+  onOpenDebug?: () => void;
   onCreateSequence?: () => void;
   onCreateLocation?: () => void;
   onCreateCharacter?: () => void;
@@ -19,6 +22,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     theme,
     toggleTheme,
     onSelect, 
+    onBackToLibrary,
+    onOpenAiSettings,
+    onOpenDebug,
     onCreateSequence,
     onCreateLocation,
     onCreateCharacter
@@ -33,12 +39,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <h1 className="font-bold text-zinc-900 dark:text-zinc-100 tracking-tight text-xs uppercase">Vision Studio</h1>
         </div>
-        <button 
-            onClick={toggleTheme}
-            className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
-        >
-            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-        </button>
+        <div className="flex items-center gap-1">
+          {onBackToLibrary && (
+            <button
+              onClick={onBackToLibrary}
+              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              title="Project Library"
+            >
+              <Home className="w-4 h-4" />
+            </button>
+          )}
+          {onOpenAiSettings && (
+            <button
+              onClick={onOpenAiSettings}
+              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              title="AI Settings"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          )}
+          {onOpenDebug && (
+            <button
+              onClick={onOpenDebug}
+              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              title="Debug (Cmd/Ctrl+Shift+D)"
+            >
+              <Bug className="w-4 h-4" />
+            </button>
+          )}
+          <button 
+              onClick={toggleTheme}
+              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              title="Toggle Theme"
+          >
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+        </div>
       </div>
       
       <div className="flex-1 overflow-y-auto custom-scrollbar">

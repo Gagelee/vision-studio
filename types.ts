@@ -17,6 +17,32 @@ export enum ShotType {
 
 export type AspectRatio = '16:9' | '9:16' | '1:1' | '4:5';
 
+export type ModelProvider = 'gemini' | 'openai' | 'deepseek' | 'mock';
+
+export interface ModelRuntimeSettings {
+  provider: ModelProvider;
+  model: string;
+  temperature: number;
+  maxOutputTokens?: number;
+  baseUrl?: string;
+  debug?: {
+    enabled: boolean;
+    logPrompts: boolean;
+    logRawResponses: boolean;
+  };
+}
+
+export interface AiSettings {
+  version: 2;
+  // One-sentence production: let planner use a "thinking" model, then worker uses a faster model.
+  scaffoldPlanner: ModelRuntimeSettings;
+  scaffoldWorker: ModelRuntimeSettings;
+  // Follow-up directives from the Director Console.
+  direct: ModelRuntimeSettings;
+  // Asset generation (images, etc.)
+  image: ModelRuntimeSettings;
+}
+
 export interface Location {
   id: string;
   name: string;
@@ -93,15 +119,62 @@ export interface Story {
   keyVisualUrl?: string; 
   aspectRatio: AspectRatio;
   status: 'scaffolding' | 'ready';
+  createdAt?: number;
+  updatedAt?: number;
+  lastOpenedAt?: number;
+  production?: {
+    video?: {
+      status: 'idle' | 'queued' | 'running' | 'done' | 'error';
+      lastStartedAt?: number;
+    };
+  };
   locations: Location[];
   characters: Character[];
   sequences: Sequence[];
+}
+
+export interface WorkspaceState {
+  version: 1;
+  projects: Story[];
+  activeProjectId?: string;
 }
 
 export interface SelectionState {
   type: 'story' | 'location' | 'character' | 'sequence' | 'shot' | 'creation';
   id: string;
   parentId?: string;
+}
+
+export type AgentActionType =
+  | 'NOOP'
+  | 'SCAFFOLD_PROJECT'
+  | 'CREATE_SEQUENCE'
+  | 'RENAME_SEQUENCE'
+  | 'DELETE_SEQUENCE'
+  | 'CREATE_SHOT'
+  | 'DELETE_SHOT'
+  | 'MOVE_SHOT'
+  | 'UPDATE_SHOT'
+  | 'UPDATE_ELEMENT'
+  | 'SET_CAST';
+
+export interface AgentAction {
+  type: AgentActionType;
+  payload?: any;
+}
+
+export interface AgentPlanStep {
+  id: string;
+  title: string;
+  status: 'pending' | 'running' | 'done' | 'error';
+  detail?: string;
+}
+
+export interface AgentPlan {
+  id: string;
+  summary: string;
+  steps: AgentPlanStep[];
+  actions?: AgentAction[];
 }
 
 export interface AgentLogEntry {
@@ -111,5 +184,8 @@ export interface AgentLogEntry {
   timestamp: number;
   actionDetails?: {
     type: string;
+    actions?: AgentAction[];
+    planId?: string;
   };
+  debug?: any;
 }

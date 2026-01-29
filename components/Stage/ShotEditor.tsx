@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
-import { Shot, ShotVersion, AspectRatio } from '../../types';
+import { Shot, ShotVersion, AspectRatio, ModelRuntimeSettings } from '../../types';
+import { generateShotImage } from '../../lib/ai/image/generate';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface ShotEditorProps {
@@ -10,11 +11,21 @@ interface ShotEditorProps {
   aspectRatio?: AspectRatio;
   isImmersive?: boolean;
   onToggleImmersive?: () => void;
+  imageSettings?: ModelRuntimeSettings;
 }
 
-export const ShotEditor: React.FC<ShotEditorProps> = ({ shot, onUpdateShot, onBack, aspectRatio = '16:9', isImmersive, onToggleImmersive }) => {
+export const ShotEditor: React.FC<ShotEditorProps> = ({
+  shot,
+  onUpdateShot,
+  onBack,
+  aspectRatio = '16:9',
+  isImmersive,
+  onToggleImmersive,
+  imageSettings,
+}) => {
   const activeVersion = shot.versions.find(v => v.id === shot.activeVersionId) || shot.versions[0];
   const [isHistoryOpen, setIsHistoryOpen] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const handleVersionSelect = (versionId: string) => {
     const version = shot.versions.find(v => v.id === versionId);
@@ -34,20 +45,37 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({ shot, onUpdateShot, onBa
     '4:5': 'aspect-[4/5] max-h-[75vh]',
   };
 
-  const handleGenerateVersion = () => {
-    const newVersion: ShotVersion = {
+  const handleGenerateVersion = async () => {
+    if (isGenerating) return;
+    setIsGenerating(true);
+    try {
+      const img = await generateShotImage({
+        shot,
+        settings:
+          imageSettings || {
+            provider: 'mock',
+            model: 'mock',
+            temperature: 0.5,
+          },
+        aspectRatio,
+      });
+
+      const newVersion: ShotVersion = {
         id: `v${shot.versions.length + 1}-${Date.now()}`,
-        imageUrl: `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=${Math.floor(Math.random() * 1000)}`, 
+        imageUrl: img.imageUrl,
         createdAt: Date.now(),
-        type: 'variation'
-    };
-    
-    onUpdateShot({
+        type: 'variation',
+      };
+
+      onUpdateShot({
         ...shot,
         versions: [...shot.versions, newVersion],
         activeVersionId: newVersion.id,
-        thumbnailUrl: newVersion.imageUrl
-    });
+        thumbnailUrl: newVersion.imageUrl,
+      });
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (
@@ -145,12 +173,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({ shot, onUpdateShot, onBa
             {/* Generate New Button */}
             <button 
                 onClick={(e) => { e.stopPropagation(); handleGenerateVersion(); }}
-                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-indigo-400 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all group"
+                disabled={isGenerating}
+                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-indigo-400 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all group disabled:opacity-40 disabled:cursor-not-allowed"
             >
                 <div className="p-3 rounded-full bg-zinc-900 group-hover:bg-indigo-500/20 transition-colors">
-                    <RefreshCw className="w-6 h-6 group-hover:animate-spin" />
+                    <RefreshCw className={`w-6 h-6 ${isGenerating ? 'animate-spin' : 'group-hover:animate-spin'}`} />
                 </div>
-                <span className="text-xs font-bold uppercase tracking-wide">Generate Variant</span>
+                <span className="text-xs font-bold uppercase tracking-wide">{isGenerating ? 'Generating...' : 'Generate Variant'}</span>
             </button>
 
             {/* Version List */}

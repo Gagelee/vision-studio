@@ -4,7 +4,7 @@ import { AgentLogEntry } from '../../types';
 
 interface DirectorConsoleProps {
   context: {
-    type: 'story' | 'scene' | 'shot';
+    type: 'story' | 'sequence' | 'shot';
     label: string;
     id: string;
   };
@@ -53,7 +53,7 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
           borderAccent: "focus-within:border-indigo-500/50",
           chips: ["Close up", "Warmer light", "Cyberpunk style", "Slow motion"]
         };
-      case 'scene':
+      case 'sequence':
         return {
           placeholder: "Direct the scene's flow or mood...",
           accent: "text-emerald-500",
@@ -126,6 +126,12 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                               {entry.actionDetails && (
                                   <div className="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 text-xs font-mono text-zinc-500">
                                       Executed: {entry.actionDetails.type}
+                                  </div>
+                              )}
+                              {entry.debug && (
+                                  <div className="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 text-[11px] font-mono text-zinc-500 break-words">
+                                      Debug: {entry.debug.transport || 'n/a'} / {entry.debug.provider || 'n/a'} / {entry.debug.model || 'n/a'}
+                                      {entry.debug.error ? ` | ${entry.debug.error}` : ''}
                                   </div>
                               )}
                           </div>

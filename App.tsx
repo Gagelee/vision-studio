@@ -1,65 +1,420 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { CheckCircle, Info } from 'lucide-react';
 import { Sidebar } from './components/Layout/Sidebar';
-import { StageView } from './components/Stage/StageView';
-import { LocationEditor } from './components/Stage/LocationEditor';
-import { CharacterEditor } from './components/Stage/CharacterEditor';
-import { ShotEditor } from './components/Stage/ShotEditor';
-import { ProjectDashboard } from './components/Stage/ProjectDashboard';
-import { InspectorPanel } from './components/Inspector/InspectorPanel';
 import { DirectorConsole } from './components/Console/DirectorConsole';
-import { ProjectCreationWizard } from './components/Stage/ProjectCreationWizard';
+import { InspectorPanel } from './components/Inspector/InspectorPanel';
 import { MasterPlayer } from './components/Player/MasterPlayer';
-import { INITIAL_STORY } from './constants';
-import { SelectionState, Story, AspectRatio, Location, Character, Shot, ElementType, DialogueLine, Sequence, AgentLogEntry } from './types';
-import { CheckCircle, Info, X, Play } from 'lucide-react';
+import { CharacterEditor } from './components/Stage/CharacterEditor';
+import { LocationEditor } from './components/Stage/LocationEditor';
+import { ProjectCreationWizard } from './components/Stage/ProjectCreationWizard';
+import { ProjectDashboard } from './components/Stage/ProjectDashboard';
+import { ProjectLibrary } from './components/Stage/ProjectLibrary';
+import { ShotEditor } from './components/Stage/ShotEditor';
+import { StageView } from './components/Stage/StageView';
+import { AiSettingsModal } from './components/Settings/AiSettingsModal';
+import { StartProductionModal } from './components/Production/StartProductionModal';
+import { DebugPanel } from './components/Debug/DebugPanel';
+import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
+import { loadAiSettings, saveAiSettings } from './lib/ai/aiSettingsStorage';
+import { runDirectorCommand } from './lib/ai/agent/direct';
+import { IMAGES } from './constants';
+import {
+  AgentAction,
+  AgentLogEntry,
+  AgentPlan,
+  AiSettings,
+  Character,
+  DialogueLine,
+  ElementType,
+  Location,
+  SelectionState,
+  Sequence,
+  Shot,
+  Story,
+  WorkspaceState,
+} from './types';
+
+type Screen = 'library' | 'creation' | 'project';
+
+const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
+
+const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
+  return actions.reduce<Story>((acc, action) => {
+    if (action.type === 'UPDATE_ELEMENT') {
+      const { shotId, sequenceId, elementType, prompt } = action.payload || {};
+      if (!shotId || !sequenceId || !elementType) return acc;
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          return {
+            ...seq,
+            shots: seq.shots.map((shot) => {
+              if (shot.id !== shotId) return shot;
+              return {
+                ...shot,
+                elements: {
+                  ...shot.elements,
+                  [elementType]: {
+                    ...shot.elements[elementType as ElementType],
+                    prompt: typeof prompt === 'string' ? prompt : shot.elements[elementType as ElementType]?.prompt,
+                    status: 'manual' as const,
+                  },
+                },
+              };
+            }),
+          };
+        }),
+      };
+    }
+
+    return acc;
+  }, story);
+};
+
+const renumberShots = (shots: Shot[]): Shot[] => shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
+
+const createBlankShot = (story: Story, seq: Sequence): Shot => {
+  const now = Date.now();
+  const fallbackLocationId = story.locations[0]?.id || '';
+  const shotNumber = seq.shots.length + 1;
+  const thumb = IMAGES.SHOT_WIDE;
+
+  return {
+    id: `shot-${now}`,
+    sequence: shotNumber,
+    locationId: fallbackLocationId,
+    timeOfDay: 'Day',
+    description: 'New shot',
+    duration: 4,
+    thumbnailUrl: thumb,
+    activeVersionId: 'v1',
+    versions: [{ id: 'v1', imageUrl: thumb, createdAt: now, type: 'base' }],
+    elements: {
+      [ElementType.SCRIPT]: { type: ElementType.SCRIPT, prompt: '', status: 'auto' },
+      [ElementType.CASTING]: { type: ElementType.CASTING, prompt: '', status: 'manual', metadata: { characters: [] } },
+      [ElementType.CAMERA]: { type: ElementType.CAMERA, prompt: 'Cinematic shot', status: 'auto' },
+      [ElementType.LIGHTING]: { type: ElementType.LIGHTING, prompt: 'Natural cinematic lighting', status: 'auto' },
+      [ElementType.AUDIO]: { type: ElementType.AUDIO, prompt: 'Ambient sound', status: 'auto' },
+    },
+    aiState: 'idle',
+  };
+};
 
 export default function App() {
-  const [story, setStory] = useState<Story | null>(INITIAL_STORY);
-  const [selection, setSelection] = useState<SelectionState>({ 
-    type: 'story', 
-    id: INITIAL_STORY.id 
-  });
-  
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
-  const [toasts, setToasts] = useState<Array<{id: string, message: string, type: 'success' | 'info'}>>([]);
-  const [agentHistory, setAgentHistory] = useState<AgentLogEntry[]>([]);
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'info' }>>([]);
+
+  const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace());
+  const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
+  const [screen, setScreen] = useState<Screen>(() => (loadWorkspace().activeProjectId ? 'project' : 'library'));
+
+  const [selection, setSelection] = useState<SelectionState>(() => ({
+    type: 'story',
+    id: loadWorkspace().activeProjectId || '',
+  }));
+
+  const [agentHistoryByProject, setAgentHistoryByProject] = useState<Record<string, AgentLogEntry[]>>({});
+  const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
+  const [isStartProductionOpen, setIsStartProductionOpen] = useState(false);
+  const [isDebugOpen, setIsDebugOpen] = useState(false);
+
+  const activeStory = useMemo<Story | null>(() => {
+    if (!workspace.activeProjectId) return null;
+    return workspace.projects.find((p) => p.id === workspace.activeProjectId) || null;
+  }, [workspace]);
+
+  const agentHistory = useMemo<AgentLogEntry[]>(() => {
+    if (!workspace.activeProjectId) return [];
+    return agentHistoryByProject[workspace.activeProjectId] || [];
+  }, [agentHistoryByProject, workspace.activeProjectId]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
 
-  const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const isToggle = (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'D' || e.key === 'd');
+      if (isToggle) {
+        e.preventDefault();
+        setIsDebugOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    saveWorkspace(workspace);
+  }, [workspace]);
+
+  useEffect(() => {
+    saveAiSettings(aiSettings);
+  }, [aiSettings]);
+
+  useEffect(() => {
+    if (screen === 'project' && !workspace.activeProjectId) setScreen('library');
+  }, [screen, workspace.activeProjectId]);
+
+  useEffect(() => {
+    if (!workspace.activeProjectId) return;
+    setSelection({ type: 'story', id: workspace.activeProjectId });
+  }, [workspace.activeProjectId]);
+
+  const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
 
   const addToast = (message: string, type: 'success' | 'info' = 'info') => {
-      const id = Math.random().toString(36).substring(7);
-      setToasts(prev => [...prev, { id, message, type }]);
-      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+    const id = Math.random().toString(36).substring(7);
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   };
 
-  const handleCreateProject = (intent: string, ratio: AspectRatio) => {
-    setSelection({ type: 'creation', id: 'new' });
-    setTimeout(() => {
-        const newStory: Story = {
-            ...INITIAL_STORY,
-            id: `proj-${Date.now()}`,
-            title: intent.split(' ').slice(0, 3).join(' ') || 'New Masterpiece',
-            intent: intent,
-            logline: `An AI-generated epic based on: "${intent}"`,
-            aspectRatio: ratio,
-            status: 'ready'
-        };
-        setStory(newStory);
-        setSelection({ type: 'story', id: newStory.id });
-        addToast("Project scaffolded by Director AI", "success");
-    }, 4500);
+  const updateActiveStory = (updater: (prev: Story) => Story) => {
+    setWorkspace((prev) => {
+      const projectId = prev.activeProjectId;
+      if (!projectId) return prev;
+      const idx = prev.projects.findIndex((p) => p.id === projectId);
+      if (idx < 0) return prev;
+
+      const now = Date.now();
+      const current = prev.projects[idx];
+      const updated = updater(current);
+      const projects = prev.projects.slice();
+      projects[idx] = { ...updated, updatedAt: now };
+      return { ...prev, projects };
+    });
   };
+
+  // ----- Workspace / Project Library -----
+
+  const openProject = (projectId: string) => {
+    setWorkspace((prev) => {
+      const now = Date.now();
+      return {
+        ...prev,
+        activeProjectId: projectId,
+        projects: prev.projects.map((p) => (p.id === projectId ? { ...p, lastOpenedAt: now } : p)),
+      };
+    });
+    setSelection({ type: 'story', id: projectId });
+    setScreen('project');
+  };
+
+  const handleRenameProject = (projectId: string) => {
+    const existing = workspace.projects.find((p) => p.id === projectId);
+    if (!existing) return;
+    const title = window.prompt('Project title', existing.title)?.trim();
+    if (!title) return;
+    setWorkspace((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) => (p.id === projectId ? { ...p, title, updatedAt: Date.now() } : p)),
+    }));
+    addToast('Project renamed', 'success');
+  };
+
+  const handleDeleteProject = (projectId: string) => {
+    const existing = workspace.projects.find((p) => p.id === projectId);
+    if (!existing) return;
+    if (!window.confirm(`Delete project "${existing.title}"? This cannot be undone.`)) return;
+
+    setWorkspace((prev) => {
+      const nextProjects = prev.projects.filter((p) => p.id !== projectId);
+      const activeProjectId = prev.activeProjectId === projectId ? undefined : prev.activeProjectId;
+      return { ...prev, projects: nextProjects, activeProjectId };
+    });
+
+    if (workspace.activeProjectId === projectId) setScreen('library');
+    addToast('Project deleted', 'info');
+  };
+
+  const handleDuplicateProject = (projectId: string) => {
+    const existing = workspace.projects.find((p) => p.id === projectId);
+    if (!existing) return;
+    const now = Date.now();
+    const dup = cloneStory(existing);
+    dup.id = `proj-${now}`;
+    dup.title = `${existing.title} (Copy)`;
+    dup.createdAt = now;
+    dup.updatedAt = now;
+    dup.lastOpenedAt = now;
+
+    setWorkspace((prev) => ({ ...prev, projects: [dup, ...prev.projects] }));
+    addToast('Project duplicated', 'success');
+  };
+
+  const handleCreateDemoProject = () => {
+    const demo = createDemoProject();
+    setWorkspace((prev) => ({
+      ...prev,
+      projects: [demo, ...prev.projects],
+      activeProjectId: demo.id,
+    }));
+    setSelection({ type: 'story', id: demo.id });
+    setScreen('project');
+    addToast('Demo project created', 'success');
+  };
+
+  const handleCreationComplete = (project: Story, plan: AgentPlan, debug?: any) => {
+    setWorkspace((prev) => ({ ...prev, projects: [project, ...prev.projects], activeProjectId: project.id }));
+    setSelection({ type: 'story', id: project.id });
+    setScreen('project');
+
+    const systemEntry: AgentLogEntry = {
+      id: `sys-${Date.now()}`,
+      role: 'system',
+      content: `Scaffold complete: ${plan.summary}${plan.steps?.length ? `\n- ${plan.steps.map(s => s.title).join('\n- ')}` : ''}`,
+      timestamp: Date.now(),
+      actionDetails: { type: 'SCAFFOLD_PROJECT', actions: plan.actions, planId: plan.id },
+      debug,
+    };
+
+    setAgentHistoryByProject((prev) => ({
+      ...prev,
+      [project.id]: [...(prev[project.id] || []), systemEntry],
+    }));
+
+    addToast('Project scaffolded by Director AI', 'success');
+  };
+
+  const startVideoProduction = () => {
+    if (!activeStory) return;
+    updateActiveStory((prev) => ({
+      ...prev,
+      production: {
+        ...(prev.production || {}),
+        video: { status: 'queued', lastStartedAt: Date.now() },
+      },
+    }));
+    addToast('Video production queued (manual start)', 'success');
+  };
+
+  // ----- Render Helpers -----
+
+  const getActiveItem = () => {
+    if (!activeStory) return null;
+    switch (selection.type) {
+      case 'sequence':
+        return activeStory.sequences.find((s) => s.id === selection.id);
+      case 'shot': {
+        for (const seq of activeStory.sequences) {
+          const shot = seq.shots.find((s) => s.id === selection.id);
+          if (shot) return shot;
+        }
+        return null;
+      }
+      case 'location':
+        return activeStory.locations.find((l) => l.id === selection.id);
+      case 'character':
+        return activeStory.characters.find((c) => c.id === selection.id);
+      default:
+        return activeStory;
+    }
+  };
+
+  const activeItem = getActiveItem();
+
+  const getContextLocation = () => {
+    if (selection.type === 'shot' && activeStory && activeItem) {
+      const shot = activeItem as Shot;
+      return activeStory.locations.find((l) => l.id === shot.locationId);
+    }
+    return undefined;
+  };
+
+  const consoleContextType: 'story' | 'sequence' | 'shot' =
+    selection.type === 'shot' ? 'shot' : selection.type === 'sequence' ? 'sequence' : 'story';
+
+  // ----- Project Editing Handlers -----
 
   const handleSelect = (sel: SelectionState) => setSelection(sel);
 
-  // --- Asset Management Handlers ---
+  const handleCreateSequence = () => {
+    if (!activeStory) return;
+    const now = Date.now();
+    const newId = `seq-${now}`;
+    const newSeq: Sequence = {
+      id: newId,
+      title: 'New Sequence',
+      context: 'Describe the narrative beat...',
+      shots: [],
+    };
+    updateActiveStory((prev) => ({ ...prev, sequences: [...prev.sequences, newSeq] }));
+    setSelection({ type: 'sequence', id: newId });
+    addToast('New sequence added', 'success');
+  };
+
+  const handleAddShot = (seqId: string) => {
+    if (!activeStory) return;
+    updateActiveStory((prev) => {
+      const seq = prev.sequences.find((s) => s.id === seqId);
+      if (!seq) return prev;
+      const newShot = createBlankShot(prev, seq);
+      return {
+        ...prev,
+        sequences: prev.sequences.map((s) => (s.id === seqId ? { ...s, shots: [...s.shots, newShot] } : s)),
+      };
+    });
+    addToast('New shot added to sequence', 'success');
+  };
+
+  const handleDeleteShot = (seqId: string, shotId: string) => {
+    updateActiveStory((prev) => {
+      return {
+        ...prev,
+        sequences: prev.sequences.map((s) => {
+          if (s.id !== seqId) return s;
+          const nextShots = renumberShots(s.shots.filter((sh) => sh.id !== shotId));
+          return { ...s, shots: nextShots };
+        }),
+      };
+    });
+    if (selection.type === 'shot' && selection.id === shotId) setSelection({ type: 'sequence', id: seqId });
+    addToast('Shot removed', 'info');
+  };
+
+  const handleMoveShot = (seqId: string, shotId: string, direction: 'left' | 'right') => {
+    updateActiveStory((prev) => {
+      const seq = prev.sequences.find((s) => s.id === seqId);
+      if (!seq) return prev;
+      const idx = seq.shots.findIndex((s) => s.id === shotId);
+      if (idx < 0) return prev;
+      const nextIdx = direction === 'left' ? idx - 1 : idx + 1;
+      if (nextIdx < 0 || nextIdx >= seq.shots.length) return prev;
+
+      const nextShots = seq.shots.slice();
+      const tmp = nextShots[idx];
+      nextShots[idx] = nextShots[nextIdx];
+      nextShots[nextIdx] = tmp;
+
+      return {
+        ...prev,
+        sequences: prev.sequences.map((s) => (s.id === seqId ? { ...s, shots: renumberShots(nextShots) } : s)),
+      };
+    });
+  };
+
+  const handleSequenceUpdate = (updatedSeq: Sequence) => {
+    updateActiveStory((prev) => ({
+      ...prev,
+      sequences: prev.sequences.map((s) => (s.id === updatedSeq.id ? updatedSeq : s)),
+    }));
+  };
+
+  const handleShotUpdate = (updatedShot: Shot) => {
+    updateActiveStory((prev) => ({
+      ...prev,
+      sequences: prev.sequences.map((seq) => {
+        if (seq.shots.some((s) => s.id === updatedShot.id)) {
+          return { ...seq, shots: seq.shots.map((s) => (s.id === updatedShot.id ? updatedShot : s)) };
+        }
+        return seq;
+      }),
+    }));
+  };
 
   const handleCreateLocation = () => {
     const newId = `loc-${Date.now()}`;
@@ -69,11 +424,11 @@ export default function App() {
       description: 'Describe the atmospheric details...',
       visualStyle: 'Cinematic style details...',
       previewUrl: 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=2148&auto=format&fit=crop',
-      status: 'draft'
+      status: 'draft',
     };
-    setStory(prev => prev ? ({ ...prev, locations: [...prev.locations, newLoc] }) : null);
+    updateActiveStory((prev) => ({ ...prev, locations: [...prev.locations, newLoc] }));
     setSelection({ type: 'location', id: newId });
-    addToast("New environment added to library", "success");
+    addToast('New environment added to library', 'success');
   };
 
   const handleCreateCharacter = () => {
@@ -84,303 +439,371 @@ export default function App() {
       description: 'Describe physical traits and personality...',
       avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?q=80&w=1287&auto=format&fit=crop',
       status: 'draft',
-      looks: []
+      looks: [],
     };
-    setStory(prev => prev ? ({ ...prev, characters: [...prev.characters, newChar] }) : null);
+    updateActiveStory((prev) => ({ ...prev, characters: [...prev.characters, newChar] }));
     setSelection({ type: 'character', id: newId });
-    addToast("New character casted", "success");
+    addToast('New character casted', 'success');
   };
 
   const handleUpdateLocation = (loc: Location) => {
-    setStory(prev => prev ? ({ ...prev, locations: prev.locations.map(l => l.id === loc.id ? loc : l) }) : null);
-    addToast("Environment updated", "info");
+    updateActiveStory((prev) => ({ ...prev, locations: prev.locations.map((l) => (l.id === loc.id ? loc : l)) }));
+    addToast('Environment updated', 'info');
   };
 
   const handleUpdateCharacter = (char: Character) => {
-    setStory(prev => prev ? ({ ...prev, characters: prev.characters.map(c => c.id === char.id ? char : c) }) : null);
-    addToast("Character profile updated", "info");
+    updateActiveStory((prev) => ({ ...prev, characters: prev.characters.map((c) => (c.id === char.id ? char : c)) }));
+    addToast('Character profile updated', 'info');
   };
 
   const handleDeleteLocation = (id: string) => {
-    setStory(prev => prev ? ({ ...prev, locations: prev.locations.filter(l => l.id !== id) }) : null);
-    setSelection({ type: 'story', id: story?.id || '' });
-    addToast("Environment removed", "info");
+    updateActiveStory((prev) => ({ ...prev, locations: prev.locations.filter((l) => l.id !== id) }));
+    if (activeStory) setSelection({ type: 'story', id: activeStory.id });
+    addToast('Environment removed', 'info');
   };
 
   const handleDeleteCharacter = (id: string) => {
-    setStory(prev => prev ? ({ ...prev, characters: prev.characters.filter(c => c.id !== id) }) : null);
-    if (selection.type === 'character' && selection.id === id) {
-        setSelection({ type: 'story', id: story?.id || '' });
-    }
-    addToast("Character removed from casting", "info");
-  };
-
-  // --- Core Story Handlers ---
-
-  const handleSequenceUpdate = (updatedSeq: Sequence) => {
-    if (!story) return;
-    setStory({
-      ...story,
-      sequences: story.sequences.map(s => s.id === updatedSeq.id ? updatedSeq : s)
-    });
-  };
-
-  const handleShotUpdate = (updatedShot: Shot) => {
-    if (!story) return;
-    setStory({
-      ...story,
-      sequences: story.sequences.map(seq => {
-        // Find if shot belongs to this sequence
-        if (seq.shots.some(s => s.id === updatedShot.id)) {
-           return {
-             ...seq,
-             shots: seq.shots.map(s => s.id === updatedShot.id ? updatedShot : s)
-           };
-        }
-        return seq;
-      })
-    });
+    updateActiveStory((prev) => ({ ...prev, characters: prev.characters.filter((c) => c.id !== id) }));
+    if (selection.type === 'character' && selection.id === id && activeStory) setSelection({ type: 'story', id: activeStory.id });
+    addToast('Character removed from casting', 'info');
   };
 
   const handleCastingUpdate = (shotId: string, seqId: string, newCharacters: Character[]) => {
-    if (!story) return;
-    const updatedSequences = story.sequences.map(seq => {
+    updateActiveStory((prev) => {
+      const updatedSequences = prev.sequences.map((seq) => {
         if (seq.id !== seqId) return seq;
         return {
-            ...seq,
-            shots: seq.shots.map(shot => {
-                if (shot.id !== shotId) return shot;
-                return {
-                    ...shot,
-                    elements: {
-                        ...shot.elements,
-                        [ElementType.CASTING]: {
-                            ...shot.elements[ElementType.CASTING],
-                            metadata: {
-                                ...shot.elements[ElementType.CASTING].metadata,
-                                characters: newCharacters
-                            },
-                            status: 'manual' as const
-                        }
-                    }
-                };
-            })
+          ...seq,
+          shots: seq.shots.map((shot) => {
+            if (shot.id !== shotId) return shot;
+            return {
+              ...shot,
+              elements: {
+                ...shot.elements,
+                [ElementType.CASTING]: {
+                  ...shot.elements[ElementType.CASTING],
+                  metadata: {
+                    ...shot.elements[ElementType.CASTING].metadata,
+                    characters: newCharacters,
+                  },
+                  status: 'manual' as const,
+                },
+              },
+            };
+          }),
         };
+      });
+      return { ...prev, sequences: updatedSequences };
     });
-    setStory({ ...story, sequences: updatedSequences });
   };
 
-  const handleCharacterPromptChange = (shotId: string, seqId: string, charId: string, prompt: string) => {
-      // Placeholder for visual prompt overrides per shot
-      console.log('Update char prompt', shotId, charId, prompt);
+  const handleCharacterPromptChange = (_shotId: string, _seqId: string, _charId: string, _prompt: string) => {
+    // TODO: per-shot visual overrides (future consistency engine).
   };
 
-  const handleScriptUpdate = (shotId: string, seqId: string, dialogue: DialogueLine[]) => {
-      // Placeholder for script updates
-      console.log('Update script', shotId, dialogue);
+  const handleScriptUpdate = (_shotId: string, _seqId: string, _dialogue: DialogueLine[]) => {
+    // TODO: structured dialogue lines (future).
   };
 
-  // --- Agent & Console Handlers ---
+  // ----- Director Console -----
 
-  const handleDirectorMessage = (msg: string) => {
-    // Add user message
+  const handleDirectorMessage = async (msg: string) => {
+    if (!activeStory || !workspace.activeProjectId) return;
+
     const userEntry: AgentLogEntry = {
-        id: Date.now().toString(),
-        role: 'user',
-        content: msg,
-        timestamp: Date.now()
+      id: `u-${Date.now()}`,
+      role: 'user',
+      content: msg,
+      timestamp: Date.now(),
     };
-    setAgentHistory(prev => [...prev, userEntry]);
 
-    // Simulate Agent Response
-    setTimeout(() => {
-        const agentEntry: AgentLogEntry = {
-            id: (Date.now() + 1).toString(),
-            role: 'agent',
-            content: `I've analyzed your request: "${msg}". Updating the scene parameters to match this directive.`,
-            timestamp: Date.now(),
-            actionDetails: { type: 'UPDATE_SHOT_PARAMETERS' }
-        };
-        setAgentHistory(prev => [...prev, agentEntry]);
-        addToast("Director AI executed changes", "success");
-    }, 1500);
+    setAgentHistoryByProject((prev) => ({
+      ...prev,
+      [workspace.activeProjectId!]: [...(prev[workspace.activeProjectId!] || []), userEntry],
+    }));
+
+    const res = await runDirectorCommand({
+      message: msg,
+      selection,
+      story: activeStory,
+      settings: aiSettings.direct,
+    });
+
+    const agentEntry: AgentLogEntry = {
+      id: `a-${Date.now()}`,
+      role: 'agent',
+      content: res.reply,
+      timestamp: Date.now(),
+      actionDetails: { type: 'DIRECTOR_COMMAND', actions: res.actions, planId: res.plan.id },
+      debug: res.debug,
+    };
+
+    setAgentHistoryByProject((prev) => ({
+      ...prev,
+      [workspace.activeProjectId!]: [...(prev[workspace.activeProjectId!] || []), agentEntry],
+    }));
+
+    if (res.actions.length > 0) {
+      updateActiveStory((prev) => applyActionsToStory(prev, res.actions));
+      addToast('Director AI executed changes', 'success');
+    } else {
+      addToast('No changes applied', 'info');
+    }
   };
 
-  // --- Render Helpers ---
+  // ----- Screens -----
 
-  const getActiveItem = () => {
-      if (!story) return null;
-      switch (selection.type) {
-          case 'sequence': return story.sequences.find(s => s.id === selection.id);
-          case 'shot': 
-             // Find shot across all sequences
-             for (const seq of story.sequences) {
-                 const shot = seq.shots.find(s => s.id === selection.id);
-                 if (shot) return shot;
-             }
-             return null;
-          case 'location': return story.locations.find(l => l.id === selection.id);
-          case 'character': return story.characters.find(c => c.id === selection.id);
-          default: return story;
-      }
-  };
+  if (screen === 'library') {
+    return (
+      <>
+        <ProjectLibrary
+          projects={workspace.projects}
+          theme={theme}
+          toggleTheme={toggleTheme}
+          onOpenProject={openProject}
+          onCreateProject={() => setScreen('creation')}
+          onCreateDemoProject={handleCreateDemoProject}
+          onRenameProject={handleRenameProject}
+          onDuplicateProject={handleDuplicateProject}
+          onDeleteProject={handleDeleteProject}
+          onOpenAiSettings={() => setIsAiSettingsOpen(true)}
+          onOpenDebug={() => setIsDebugOpen(true)}
+        />
 
-  const activeItem = getActiveItem();
-  
-  // Find context location for shots
-  const getContextLocation = () => {
-     if (selection.type === 'shot' && story && activeItem) {
-        const shot = activeItem as Shot;
-        return story.locations.find(l => l.id === shot.locationId);
-     }
-     return undefined;
-  };
-
-  if (selection.type === 'creation') {
-      return <ProjectCreationWizard onComplete={handleCreateProject} onCancel={() => setSelection({ type: 'story', id: INITIAL_STORY.id })} />;
+        {isAiSettingsOpen && (
+          <AiSettingsModal
+            settings={aiSettings}
+            onSave={(next) => {
+              setAiSettings(next);
+              setIsAiSettingsOpen(false);
+              addToast('AI settings saved', 'success');
+            }}
+            onClose={() => setIsAiSettingsOpen(false)}
+          />
+        )}
+      </>
+    );
   }
 
-  if (!story) return <div className="flex h-screen items-center justify-center bg-zinc-950 text-white">Loading Vision Studio...</div>;
+  if (screen === 'creation') {
+    return (
+      <>
+        <ProjectCreationWizard
+          aiSettings={aiSettings}
+          onComplete={handleCreationComplete}
+          onCancel={() => setScreen('library')}
+        />
+        {isAiSettingsOpen && (
+          <AiSettingsModal settings={aiSettings} onSave={setAiSettings} onClose={() => setIsAiSettingsOpen(false)} />
+        )}
+
+        {isDebugOpen && (
+          <DebugPanel
+            aiSettings={aiSettings}
+            activeStory={activeStory}
+            agentHistory={agentHistory}
+            onClose={() => setIsDebugOpen(false)}
+          />
+        )}
+      </>
+    );
+  }
+
+  if (!activeStory) {
+    return <div className="flex h-screen items-center justify-center bg-zinc-950 text-white">Loading Vision Studio...</div>;
+  }
 
   return (
-    <div className={`flex h-screen w-full overflow-hidden bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-300 ${isCinemaMode ? 'fullscreen-mode' : ''}`}>
-      
+    <div
+      className={`flex h-screen w-full overflow-hidden bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-300 ${
+        isCinemaMode ? 'fullscreen-mode' : ''
+      }`}
+    >
       {/* Global Player Overlay */}
-      {isPlayingMaster && (
-          <MasterPlayer story={story} onClose={() => setIsPlayingMaster(false)} />
-      )}
+      {isPlayingMaster && <MasterPlayer story={activeStory} onClose={() => setIsPlayingMaster(false)} />}
 
       {/* 1. Left Sidebar */}
       {!isCinemaMode && !isPlayingMaster && (
-        <Sidebar 
-            story={story} 
-            selection={selection}
-            theme={theme}
-            toggleTheme={toggleTheme}
-            onSelect={handleSelect}
-            onCreateLocation={handleCreateLocation}
-            onCreateCharacter={handleCreateCharacter}
-            onCreateSequence={() => addToast("Sequence creation coming soon", "info")}
+        <Sidebar
+          story={activeStory}
+          selection={selection}
+          theme={theme}
+          toggleTheme={toggleTheme}
+          onBackToLibrary={() => {
+            setScreen('library');
+            setIsCinemaMode(false);
+            setIsPlayingMaster(false);
+          }}
+          onOpenAiSettings={() => setIsAiSettingsOpen(true)}
+          onOpenDebug={() => setIsDebugOpen(true)}
+          onSelect={handleSelect}
+          onCreateLocation={handleCreateLocation}
+          onCreateCharacter={handleCreateCharacter}
+          onCreateSequence={handleCreateSequence}
         />
       )}
 
       {/* 2. Middle Stage (Main Content) */}
       <div className="flex-1 flex flex-col min-w-0 relative">
         <div className="flex-1 overflow-hidden relative z-0">
-            {selection.type === 'story' && (
-                <ProjectDashboard 
-                    story={story} 
-                    onSelect={handleSelect} 
-                    onPlayCinema={() => { setIsPlayingMaster(true); addToast("Starting Master Screen...", "success"); }}
-                />
-            )}
-            
-            {selection.type === 'sequence' && activeItem && (
-                <StageView 
-                    sequence={activeItem as Sequence}
-                    allLocations={story.locations}
-                    aspectRatio={story.aspectRatio}
-                    isImmersive={isCinemaMode}
-                    onToggleImmersive={() => setIsCinemaMode(!isCinemaMode)}
-                    onSelectShot={(id) => setSelection({ type: 'shot', id, parentId: (activeItem as Sequence).id })}
-                    onAddShot={() => addToast("New shot added to sequence", "success")}
-                    onDeleteShot={() => addToast("Shot removed", "info")}
-                    onMoveShot={() => {}}
-                    onUpdateShot={handleShotUpdate}
-                    onBackToSequence={() => setSelection({ type: 'story', id: story.id })}
-                    onEditLocation={() => {}}
-                    onPlay={() => setIsPlayingMaster(true)}
-                />
-            )}
+          {selection.type === 'story' && (
+            <ProjectDashboard
+              story={activeStory}
+              onSelect={handleSelect}
+              onPlayCinema={() => {
+                setIsPlayingMaster(true);
+                addToast('Starting Master Screen...', 'success');
+              }}
+              onStartProduction={() => setIsStartProductionOpen(true)}
+            />
+          )}
 
-            {selection.type === 'shot' && activeItem && (
-                <ShotEditor 
-                    shot={activeItem as Shot}
-                    aspectRatio={story.aspectRatio}
-                    isImmersive={isCinemaMode}
-                    onToggleImmersive={() => setIsCinemaMode(!isCinemaMode)}
-                    onUpdateShot={handleShotUpdate}
-                    onBack={() => setSelection({ type: 'sequence', id: selection.parentId || story.sequences[0].id })}
-                />
-            )}
+          {selection.type === 'sequence' && activeItem && (
+            <StageView
+              sequence={activeItem as Sequence}
+              allLocations={activeStory.locations}
+              aspectRatio={activeStory.aspectRatio}
+              isImmersive={isCinemaMode}
+              onToggleImmersive={() => setIsCinemaMode(!isCinemaMode)}
+              onSelectShot={(id) => setSelection({ type: 'shot', id, parentId: (activeItem as Sequence).id })}
+              onAddShot={() => handleAddShot((activeItem as Sequence).id)}
+              onDeleteShot={(id) => handleDeleteShot((activeItem as Sequence).id, id)}
+              onMoveShot={(id, direction) => handleMoveShot((activeItem as Sequence).id, id, direction)}
+              onUpdateShot={handleShotUpdate}
+              onBackToSequence={() => setSelection({ type: 'story', id: activeStory.id })}
+              onEditLocation={() => {}}
+              onPlay={() => setIsPlayingMaster(true)}
+            />
+          )}
 
-            {selection.type === 'location' && activeItem && (
-                <LocationEditor 
-                    location={activeItem as Location}
-                    sequences={story.sequences}
-                    onSave={handleUpdateLocation}
-                    onPropagate={(id) => addToast("Changes propagated to 12 shots", "success")}
-                    onSelectShot={(shotId, seqId) => setSelection({ type: 'shot', id: shotId, parentId: seqId })}
-                />
-            )}
+          {selection.type === 'shot' && activeItem && (
+            <ShotEditor
+              shot={activeItem as Shot}
+              aspectRatio={activeStory.aspectRatio}
+              isImmersive={isCinemaMode}
+              onToggleImmersive={() => setIsCinemaMode(!isCinemaMode)}
+              onUpdateShot={handleShotUpdate}
+              imageSettings={aiSettings.image}
+              onBack={() =>
+                setSelection({ type: 'sequence', id: selection.parentId || activeStory.sequences[0]?.id || activeStory.id })
+              }
+            />
+          )}
 
-            {selection.type === 'character' && activeItem && (
-                <CharacterEditor 
-                    character={activeItem as Character}
-                    sequences={story.sequences}
-                    onSave={handleUpdateCharacter}
-                    onPropagate={(id) => addToast("Look updated across scenes", "success")}
-                    onSelectShot={(shotId, seqId) => setSelection({ type: 'shot', id: shotId, parentId: seqId })}
-                />
-            )}
+          {selection.type === 'location' && activeItem && (
+            <LocationEditor
+              location={activeItem as Location}
+              sequences={activeStory.sequences}
+              onSave={handleUpdateLocation}
+              onPropagate={() => addToast('Propagation coming soon', 'info')}
+              onSelectShot={(shotId, seqId) => setSelection({ type: 'shot', id: shotId, parentId: seqId })}
+            />
+          )}
+
+          {selection.type === 'character' && activeItem && (
+            <CharacterEditor
+              character={activeItem as Character}
+              sequences={activeStory.sequences}
+              onSave={handleUpdateCharacter}
+              onPropagate={() => addToast('Propagation coming soon', 'info')}
+              onSelectShot={(shotId, seqId) => setSelection({ type: 'shot', id: shotId, parentId: seqId })}
+            />
+          )}
         </div>
 
         {/* Director Console Overlay */}
         {!isCinemaMode && !isPlayingMaster && (
-            <div className="relative z-20">
-                <DirectorConsole 
-                    context={{ 
-                        type: selection.type as any, 
-                        label: activeItem ? (activeItem as any).title || (activeItem as any).name || (activeItem as any).description : story.title,
-                        id: selection.id 
-                    }}
-                    history={agentHistory}
-                    onSendMessage={handleDirectorMessage}
-                />
-            </div>
+          <div className="relative z-20">
+            <DirectorConsole
+              context={{
+                type: consoleContextType,
+                label: activeItem ? (activeItem as any).title || (activeItem as any).name || (activeItem as any).description : activeStory.title,
+                id: selection.id,
+              }}
+              history={agentHistory}
+              onSendMessage={handleDirectorMessage}
+            />
+          </div>
         )}
-        
+
         {/* Floating Console for Cinema Mode */}
         {isCinemaMode && !isPlayingMaster && (
-             <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-50">
-                 <DirectorConsole 
-                    variant="floating"
-                    context={{ type: 'shot', label: 'Cinema Mode', id: 'cinema' }}
-                    history={agentHistory}
-                    onSendMessage={handleDirectorMessage}
-                />
-             </div>
+          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-50">
+            <DirectorConsole
+              variant="floating"
+              context={{ type: 'shot', label: 'Cinema Mode', id: 'cinema' }}
+              history={agentHistory}
+              onSendMessage={handleDirectorMessage}
+            />
+          </div>
         )}
       </div>
 
       {/* 3. Right Inspector (Contextual) - STRICTLY LIMITED TO SHOTS */}
-      {!isCinemaMode && !isPlayingMaster && (selection.type === 'shot') && (
-         <InspectorPanel 
-            selection={selection}
-            selectedItem={activeItem}
-            type={selection.type}
-            contextLocation={getContextLocation()}
-            availableLocations={story.locations}
-            availableCharacters={story.characters}
-            keyVisualUrl={story.keyVisualUrl}
-            onCastingUpdate={handleCastingUpdate}
-            onCharacterPromptChange={handleCharacterPromptChange}
-            onScriptUpdate={handleScriptUpdate}
-            onSequenceUpdate={handleSequenceUpdate}
-            onShotUpdate={handleShotUpdate}
-         />
+      {!isCinemaMode && !isPlayingMaster && selection.type === 'shot' && (
+        <InspectorPanel
+          selection={selection}
+          selectedItem={activeItem}
+          type={selection.type}
+          contextLocation={getContextLocation()}
+          availableLocations={activeStory.locations}
+          availableCharacters={activeStory.characters}
+          keyVisualUrl={activeStory.keyVisualUrl}
+          onCastingUpdate={handleCastingUpdate}
+          onCharacterPromptChange={handleCharacterPromptChange}
+          onScriptUpdate={handleScriptUpdate}
+          onSequenceUpdate={handleSequenceUpdate}
+          onShotUpdate={handleShotUpdate}
+        />
+      )}
+
+      {isAiSettingsOpen && (
+        <AiSettingsModal
+          settings={aiSettings}
+          onSave={(next) => {
+            setAiSettings(next);
+            setIsAiSettingsOpen(false);
+            addToast('AI settings saved', 'success');
+          }}
+          onClose={() => setIsAiSettingsOpen(false)}
+        />
+      )}
+
+      {isDebugOpen && (
+        <DebugPanel
+          aiSettings={aiSettings}
+          activeStory={activeStory}
+          agentHistory={agentHistory}
+          onClose={() => setIsDebugOpen(false)}
+        />
+      )}
+
+      {isStartProductionOpen && (
+        <StartProductionModal
+          onConfirm={() => {
+            setIsStartProductionOpen(false);
+            startVideoProduction();
+          }}
+          onClose={() => setIsStartProductionOpen(false)}
+        />
       )}
 
       {/* Global Toast Notification */}
       <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-2 pointer-events-none">
-          {toasts.map(toast => (
-              <div key={toast.id} className="bg-zinc-900 text-white px-4 py-3 rounded-lg shadow-2xl border border-zinc-800 flex items-center gap-3 animate-in slide-in-from-right-10 fade-in duration-300">
-                  {toast.type === 'success' ? <CheckCircle className="w-4 h-4 text-emerald-500" /> : <Info className="w-4 h-4 text-blue-500" />}
-                  <span className="text-sm font-medium">{toast.message}</span>
-              </div>
-          ))}
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className="bg-zinc-900 text-white px-4 py-3 rounded-lg shadow-2xl border border-zinc-800 flex items-center gap-3 animate-in slide-in-from-right-10 fade-in duration-300"
+          >
+            {toast.type === 'success' ? (
+              <CheckCircle className="w-4 h-4 text-emerald-500" />
+            ) : (
+              <Info className="w-4 h-4 text-blue-500" />
+            )}
+            <span className="text-sm font-medium">{toast.message}</span>
+          </div>
+        ))}
       </div>
-
     </div>
   );
 }

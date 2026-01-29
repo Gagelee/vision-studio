@@ -1,17 +1,21 @@
 
 import React, { useState } from 'react';
-import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2, X } from 'lucide-react';
-import { AspectRatio } from '../../types';
+import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
+import { scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
 
 interface ProjectCreationWizardProps {
-  onComplete: (intent: string, ratio: AspectRatio) => void;
+  aiSettings: AiSettings;
+  onComplete: (project: Story, plan: AgentPlan, debug?: any) => void;
   onCancel: () => void;
 }
 
-export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ onComplete, onCancel }) => {
+export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ aiSettings, onComplete, onCancel }) => {
   const [intent, setIntent] = useState('');
   const [ratio, setRatio] = useState<AspectRatio>('16:9');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [plan, setPlan] = useState<AgentPlan | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const formats: { label: string; ratio: AspectRatio; icon: any }[] = [
     { label: 'Cinema', ratio: '16:9', icon: Tv },
@@ -24,7 +28,18 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
     e.preventDefault();
     if (!intent.trim()) return;
     setIsProcessing(true);
-    onComplete(intent, ratio);
+    setPlan(null);
+    setError(null);
+
+    scaffoldProjectWithSettings({ intent, aspectRatio: ratio, aiSettings })
+      .then((res) => {
+        setPlan(res.plan);
+        onComplete(res.story, res.plan, res.debug);
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : String(e));
+        setIsProcessing(false);
+      });
   };
 
   return (
@@ -55,6 +70,43 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
                             Scaffolding story architecture, casting performers, and置景 (Sets) for your masterwork.
                         </p>
                     </div>
+                    {error && (
+                        <div className="max-w-xl mx-auto p-4 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-200 text-sm flex items-start gap-3">
+                            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                            <div className="text-left">
+                                <div className="font-bold mb-1">Scaffolding failed</div>
+                                <div className="opacity-80 break-words">{error}</div>
+                                <button
+                                  onClick={() => setIsProcessing(false)}
+                                  className="mt-3 text-[11px] font-black uppercase tracking-widest text-rose-200 hover:underline"
+                                >
+                                  Back
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    {plan && (
+                        <div className="max-w-xl mx-auto space-y-3">
+                            <div className="text-[10px] font-black uppercase tracking-[0.35em] text-white/30">Plan</div>
+                            <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 text-left space-y-2">
+                                <div className="text-white/80 text-sm font-medium mb-2">{plan.summary}</div>
+                                <div className="space-y-2">
+                                    {plan.steps.map(step => (
+                                        <div key={step.id} className="flex items-center gap-3 text-sm text-white/70">
+                                            {step.status === 'done' ? (
+                                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                            ) : step.status === 'error' ? (
+                                                <AlertTriangle className="w-4 h-4 text-rose-400" />
+                                            ) : (
+                                                <Loader2 className="w-4 h-4 animate-spin text-white/40" />
+                                            )}
+                                            <span>{step.title}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
                     <div className="flex flex-col gap-2 max-w-xs mx-auto">
                         <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
                             <div className="h-full bg-[#ee4d2d] animate-[progress_4s_ease-in-out]"></div>

@@ -1,0 +1,13 @@
+/* Minimal global helpers used across the UI (kept framework-agnostic). */
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+

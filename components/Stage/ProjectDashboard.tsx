@@ -18,11 +18,13 @@ interface ProjectDashboardProps {
   story: Story;
   onSelect: (sel: SelectionState) => void;
   onPlayCinema: () => void;
+  onStartProduction?: () => void;
 }
 
-export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ story, onSelect, onPlayCinema }) => {
+export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ story, onSelect, onPlayCinema, onStartProduction }) => {
   const totalShots = story.sequences.reduce((acc, seq) => acc + seq.shots.length, 0);
   const totalDuration = story.sequences.reduce((acc, seq) => acc + seq.shots.reduce((sAcc, shot) => sAcc + shot.duration, 0), 0);
+  const firstSeqId = story.sequences[0]?.id;
 
   return (
     <div className="flex-1 h-full overflow-y-auto custom-scrollbar bg-white dark:bg-[#050505] scroll-smooth">
@@ -64,18 +66,29 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ story, onSel
 
             <div className="flex items-center gap-4">
                 <button 
+                    disabled={totalShots === 0}
                     onClick={onPlayCinema}
-                    className="flex items-center gap-3 px-10 py-5 bg-[#ee4d2d] hover:bg-[#f05d40] text-white rounded-2xl text-lg font-black uppercase tracking-widest transition-all shadow-[0_20px_40px_rgba(238,77,45,0.3)] hover:scale-105 active:scale-95"
+                    className="flex items-center gap-3 px-10 py-5 bg-[#ee4d2d] hover:bg-[#f05d40] text-white rounded-2xl text-lg font-black uppercase tracking-widest transition-all shadow-[0_20px_40px_rgba(238,77,45,0.3)] hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                     <Play className="w-6 h-6 fill-current" />
-                    Screen Master
+                    {totalShots === 0 ? 'No Shots' : 'Screen Master'}
                 </button>
+                {onStartProduction && (
+                  <button 
+                      onClick={onStartProduction}
+                      className="flex items-center gap-3 px-8 py-5 bg-black/10 dark:bg-white/5 hover:bg-black/20 dark:hover:bg-white/10 text-zinc-900 dark:text-white border border-zinc-200 dark:border-white/10 rounded-2xl text-lg font-bold transition-all backdrop-blur-xl"
+                  >
+                      <Film className="w-5 h-5" />
+                      Start Production
+                  </button>
+                )}
                 <button 
-                    onClick={() => onSelect({ type: 'sequence', id: story.sequences[0].id })}
-                    className="flex items-center gap-3 px-8 py-5 bg-white/10 dark:bg-white/5 hover:bg-white/20 dark:hover:bg-white/10 text-zinc-900 dark:text-white border border-zinc-200 dark:border-white/10 rounded-2xl text-lg font-bold transition-all backdrop-blur-xl"
+                    disabled={!firstSeqId}
+                    onClick={() => firstSeqId && onSelect({ type: 'sequence', id: firstSeqId })}
+                    className="flex items-center gap-3 px-8 py-5 bg-white/10 dark:bg-white/5 hover:bg-white/20 dark:hover:bg-white/10 text-zinc-900 dark:text-white border border-zinc-200 dark:border-white/10 rounded-2xl text-lg font-bold transition-all backdrop-blur-xl disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                     <Maximize className="w-5 h-5" />
-                    Inspect Beats
+                    {firstSeqId ? 'Inspect Beats' : 'No Sequences'}
                 </button>
             </div>
         </div>
