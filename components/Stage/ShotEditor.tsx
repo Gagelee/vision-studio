@@ -31,6 +31,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const activeVersion = shot.versions.find(v => v.id === shot.activeVersionId) || shot.versions[0];
   const [isHistoryOpen, setIsHistoryOpen] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const handleVersionSelect = (versionId: string) => {
     const version = shot.versions.find(v => v.id === versionId);
@@ -53,6 +54,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const handleGenerateVersion = async () => {
     if (isGenerating) return;
     setIsGenerating(true);
+    setGenerationError(null);
     try {
       const settings =
         imageSettings || {
@@ -96,6 +98,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         settings,
         aspectRatio,
         references,
+        strict: true,
       });
 
       const newVersion: ShotVersion = {
@@ -111,6 +114,8 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         activeVersionId: newVersion.id,
         thumbnailUrl: newVersion.imageUrl,
       });
+    } catch (e) {
+      setGenerationError(e instanceof Error ? e.message : String(e));
     } finally {
       setIsGenerating(false);
     }
@@ -252,6 +257,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 );
             })}
         </div>
+        {generationError && !isImmersive && (
+          <div className="px-4 pb-4">
+            <div className="text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
+              Generate failed: {generationError}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

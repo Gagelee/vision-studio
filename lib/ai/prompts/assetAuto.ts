@@ -25,15 +25,21 @@ export const buildLocationPreviewPrompt = (loc: Location) => {
 
 export const buildCharacterAvatarPrompt = (ch: Character) => {
   return (
-    `Cinematic character portrait (headshot). ${baseRules()}\n` +
+    `Character reference sheet (clean, standard, consistent). ${baseRules()}\n` +
+    `Format: 2x2 model sheet on a plain light/neutral background, consistent scale.\n` +
+    `Views: front face (neutral), 3/4 face, profile, full-body front. Same outfit across views.\n` +
+    `Lighting: soft studio lighting, true-to-life colors, sharp focus. No dramatic stylization.\n` +
+    `Framing: leave margins; ensure face and body are not cropped.\n` +
     `Name: ${ch.name}\n` +
-    `Description: ${ch.description}\n`
+    `CharacterDescription: ${ch.description}\n`
   );
 };
 
 export const buildCharacterLookPrompt = (ch: Character, look: CharacterLook) => {
   return (
-    `Cinematic character look reference. ${baseRules()}\n` +
+    `Character look reference sheet (clean, consistent identity). ${baseRules()}\n` +
+    `Format: full-body front (preferred), neutral background, sharp focus.\n` +
+    `Identity: must match the provided base avatar reference exactly.\n` +
     `Character: ${ch.name}\n` +
     `CharacterDescription: ${ch.description}\n` +
     `LookName: ${look.name}\n` +

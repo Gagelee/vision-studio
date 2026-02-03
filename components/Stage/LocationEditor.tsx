@@ -28,6 +28,7 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
 }) => {
   const [draft, setDraft] = useState<Location>(location);
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
   
   useEffect(() => {
     setDraft(location);
@@ -53,6 +54,7 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
 
   const handleGeneratePreview = async () => {
     if (!imageSettings || imageSettings.provider === 'mock' || isLocked || isGeneratingPreview) return;
+    setGenerationError(null);
     setIsGeneratingPreview(true);
     try {
       const out = await generateImageFromPrompt({
@@ -60,8 +62,11 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
         settings: imageSettings,
         aspectRatio: aspectRatio || '16:9',
         references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
+        strict: true,
       });
       setDraft((prev) => ({ ...prev, previewUrl: out.imageUrl }));
+    } catch (e) {
+      setGenerationError(e instanceof Error ? e.message : String(e));
     } finally {
       setIsGeneratingPreview(false);
     }
@@ -139,6 +144,12 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
                         </div>
                     </div>
                 </div>
+
+                {generationError && (
+                    <div className="text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
+                        Generate failed: {generationError}
+                    </div>
+                )}
                 
                 {/* Used In Gallery */}
                 <div>

@@ -31,6 +31,7 @@ export const generateImageFromPrompt = async (req: {
   settings: ModelRuntimeSettings;
   aspectRatio?: string;
   references?: ImageReference[];
+  strict?: boolean;
 }): Promise<GenerateShotImageResponse> => {
   try {
     const endpoint = joinUrl(req.settings.baseUrl, '/api/asset/image/generate');
@@ -66,10 +67,15 @@ export const generateImageFromPrompt = async (req: {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as any;
     addDebugEvent({ level: 'info', scope: 'asset.image', message: 'Response', data });
+    if (data?.debug?.transport === 'mock' && req.strict && req.settings.provider !== 'mock') {
+      const err = data?.debug?.error ? String(data.debug.error) : 'Image generation fell back to mock transport.';
+      throw new Error(err);
+    }
     if (data?.imageUrl) return { imageUrl: String(data.imageUrl), debug: data.debug };
     return { imageUrl: fallbackUrl(), debug: { error: 'missing imageUrl' } };
   } catch (e) {
     addDebugEvent({ level: 'error', scope: 'asset.image', message: 'Generate failed', data: { error: e instanceof Error ? e.message : String(e) } });
+    if (req.strict && req.settings.provider !== 'mock') throw e;
     return { imageUrl: fallbackUrl(), debug: { error: e instanceof Error ? e.message : String(e) } };
   }
 };

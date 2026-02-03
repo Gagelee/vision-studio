@@ -68,7 +68,7 @@ const CastingControl: React.FC<CastingControlProps> = ({ element, availableChara
                         <div key={char.id} className="group bg-zinc-50 dark:bg-zinc-950 p-3 rounded-xl border border-zinc-100 dark:border-zinc-800/50">
                             <div className="flex items-center gap-3 mb-3">
                                 <div className="relative cursor-pointer shrink-0">
-                                    <img src={activeLook?.previewUrl || char.avatarUrl} alt={char.name} className="w-10 h-10 rounded-lg object-cover ring-2 ring-white dark:ring-zinc-800 shadow-sm"/>
+                                    <img src={activeLook?.previewUrl || char.avatarUrl} alt={char.name} className="w-14 h-14 rounded-xl object-cover ring-2 ring-white dark:ring-zinc-800 shadow-sm"/>
                                     {isAdding && (
                                         <div className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm hover:scale-110 transition-transform" onClick={(e) => { e.stopPropagation(); toggleCharacter(char); }}>
                                             <MinusCircle className="w-2.5 h-2.5" />
@@ -132,7 +132,7 @@ const CastingControl: React.FC<CastingControlProps> = ({ element, availableChara
                                 onClick={() => toggleCharacter(char)}
                                 className="flex items-center gap-3 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer transition-colors group"
                              >
-                                <img src={char.avatarUrl} className="w-6 h-6 rounded-full object-cover opacity-70 group-hover:opacity-100" />
+                                <img src={char.avatarUrl} className="w-10 h-10 rounded-xl object-cover opacity-70 group-hover:opacity-100" />
                                 <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-200">{char.name}</span>
                                 <Plus className="w-3 h-3 ml-auto text-zinc-400 group-hover:text-indigo-500" />
                              </div>

@@ -246,6 +246,7 @@ export const executeAssetJobs = async (args: {
           prompt: job.prompt,
           settings: args.settings,
           aspectRatio: args.aspectRatio,
+          strict: true,
         });
         done += 1;
         args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
@@ -261,6 +262,7 @@ export const executeAssetJobs = async (args: {
           settings: args.settings,
           aspectRatio: args.aspectRatio,
           references,
+          strict: true,
         });
         done += 1;
         args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
@@ -274,6 +276,7 @@ export const executeAssetJobs = async (args: {
           settings: args.settings,
           aspectRatio: args.aspectRatio,
           references: story?.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : [],
+          strict: true,
         });
         done += 1;
         args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
@@ -287,6 +290,7 @@ export const executeAssetJobs = async (args: {
           settings: args.settings,
           aspectRatio: '1:1',
           references: story?.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : [],
+          strict: true,
         });
         done += 1;
         args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
@@ -306,6 +310,7 @@ export const executeAssetJobs = async (args: {
           ...(story?.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : []),
           ...(ch?.avatarUrl ? [{ url: ch.avatarUrl, label: `character base: ${ch.name}` }] : []),
         ],
+        strict: true,
       });
       done += 1;
       args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });

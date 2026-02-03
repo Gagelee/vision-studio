@@ -322,8 +322,10 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       const characterId = String(action.payload?.characterId || '');
       if (!characterId) return acc;
       const now = Date.now();
-      const name = typeof action.payload?.name === 'string' ? action.payload.name : 'New Look';
-      const description = typeof action.payload?.description === 'string' ? action.payload.description : 'Describe wardrobe and makeup...';
+      const rawName = typeof action.payload?.name === 'string' ? action.payload.name : '';
+      const rawDesc = typeof action.payload?.description === 'string' ? action.payload.description : '';
+      const name = rawName.trim() ? rawName.trim() : 'New Look';
+      const description = rawDesc.trim() ? rawDesc.trim() : 'Describe wardrobe and makeup...';
       return {
         ...acc,
         characters: acc.characters.map((c) => {

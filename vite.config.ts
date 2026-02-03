@@ -4,10 +4,54 @@ import path from 'path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { buildDirectorActionsPrompt, buildScaffoldPrompt } from './lib/ai/prompts';
+import { ProxyAgent } from 'undici';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 const GENERATED_ASSETS_DIR = path.resolve(process.cwd(), '.vision-assets');
+
+const getProxyDispatcher = (targetUrl: string, env: Record<string, string>) => {
+  const proxyUrl =
+    env.HTTPS_PROXY ||
+    env.HTTP_PROXY ||
+    env.https_proxy ||
+    env.http_proxy ||
+    process.env.HTTPS_PROXY ||
+    process.env.HTTP_PROXY ||
+    process.env.https_proxy ||
+    process.env.http_proxy ||
+    '';
+  if (!proxyUrl) return undefined;
+
+  const noProxy =
+    env.NO_PROXY || env.no_proxy || process.env.NO_PROXY || process.env.no_proxy || '';
+
+  try {
+    const u = new URL(targetUrl);
+    const host = u.hostname;
+    const bypass = noProxy
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .some((rule) => {
+        if (rule === '*') return true;
+        if (rule === host) return true;
+        if (rule.startsWith('.')) return host.endsWith(rule);
+        return host.endsWith(rule);
+      });
+    if (bypass) return undefined;
+  } catch {
+    // ignore
+  }
+
+  // Cache per proxy URL to avoid recreating agents.
+  const g: any = globalThis as any;
+  g.__VISION_PROXY_CACHE__ ||= {};
+  if (!g.__VISION_PROXY_CACHE__[proxyUrl]) {
+    g.__VISION_PROXY_CACHE__[proxyUrl] = new ProxyAgent(proxyUrl);
+  }
+  return g.__VISION_PROXY_CACHE__[proxyUrl];
+};
 
 const ensureGeneratedDir = () => {
   try {
@@ -57,6 +101,7 @@ const callGeminiJson = async (args: {
   temperature: number;
   maxOutputTokens?: number;
   prompt: string;
+  env?: Record<string, string>;
 }): Promise<any> => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
 
@@ -123,7 +168,7 @@ const callGeminiJson = async (args: {
     }
   };
 
-  const res = await fetch(url, {
+  const geminiInit: any = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -134,7 +179,10 @@ const callGeminiJson = async (args: {
         responseMimeType: 'application/json',
       },
     }),
-  });
+  };
+  const geminiDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
+  if (geminiDispatcher) geminiInit.dispatcher = geminiDispatcher;
+  const res = await fetch(url, geminiInit);
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -153,9 +201,10 @@ const callOpenAICompatibleJson = async (args: {
   model: string;
   temperature: number;
   prompt: string;
+  env?: Record<string, string>;
 }): Promise<any> => {
   const url = `${args.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
-  const res = await fetch(url, {
+  const llmInit: any = {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -170,7 +219,10 @@ const callOpenAICompatibleJson = async (args: {
         { role: 'user', content: args.prompt },
       ],
     }),
-  });
+  };
+  const llmDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
+  if (llmDispatcher) llmInit.dispatcher = llmDispatcher;
+  const res = await fetch(url, llmInit);
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -271,6 +323,7 @@ const callGeminiImage = async (args: {
   prompt: string;
   aspectRatio?: string;
   references?: Array<{ mimeType: string; bytes: Buffer; label?: string }>;
+  env?: Record<string, string>;
 }): Promise<{ mimeType: string; bytes: Buffer }> => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
 
@@ -289,14 +342,17 @@ const callGeminiImage = async (args: {
     inputParts.push({ inlineData: { mimeType: r.mimeType, data: r.bytes.toString('base64') } });
   }
 
-  const res = await fetch(url, {
+  const imgInit: any = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: inputParts }],
       generationConfig,
     }),
-  });
+  };
+  const imgDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
+  if (imgDispatcher) imgInit.dispatcher = imgDispatcher;
+  const res = await fetch(url, imgInit);
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -457,6 +513,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               prompt,
               aspectRatio,
               references: loadedRefs,
+              env,
             });
 
             const ext =
@@ -722,6 +779,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 temperature: chosenTemperature,
                 maxOutputTokens: chosenMaxOutputTokens ?? 4096,
                 prompt: scaffoldPrompt,
+                env,
               });
               return sendJson(res, 200, buildFromSpec(spec, 'Gemini', p, chosenModel));
             }
@@ -733,6 +791,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 model: chosenModel,
                 temperature: chosenTemperature,
                 prompt: scaffoldPrompt,
+                env,
               });
               return sendJson(res, 200, buildFromSpec(spec, 'OpenAI', p, chosenModel));
             }
@@ -744,6 +803,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 model: chosenModel,
                 temperature: chosenTemperature,
                 prompt: scaffoldPrompt,
+                env,
               });
               return sendJson(res, 200, buildFromSpec(spec, 'DeepSeek', p, chosenModel));
             }
@@ -1022,6 +1082,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
                 directive: message,
               }),
+              env,
             });
 
             const actions = Array.isArray(output?.actions) ? output.actions : [];
@@ -1052,6 +1113,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
 	                directive: message,
 	              }),
+                env,
 	            });
 	            const actions = Array.isArray(output?.actions) ? output.actions : [];
 	            return sendJson(res, 200, {
@@ -1081,6 +1143,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
 	                directive: message,
 	              }),
+                env,
 	            });
 	            const actions = Array.isArray(output?.actions) ? output.actions : [];
 	            return sendJson(res, 200, {

@@ -28,6 +28,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   const [editingLook, setEditingLook] = useState<CharacterLook | null>(null);
   const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
   const [generatingLookIds, setGeneratingLookIds] = useState<Record<string, boolean>>({});
+  const [generationError, setGenerationError] = useState<string | null>(null);
   
   useEffect(() => {
     setDraft(character);
@@ -67,6 +68,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
 
   const handleGenerateAvatar = async () => {
     if (!imageSettings || imageSettings.provider === 'mock' || isLocked || isGeneratingAvatar) return;
+    setGenerationError(null);
     setIsGeneratingAvatar(true);
     try {
       const out = await generateImageFromPrompt({
@@ -74,8 +76,11 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         settings: imageSettings,
         aspectRatio: '1:1',
         references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
+        strict: true,
       });
       setDraft((prev) => ({ ...prev, avatarUrl: out.imageUrl }));
+    } catch (e) {
+      setGenerationError(e instanceof Error ? e.message : String(e));
     } finally {
       setIsGeneratingAvatar(false);
     }
@@ -83,6 +88,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
 
   const handleGenerateLook = async (look: CharacterLook) => {
     if (!imageSettings || imageSettings.provider === 'mock' || isLocked) return;
+    setGenerationError(null);
     setGeneratingLookIds((m) => ({ ...m, [look.id]: true }));
     try {
       const refs = [
@@ -96,11 +102,14 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         settings: imageSettings,
         aspectRatio: '1:1',
         references: refs,
+        strict: true,
       });
       setDraft((prev) => ({
         ...prev,
         looks: prev.looks.map((l) => (l.id === look.id ? { ...l, previewUrl: out.imageUrl } : l)),
       }));
+    } catch (e) {
+      setGenerationError(e instanceof Error ? e.message : String(e));
     } finally {
       setGeneratingLookIds((m) => ({ ...m, [look.id]: false }));
     }
@@ -184,6 +193,11 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                         )}
                       </div>
                     </div>
+                    {generationError && (
+                      <div className="mt-4 text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
+                        Generate failed: {generationError}
+                      </div>
+                    )}
                 </section>
 
                 {/* Look Management Section */}
@@ -201,11 +215,11 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                     </div>
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {draft.looks.map(look => (
-                            <div key={look.id} className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex gap-4 hover:border-indigo-500/50 transition-all shadow-xl">
-                                <div className="w-24 h-32 rounded-lg bg-zinc-800 overflow-hidden shrink-0 border border-white/5">
-                                    <img src={look.previewUrl} className="w-full h-full object-cover" />
-                                </div>
+	                        {draft.looks.map(look => (
+	                            <div key={look.id} className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex gap-4 hover:border-indigo-500/50 transition-all shadow-xl">
+	                                <div className="w-32 h-40 rounded-xl bg-zinc-800 overflow-hidden shrink-0 border border-white/5">
+	                                    <img src={look.previewUrl} className="w-full h-full object-cover" />
+	                                </div>
                                 <div className="flex-1 flex flex-col">
                                     <div className="flex justify-between items-start mb-1">
                                         <h4 className="font-bold text-white">{look.name}</h4>
