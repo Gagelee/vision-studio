@@ -618,13 +618,14 @@ export default function App() {
 	              concurrency = Math.floor(payload.concurrency);
 	            }
 	            scopeLabel = `director:${scope}`;
-	            const jobs = buildAssetJobs(storyAfterUpdates, scope);
-	            for (const j of jobs) {
-	              if (j.kind === 'shot') addJob(`shot:${j.sequenceId}:${j.shot.id}`, j);
-	              if (j.kind === 'location') addJob(`location:${j.locationId}`, j);
-	              if (j.kind === 'character') addJob(`character:${j.characterId}`, j);
-	              if (j.kind === 'look') addJob(`look:${j.characterId}:${j.lookId}`, j);
-	            }
+		            const jobs = buildAssetJobs(storyAfterUpdates, scope);
+		            for (const j of jobs) {
+		              if (j.kind === 'masterkv') addJob(`masterkv`, j);
+		              if (j.kind === 'shot') addJob(`shot:${j.sequenceId}:${j.shot.id}`, j);
+		              if (j.kind === 'location') addJob(`location:${j.locationId}`, j);
+		              if (j.kind === 'character') addJob(`character:${j.characterId}`, j);
+		              if (j.kind === 'look') addJob(`look:${j.characterId}:${j.lookId}`, j);
+		            }
 	            continue;
 	          }
 
@@ -841,6 +842,7 @@ export default function App() {
           {selection.type === 'shot' && activeItem && (
             <ShotEditor
               shot={activeItem as Shot}
+              story={activeStory}
               aspectRatio={activeStory.aspectRatio}
               isImmersive={isCinemaMode}
               onToggleImmersive={() => setIsCinemaMode(!isCinemaMode)}
@@ -864,6 +866,9 @@ export default function App() {
               onSave={handleUpdateLocation}
               onPropagate={() => addToast('Propagation coming soon', 'info')}
               onSelectShot={(shotId, seqId) => setSelection({ type: 'shot', id: shotId, parentId: seqId })}
+              imageSettings={aiSettings.image}
+              keyVisualUrl={activeStory.keyVisualUrl}
+              aspectRatio={activeStory.aspectRatio}
             />
           )}
 
@@ -874,6 +879,8 @@ export default function App() {
               onSave={handleUpdateCharacter}
               onPropagate={() => addToast('Propagation coming soon', 'info')}
               onSelectShot={(shotId, seqId) => setSelection({ type: 'shot', id: shotId, parentId: seqId })}
+              imageSettings={aiSettings.image}
+              keyVisualUrl={activeStory.keyVisualUrl}
             />
           )}
         </div>
@@ -922,6 +929,7 @@ export default function App() {
           ]
             .filter(Boolean)
             .join('\n')}
+          onNavigate={handleSelect}
           onCastingUpdate={handleCastingUpdate}
           onCharacterPromptChange={handleCharacterPromptChange}
           onScriptUpdate={handleScriptUpdate}

@@ -190,13 +190,17 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
 	                            <span>Analysis</span>
 	                            <span>{phase === 'assets' ? `Assets ${assetDone}/${Math.max(1, assetTotal)}` : 'Scaffolding'}</span>
 	                        </div>
-                          {phase === 'assets' && assetCurrent && (
-                            <div className="text-[11px] text-white/30 font-mono break-words">
-                              {assetCurrent}{assetErrors ? ` (errors: ${assetErrors})` : ''}
-                            </div>
-                          )}
-	                    </div>
-	                </div>
+	                          {phase === 'assets' && assetCurrent && (
+	                            <div className="text-[11px] text-white/30 font-mono break-words">
+	                              {assetCurrent}{assetErrors ? ` (errors: ${assetErrors})` : ''}
+	                            </div>
+	                          )}
+                          <div className="text-[10px] text-white/20 font-mono">
+                            Image: {aiSettings.image.provider}/{aiSettings.image.model}
+                            {aiSettings.image.provider === 'mock' ? ' (mock — assets will NOT be generated)' : ''}
+                          </div>
+		                    </div>
+		                </div>
 	            ) : (
                 <div className="space-y-16 animate-in slide-in-from-bottom-20 duration-1000">
                     <div className="space-y-4">

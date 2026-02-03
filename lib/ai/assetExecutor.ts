@@ -1,15 +1,17 @@
 import type { AiSettings, AspectRatio, ElementType, Shot, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from './image/generate';
 import {
+  buildMasterKeyVisualPrompt,
   buildCharacterAvatarPrompt,
   buildCharacterLookPrompt,
   buildLocationPreviewPrompt,
   buildShotImagePrompt,
 } from './prompts';
 
-export type AssetScope = 'all' | 'shots' | 'locations' | 'characters' | 'looks';
+export type AssetScope = 'all' | 'shots' | 'locations' | 'characters' | 'looks' | 'masterkv';
 
 export type AssetJob =
+  | { kind: 'masterkv'; prompt: string }
   | { kind: 'location'; locationId: string; prompt: string }
   | { kind: 'character'; characterId: string; prompt: string }
   | { kind: 'look'; characterId: string; lookId: string; prompt: string }
@@ -22,10 +24,15 @@ export type AssetJobEvent =
 
 export const buildAssetJobs = (story: Story, scope: AssetScope = 'all'): AssetJob[] => {
   const jobs: AssetJob[] = [];
+  const wantMasterKV = scope === 'all' || scope === 'masterkv';
   const wantShots = scope === 'all' || scope === 'shots';
   const wantLocations = scope === 'all' || scope === 'locations';
   const wantCharacters = scope === 'all' || scope === 'characters';
   const wantLooks = scope === 'all' || scope === 'looks';
+
+  if (wantMasterKV) {
+    jobs.push({ kind: 'masterkv', prompt: buildMasterKeyVisualPrompt({ intent: story.intent, logline: story.logline }) });
+  }
 
   if (wantLocations) {
     for (const loc of story.locations || []) {
@@ -84,6 +91,10 @@ export const applyAssetError = (story: Story, job: AssetJob): Story => {
 };
 
 export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string): Story => {
+  if (job.kind === 'masterkv') {
+    return { ...story, keyVisualUrl: imageUrl };
+  }
+
   if (job.kind === 'location') {
     return {
       ...story,
@@ -195,7 +206,8 @@ export const executeAssetJobs = async (args: {
     const lines: string[] = [];
     lines.push(
       'Generate a cinematic storyboard keyframe (still image).',
-      'Follow the reference images strictly for identity + environment consistency.',
+      'Match the Master KV art direction: consistent palette, lighting language, lens feel, and overall rendering style.',
+      'Follow the reference images strictly for identity + environment consistency. Do not drift into a different art style.',
       'No text, no subtitles, no watermarks, no logos.',
       '',
       buildShotImagePrompt(shot),
@@ -229,6 +241,17 @@ export const executeAssetJobs = async (args: {
   const worker = async (job: AssetJob) => {
     args.onEvent?.({ type: 'start', job, done, total });
     try {
+      if (job.kind === 'masterkv') {
+        const out = await generateImageFromPrompt({
+          prompt: job.prompt,
+          settings: args.settings,
+          aspectRatio: args.aspectRatio,
+        });
+        done += 1;
+        args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
+        return;
+      }
+
       if (job.kind === 'shot') {
         const story = args.getStoryForRefs?.() || null;
         const shot = story ? resolveShotFromStory(story, job.sequenceId, job.shot.id) || job.shot : job.shot;
@@ -245,10 +268,12 @@ export const executeAssetJobs = async (args: {
       }
 
       if (job.kind === 'location') {
+        const story = args.getStoryForRefs?.() || null;
         const out = await generateImageFromPrompt({
           prompt: job.prompt,
           settings: args.settings,
           aspectRatio: args.aspectRatio,
+          references: story?.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : [],
         });
         done += 1;
         args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
@@ -256,10 +281,12 @@ export const executeAssetJobs = async (args: {
       }
 
       if (job.kind === 'character') {
+        const story = args.getStoryForRefs?.() || null;
         const out = await generateImageFromPrompt({
           prompt: job.prompt,
           settings: args.settings,
           aspectRatio: '1:1',
+          references: story?.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : [],
         });
         done += 1;
         args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
@@ -275,7 +302,10 @@ export const executeAssetJobs = async (args: {
           '\n\nUse the provided reference image(s) to keep the exact same character identity. Only vary styling described for this look.',
         settings: args.settings,
         aspectRatio: '1:1',
-        references: ch?.avatarUrl ? [{ url: ch.avatarUrl, label: `character base: ${ch.name}` }] : [],
+        references: [
+          ...(story?.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : []),
+          ...(ch?.avatarUrl ? [{ url: ch.avatarUrl, label: `character base: ${ch.name}` }] : []),
+        ],
       });
       done += 1;
       args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
@@ -287,8 +317,8 @@ export const executeAssetJobs = async (args: {
   };
 
   // Run in dependency order so keyframes can reference generated assets:
-  // environments -> character base -> looks -> shots
-  const orderedPhases: Array<AssetJob['kind']> = ['location', 'character', 'look', 'shot'];
+  // masterkv -> environments -> character base -> looks -> shots
+  const orderedPhases: Array<AssetJob['kind']> = ['masterkv', 'location', 'character', 'look', 'shot'];
   for (const kind of orderedPhases) {
     const phase = args.jobs.filter((j) => j.kind === kind);
     if (!phase.length) continue;
@@ -298,6 +328,7 @@ export const executeAssetJobs = async (args: {
 };
 
 export const getJobLabel = (job: AssetJob, story: Story): string => {
+  if (job.kind === 'masterkv') return 'Master KV';
   if (job.kind === 'location') {
     const loc = (story.locations || []).find((l) => l.id === job.locationId);
     return loc ? `Environment: ${loc.name}` : `Environment: ${job.locationId}`;

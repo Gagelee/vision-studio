@@ -11,9 +11,10 @@ interface CastingControlProps {
   availableCharacters: Character[]; 
   onCastingUpdate: (newCharacters: Character[]) => void;
   onCharacterVisualChange: (characterId: string, newDescription: string) => void;
+  onOpenCharacter?: (characterId: string) => void;
 }
 
-const CastingControl: React.FC<CastingControlProps> = ({ element, availableCharacters, onCastingUpdate, onCharacterVisualChange }) => {
+const CastingControl: React.FC<CastingControlProps> = ({ element, availableCharacters, onCastingUpdate, onCharacterVisualChange, onOpenCharacter }) => {
   const [editingCharacter, setEditingCharacter] = useState<Character | null>(null);
   const [isAdding, setIsAdding] = useState(false);
 
@@ -74,11 +75,18 @@ const CastingControl: React.FC<CastingControlProps> = ({ element, availableChara
                                         </div>
                                     )}
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs font-bold text-zinc-700 dark:text-zinc-200 truncate">{char.name}</span>
-                                        <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-500/10 px-1.5 py-0.5 rounded">Active</span>
-                                    </div>
+	                                <div className="flex-1 min-w-0">
+	                                    <div className="flex items-center justify-between">
+	                                        <button
+	                                          type="button"
+	                                          onClick={() => onOpenCharacter?.(char.id)}
+	                                          className="text-left text-xs font-bold text-zinc-700 dark:text-zinc-200 truncate hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+	                                          title="Open character editor"
+	                                        >
+	                                          {char.name}
+	                                        </button>
+	                                        <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-500/10 px-1.5 py-0.5 rounded">Active</span>
+	                                    </div>
                                     <div className="flex items-center gap-1.5 mt-0.5 text-[9px] text-zinc-500 dark:text-zinc-400 truncate leading-tight italic">
                                         Look: {activeLook?.name || 'Default'}
                                     </div>
@@ -149,6 +157,7 @@ interface InspectorPanelProps {
   keyVisualUrl?: string; 
   masterStyle?: string;
   type: 'story' | 'location' | 'character' | 'sequence' | 'shot';
+  onNavigate?: (sel: SelectionState) => void;
   onCharacterPromptChange: (shotId: string, seqId: string, charId: string, prompt: string) => void;
   onCastingUpdate: (shotId: string, seqId: string, chars: Character[]) => void;
   onScriptUpdate: (shotId: string, seqId: string, dialogue: DialogueLine[]) => void;
@@ -165,6 +174,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   keyVisualUrl,
   masterStyle,
   type,
+  onNavigate,
   onCharacterPromptChange,
   onCastingUpdate,
   onSequenceUpdate,
@@ -329,6 +339,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                         availableCharacters={availableCharacters}
                         onCastingUpdate={(chars) => onCastingUpdate(shot.id, sequenceId, chars)}
                         onCharacterVisualChange={(charId, prompt) => onCharacterPromptChange(shot.id, sequenceId, charId, prompt)}
+                        onOpenCharacter={(characterId) => onNavigate?.({ type: 'character', id: characterId })}
                     />
                     <ElementControl 
                         label="Dialogue" 

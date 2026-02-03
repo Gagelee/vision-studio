@@ -1,7 +1,8 @@
 
 import React, { useState } from 'react';
-import { Shot, ShotVersion, AspectRatio, ModelRuntimeSettings } from '../../types';
-import { generateShotImage } from '../../lib/ai/image/generate';
+import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
+import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
+import { buildShotImagePrompt } from '../../lib/ai/prompts';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface ShotEditorProps {
@@ -9,6 +10,7 @@ interface ShotEditorProps {
   onUpdateShot: (updatedShot: Shot) => void;
   onBack: () => void;
   onStartProduction?: () => void;
+  story?: Story;
   aspectRatio?: AspectRatio;
   isImmersive?: boolean;
   onToggleImmersive?: () => void;
@@ -20,6 +22,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   onUpdateShot,
   onBack,
   onStartProduction,
+  story,
   aspectRatio = '16:9',
   isImmersive,
   onToggleImmersive,
@@ -51,15 +54,48 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     if (isGenerating) return;
     setIsGenerating(true);
     try {
-      const img = await generateShotImage({
-        shot,
-        settings:
-          imageSettings || {
-            provider: 'mock',
-            model: 'mock',
-            temperature: 0.5,
-          },
+      const settings =
+        imageSettings || {
+          provider: 'mock',
+          model: 'mock',
+          temperature: 0.5,
+        };
+
+      const references: ImageReference[] = [];
+      if (story?.keyVisualUrl) references.push({ url: story.keyVisualUrl, label: 'master kv' });
+
+      const loc = story?.locations?.find((l) => l.id === shot.locationId);
+      if (loc?.previewUrl) references.push({ url: loc.previewUrl, label: `environment: ${loc.name}` });
+
+      const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+      const castArr = Array.isArray(cast) ? cast : [];
+      for (const c of castArr.slice(0, 4)) {
+        const charId = String(c?.id || '');
+        if (!charId) continue;
+        const activeLookId = String(c?.activeLookId || '');
+        const master = story?.characters?.find((x) => x.id === charId);
+        if (!master) continue;
+        const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
+        const url = look?.previewUrl || master.avatarUrl;
+        if (url) references.push({ url, label: `character: ${master.name}${look?.name ? ` (${look.name})` : ''}` });
+      }
+
+      const lines: string[] = [];
+      lines.push(
+        'Generate a cinematic storyboard keyframe (still image).',
+        'Match the Master KV art direction: consistent palette, lighting language, lens feel, and overall rendering style.',
+        'Follow reference images strictly for identity + environment consistency. Do not drift into a different art style.',
+        'No text, no subtitles, no watermarks, no logos.',
+        '',
+        buildShotImagePrompt(shot),
+      );
+      if (loc) lines.push('', `Environment style: ${loc.visualStyle || ''}`.trim());
+
+      const img = await generateImageFromPrompt({
+        prompt: lines.filter(Boolean).join('\n'),
+        settings,
         aspectRatio,
+        references,
       });
 
       const newVersion: ShotVersion = {

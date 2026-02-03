@@ -1,7 +1,9 @@
 
-import React, { useState, useEffect } from 'react';
-import { Character, Sequence, Shot, CharacterLook } from '../../types';
-import { User, Wand2, Save, Mic, Film, Plus, Trash2, Edit3, Lock, Unlock, AlertCircle, Shirt } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { AlertCircle, Edit3, Film, Image as ImageIcon, Lock, Plus, Save, Shirt, Sparkles, Trash2, Unlock, User, Wand2 } from 'lucide-react';
+import { Character, CharacterLook, ModelRuntimeSettings, Sequence, Shot } from '../../types';
+import { generateImageFromPrompt } from '../../lib/ai/image/generate';
+import { buildCharacterAvatarPrompt, buildCharacterLookPrompt } from '../../lib/ai/prompts';
 
 interface CharacterEditorProps {
   character: Character;
@@ -9,11 +11,23 @@ interface CharacterEditorProps {
   onSave: (character: Character) => void;
   onPropagate: (characterId: string) => void;
   onSelectShot?: (shotId: string, seqId: string) => void;
+  imageSettings?: ModelRuntimeSettings;
+  keyVisualUrl?: string;
 }
 
-export const CharacterEditor: React.FC<CharacterEditorProps> = ({ character, sequences = [], onSave, onPropagate, onSelectShot }) => {
+export const CharacterEditor: React.FC<CharacterEditorProps> = ({
+  character,
+  sequences = [],
+  onSave,
+  onPropagate,
+  onSelectShot,
+  imageSettings,
+  keyVisualUrl,
+}) => {
   const [draft, setDraft] = useState<Character>(character);
   const [editingLook, setEditingLook] = useState<CharacterLook | null>(null);
+  const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
+  const [generatingLookIds, setGeneratingLookIds] = useState<Record<string, boolean>>({});
   
   useEffect(() => {
     setDraft(character);
@@ -21,6 +35,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ character, seq
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(character);
   const isLocked = draft.status === 'locked';
+  const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
 
   const handleAddLook = () => {
     const newLook: CharacterLook = {
@@ -49,6 +64,47 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ character, seq
           }
       });
   });
+
+  const handleGenerateAvatar = async () => {
+    if (!imageSettings || imageSettings.provider === 'mock' || isLocked || isGeneratingAvatar) return;
+    setIsGeneratingAvatar(true);
+    try {
+      const out = await generateImageFromPrompt({
+        prompt: buildCharacterAvatarPrompt(draft),
+        settings: imageSettings,
+        aspectRatio: '1:1',
+        references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
+      });
+      setDraft((prev) => ({ ...prev, avatarUrl: out.imageUrl }));
+    } finally {
+      setIsGeneratingAvatar(false);
+    }
+  };
+
+  const handleGenerateLook = async (look: CharacterLook) => {
+    if (!imageSettings || imageSettings.provider === 'mock' || isLocked) return;
+    setGeneratingLookIds((m) => ({ ...m, [look.id]: true }));
+    try {
+      const refs = [
+        ...(keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : []),
+        ...(draft.avatarUrl ? [{ url: draft.avatarUrl, label: 'character base avatar' }] : []),
+      ];
+      const out = await generateImageFromPrompt({
+        prompt:
+          buildCharacterLookPrompt(draft, look) +
+          `\n\nKeep the exact same character identity as the reference avatar. Only change wardrobe/makeup/style described for this look.`,
+        settings: imageSettings,
+        aspectRatio: '1:1',
+        references: refs,
+      });
+      setDraft((prev) => ({
+        ...prev,
+        looks: prev.looks.map((l) => (l.id === look.id ? { ...l, previewUrl: out.imageUrl } : l)),
+      }));
+    } finally {
+      setGeneratingLookIds((m) => ({ ...m, [look.id]: false }));
+    }
+  };
 
   return (
     <div className="flex-1 h-full bg-zinc-950 flex flex-col overflow-hidden">
@@ -88,6 +144,48 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ character, seq
          <div className="flex-1 p-8 bg-black/20 overflow-y-auto custom-scrollbar">
              <div className="max-w-4xl mx-auto space-y-12 pb-20">
                 
+                {/* Base Identity (Avatar) */}
+                <section>
+                    <div className="flex items-center justify-between mb-6">
+                        <div className="flex items-center gap-3">
+                            <ImageIcon className="w-5 h-5 text-indigo-500" />
+                            <h3 className="text-lg font-bold text-white">Base Character Identity</h3>
+                        </div>
+                        <button
+                          onClick={handleGenerateAvatar}
+                          disabled={!canGenerate || isLocked || isGeneratingAvatar}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                            !canGenerate || isLocked
+                              ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700'
+                              : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                          }`}
+                          title={!canGenerate ? 'Image provider is Mock' : 'Generate base avatar'}
+                        >
+                          <Sparkles className={`w-4 h-4 ${isGeneratingAvatar ? 'animate-pulse' : ''}`} />
+                          {isGeneratingAvatar ? 'Generating...' : 'Generate Avatar'}
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+                      <div className="relative w-full max-w-sm aspect-square bg-zinc-900 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl">
+                          <img src={draft.avatarUrl} className="w-full h-full object-cover" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-70"></div>
+                      </div>
+                      <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
+                        <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400 mb-3">Workflow</div>
+                        <div className="text-sm text-zinc-200 font-bold">1) Generate Avatar</div>
+                        <div className="text-sm text-zinc-400 mt-1 leading-relaxed">
+                          This is the “identity anchor”. Generate it first, then generate each Look using this avatar as a reference.
+                        </div>
+                        {!draft.avatarUrl && (
+                          <div className="mt-4 text-xs text-amber-300/80 bg-amber-500/10 border border-amber-500/20 rounded-2xl p-3">
+                            Avatar URL is empty. Generate an avatar before generating Looks for best consistency.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                </section>
+
                 {/* Look Management Section */}
                 <section>
                     <div className="flex items-center justify-between mb-6">
@@ -111,14 +209,26 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ character, seq
                                 <div className="flex-1 flex flex-col">
                                     <div className="flex justify-between items-start mb-1">
                                         <h4 className="font-bold text-white">{look.name}</h4>
-                                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button onClick={() => setEditingLook(look)} className="p-1.5 text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-md">
-                                                <Edit3 className="w-3.5 h-3.5" />
-                                            </button>
-                                            <button onClick={() => handleRemoveLook(look.id)} className="p-1.5 text-zinc-400 hover:text-rose-500 bg-white/5 hover:bg-white/10 rounded-md">
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                        </div>
+	                                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+	                                            <button
+	                                              onClick={() => handleGenerateLook(look)}
+	                                              disabled={!canGenerate || isLocked || Boolean(generatingLookIds[look.id])}
+	                                              className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-widest border transition-all ${
+	                                                !canGenerate || isLocked
+	                                                  ? 'border-zinc-800 text-zinc-600 cursor-not-allowed'
+	                                                  : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/20'
+	                                              }`}
+	                                              title={!draft.avatarUrl ? 'Generate avatar first for best identity consistency' : 'Generate look image'}
+	                                            >
+	                                              {generatingLookIds[look.id] ? 'Gen…' : 'Generate'}
+	                                            </button>
+	                                            <button onClick={() => setEditingLook(look)} className="p-1.5 text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-md">
+	                                                <Edit3 className="w-3.5 h-3.5" />
+	                                            </button>
+	                                            <button onClick={() => handleRemoveLook(look.id)} className="p-1.5 text-zinc-400 hover:text-rose-500 bg-white/5 hover:bg-white/10 rounded-md">
+	                                                <Trash2 className="w-3.5 h-3.5" />
+	                                            </button>
+	                                        </div>
                                     </div>
                                     <p className="text-xs text-zinc-400 leading-relaxed line-clamp-3">{look.description}</p>
                                 </div>

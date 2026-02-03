@@ -379,15 +379,45 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
               // Remote http(s) URLs
               if (u.startsWith('http://') || u.startsWith('https://')) {
+                const shrinkIfUnsplash = (input: string): string => {
+                  try {
+                    const parsed = new URL(input);
+                    if (!/images\.unsplash\.com$/i.test(parsed.hostname)) return input;
+                    parsed.searchParams.set('w', '768');
+                    parsed.searchParams.set('q', '70');
+                    parsed.searchParams.set('auto', 'format');
+                    parsed.searchParams.set('fit', 'crop');
+                    return parsed.toString();
+                  } catch {
+                    return input;
+                  }
+                };
+
                 const controller = new AbortController();
                 const timeout = setTimeout(() => controller.abort(), 15_000);
                 try {
-                  const resp = await fetch(u, { signal: controller.signal });
-                  if (!resp.ok) return null;
-                  const ct = String(resp.headers.get('content-type') || '');
-                  if (!ct.startsWith('image/')) return null;
-                  const buf = Buffer.from(await resp.arrayBuffer());
-                  return { mimeType: ct.split(';')[0] || 'image/png', bytes: buf };
+                  const tryFetch = async (input: string) => {
+                    const resp = await fetch(input, { signal: controller.signal });
+                    if (!resp.ok) return null;
+                    const ct = String(resp.headers.get('content-type') || '');
+                    if (!ct.startsWith('image/')) return null;
+                    const buf = Buffer.from(await resp.arrayBuffer());
+                    return { mimeType: ct.split(';')[0] || 'image/png', bytes: buf, bytesLen: buf.length };
+                  };
+
+                  const first = await tryFetch(u);
+                  if (!first) return null;
+                  // If the image is too large, retry a smaller Unsplash variant when possible.
+                  if (first.bytesLen > 12 * 1024 * 1024) {
+                    const smallerUrl = shrinkIfUnsplash(u);
+                    if (smallerUrl !== u) {
+                      const second = await tryFetch(smallerUrl);
+                      if (second && second.bytesLen <= 12 * 1024 * 1024) return { mimeType: second.mimeType, bytes: second.bytes };
+                    }
+                    return null;
+                  }
+
+                  return { mimeType: first.mimeType, bytes: first.bytes };
                 } finally {
                   clearTimeout(timeout);
                 }
@@ -409,7 +439,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 const loaded = await loadReference(r.url);
                 if (!loaded) continue;
                 // Keep refs reasonably small to avoid request bloat.
-                if (loaded.bytes.length > 6 * 1024 * 1024) continue;
+                if (loaded.bytes.length > 12 * 1024 * 1024) continue;
                 loadedRefs.push({ ...loaded, label: r.label });
               } catch {
                 // Ignore bad refs; still allow generation.

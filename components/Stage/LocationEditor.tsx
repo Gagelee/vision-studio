@@ -1,7 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import { Location, Sequence, Shot } from '../../types';
-import { MapPin, Image as ImageIcon, Wand2, Save, Film, RefreshCw, AlertCircle, Lock, Unlock } from 'lucide-react';
+import { Location, ModelRuntimeSettings, Sequence, Shot } from '../../types';
+import { MapPin, Image as ImageIcon, Wand2, Save, Film, AlertCircle, Lock, Unlock, Sparkles } from 'lucide-react';
+import { generateImageFromPrompt } from '../../lib/ai/image/generate';
+import { buildLocationPreviewPrompt } from '../../lib/ai/prompts';
 
 interface LocationEditorProps {
   location: Location;
@@ -9,10 +11,23 @@ interface LocationEditorProps {
   onSave: (location: Location) => void;
   onPropagate: (locationId: string) => void;
   onSelectShot?: (shotId: string, seqId: string) => void;
+  imageSettings?: ModelRuntimeSettings;
+  keyVisualUrl?: string;
+  aspectRatio?: string;
 }
 
-export const LocationEditor: React.FC<LocationEditorProps> = ({ location, sequences = [], onSave, onPropagate, onSelectShot }) => {
+export const LocationEditor: React.FC<LocationEditorProps> = ({
+  location,
+  sequences = [],
+  onSave,
+  onPropagate,
+  onSelectShot,
+  imageSettings,
+  keyVisualUrl,
+  aspectRatio,
+}) => {
   const [draft, setDraft] = useState<Location>(location);
+  const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
   
   useEffect(() => {
     setDraft(location);
@@ -20,6 +35,7 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({ location, sequen
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(location);
   const isLocked = draft.status === 'locked';
+  const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
   
   // Find all shots using this location
   const usedInShots: { shot: Shot; seqId: string }[] = [];
@@ -33,6 +49,22 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({ location, sequen
 
   const handleSave = () => {
     onSave(draft);
+  };
+
+  const handleGeneratePreview = async () => {
+    if (!imageSettings || imageSettings.provider === 'mock' || isLocked || isGeneratingPreview) return;
+    setIsGeneratingPreview(true);
+    try {
+      const out = await generateImageFromPrompt({
+        prompt: buildLocationPreviewPrompt(draft),
+        settings: imageSettings,
+        aspectRatio: aspectRatio || '16:9',
+        references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
+      });
+      setDraft((prev) => ({ ...prev, previewUrl: out.imageUrl }));
+    } finally {
+      setIsGeneratingPreview(false);
+    }
   };
 
   return (
@@ -60,6 +92,19 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({ location, sequen
             </div>
         </div>
         <div className="flex gap-3">
+             <button 
+                onClick={handleGeneratePreview}
+                disabled={!canGenerate || isLocked || isGeneratingPreview}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all shadow-lg ${
+                    !canGenerate || isLocked
+                    ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700'
+                    : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/10'
+                }`}
+                title={!canGenerate ? 'Image provider is Mock' : 'Generate environment preview'}
+             >
+                <Sparkles className={`w-4 h-4 ${isGeneratingPreview ? 'animate-pulse' : ''}`} />
+                {isGeneratingPreview ? 'Generating...' : 'Generate Preview'}
+             </button>
              <button 
                 onClick={handleSave}
                 disabled={!isDirty}
