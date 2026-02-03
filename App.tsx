@@ -18,6 +18,9 @@ import { DebugPanel } from './components/Debug/DebugPanel';
 import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
 import { loadAiSettings, saveAiSettings } from './lib/ai/aiSettingsStorage';
 import { runDirectorCommand } from './lib/ai/agent/direct';
+import { addDebugEvent } from './lib/debug/eventLog';
+import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
+import { applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -75,7 +78,11 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
 
 const renumberShots = (shots: Shot[]): Shot[] => shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
 
-const createBlankShot = (story: Story, seq: Sequence): Shot => {
+const createBlankShot = (
+  story: Story,
+  seq: Sequence,
+  init?: Partial<Pick<Shot, 'locationId' | 'timeOfDay' | 'description'>>,
+): Shot => {
   const now = Date.now();
   const fallbackLocationId = story.locations[0]?.id || '';
   const shotNumber = seq.shots.length + 1;
@@ -84,9 +91,9 @@ const createBlankShot = (story: Story, seq: Sequence): Shot => {
   return {
     id: `shot-${now}`,
     sequence: shotNumber,
-    locationId: fallbackLocationId,
-    timeOfDay: 'Day',
-    description: 'New shot',
+    locationId: init?.locationId || fallbackLocationId,
+    timeOfDay: init?.timeOfDay || 'Day',
+    description: init?.description || 'New shot',
     duration: 4,
     thumbnailUrl: thumb,
     activeVersionId: 'v1',
@@ -99,6 +106,7 @@ const createBlankShot = (story: Story, seq: Sequence): Shot => {
       [ElementType.AUDIO]: { type: ElementType.AUDIO, prompt: 'Ambient sound', status: 'auto' },
     },
     aiState: 'idle',
+    production: { status: 'idle' },
   };
 };
 
@@ -119,7 +127,7 @@ export default function App() {
 
   const [agentHistoryByProject, setAgentHistoryByProject] = useState<Record<string, AgentLogEntry[]>>({});
   const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
-  const [isStartProductionOpen, setIsStartProductionOpen] = useState(false);
+  const [productionTarget, setProductionTarget] = useState<{ sequenceId: string; shotId: string } | null>(null);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
 
   const activeStory = useMemo<Story | null>(() => {
@@ -171,6 +179,17 @@ export default function App() {
     const id = Math.random().toString(36).substring(7);
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
+  };
+
+  const updateStoryById = (projectId: string, updater: (prev: Story) => Story) => {
+    setWorkspace((prev) => {
+      const idx = prev.projects.findIndex((p) => p.id === projectId);
+      if (idx < 0) return prev;
+      const now = Date.now();
+      const projects = prev.projects.slice();
+      projects[idx] = { ...updater(projects[idx]), updatedAt: now };
+      return { ...prev, projects };
+    });
   };
 
   const updateActiveStory = (updater: (prev: Story) => Story) => {
@@ -277,19 +296,29 @@ export default function App() {
       [project.id]: [...(prev[project.id] || []), systemEntry],
     }));
 
-    addToast('Project scaffolded by Director AI', 'success');
+    const fellBack = Boolean(debug?.error);
+    if (fellBack && aiSettings.scaffoldWorker.provider !== 'mock') {
+      addToast('Scaffold fell back to mock/rules. Open Debug (Ctrl/Cmd+Shift+D) for details.', 'info');
+    } else {
+      addToast('Project scaffolded by Director AI', 'success');
+    }
+
   };
 
-  const startVideoProduction = () => {
-    if (!activeStory) return;
+  const startShotProduction = (sequenceId: string, shotId: string) => {
     updateActiveStory((prev) => ({
       ...prev,
-      production: {
-        ...(prev.production || {}),
-        video: { status: 'queued', lastStartedAt: Date.now() },
-      },
+      sequences: prev.sequences.map((seq) => {
+        if (seq.id !== sequenceId) return seq;
+        return {
+          ...seq,
+          shots: seq.shots.map((s) =>
+            s.id === shotId ? { ...s, production: { status: 'queued', lastStartedAt: Date.now() } } : s,
+          ),
+        };
+      }),
     }));
-    addToast('Video production queued (manual start)', 'success');
+    addToast('Shot production queued (placeholder)', 'success');
   };
 
   // ----- Render Helpers -----
@@ -347,15 +376,28 @@ export default function App() {
     addToast('New sequence added', 'success');
   };
 
-  const handleAddShot = (seqId: string) => {
+  const handleAddShot = (
+    seqId: string,
+    opts?: { afterShotId?: string; locationId?: string; timeOfDay?: string },
+  ) => {
     if (!activeStory) return;
     updateActiveStory((prev) => {
       const seq = prev.sequences.find((s) => s.id === seqId);
       if (!seq) return prev;
-      const newShot = createBlankShot(prev, seq);
+      const newShot = createBlankShot(prev, seq, { locationId: opts?.locationId, timeOfDay: opts?.timeOfDay });
+
+      const shots = seq.shots.slice();
+      let insertAt = shots.length;
+      if (opts?.afterShotId) {
+        const idx = shots.findIndex((s) => s.id === opts.afterShotId);
+        if (idx >= 0) insertAt = idx + 1;
+      }
+
+      shots.splice(insertAt, 0, newShot);
+      const nextShots = renumberShots(shots);
       return {
         ...prev,
-        sequences: prev.sequences.map((s) => (s.id === seqId ? { ...s, shots: [...s.shots, newShot] } : s)),
+        sequences: prev.sequences.map((s) => (s.id === seqId ? { ...s, shots: nextShots } : s)),
       };
     });
     addToast('New shot added to sequence', 'success');
@@ -507,27 +549,28 @@ export default function App() {
 
   // ----- Director Console -----
 
-  const handleDirectorMessage = async (msg: string) => {
-    if (!activeStory || !workspace.activeProjectId) return;
+	  const handleDirectorMessage = async (msg: string) => {
+	    if (!activeStory || !workspace.activeProjectId) return;
+      const projectId = workspace.activeProjectId;
 
-    const userEntry: AgentLogEntry = {
-      id: `u-${Date.now()}`,
-      role: 'user',
+	    const userEntry: AgentLogEntry = {
+	      id: `u-${Date.now()}`,
+	      role: 'user',
       content: msg,
       timestamp: Date.now(),
     };
 
-    setAgentHistoryByProject((prev) => ({
-      ...prev,
-      [workspace.activeProjectId!]: [...(prev[workspace.activeProjectId!] || []), userEntry],
-    }));
+	    setAgentHistoryByProject((prev) => ({
+	      ...prev,
+	      [projectId]: [...(prev[projectId] || []), userEntry],
+	    }));
 
-    const res = await runDirectorCommand({
-      message: msg,
-      selection,
-      story: activeStory,
-      settings: aiSettings.direct,
-    });
+	    const res = await runDirectorCommand({
+	      message: msg,
+	      selection,
+	      story: activeStory,
+	      settings: aiSettings.direct,
+	    });
 
     const agentEntry: AgentLogEntry = {
       id: `a-${Date.now()}`,
@@ -538,18 +581,138 @@ export default function App() {
       debug: res.debug,
     };
 
-    setAgentHistoryByProject((prev) => ({
-      ...prev,
-      [workspace.activeProjectId!]: [...(prev[workspace.activeProjectId!] || []), agentEntry],
-    }));
+	    setAgentHistoryByProject((prev) => ({
+	      ...prev,
+	      [projectId]: [...(prev[projectId] || []), agentEntry],
+	    }));
 
-    if (res.actions.length > 0) {
-      updateActiveStory((prev) => applyActionsToStory(prev, res.actions));
-      addToast('Director AI executed changes', 'success');
-    } else {
-      addToast('No changes applied', 'info');
-    }
-  };
+	    if (res.debug?.error && aiSettings.direct.provider !== 'mock') {
+	      addToast('Director command fell back to rule-based output. Open Debug (Ctrl/Cmd+Shift+D) for details.', 'info');
+	    }
+
+	    if (res.actions.length > 0) {
+	      const updateActions = res.actions.filter((a) => a.type === 'UPDATE_ELEMENT');
+	      const generateActions = res.actions.filter((a) => a.type.startsWith('GENERATE_'));
+
+	      if (updateActions.length) {
+	        updateStoryById(projectId, (prev) => applyActionsToStory(prev, updateActions));
+	        addToast('Director AI applied edits', 'success');
+	      }
+
+	      if (generateActions.length) {
+	        const storyAfterUpdates = updateActions.length ? applyActionsToStory(activeStory, updateActions) : activeStory;
+
+	        const deduped = new Map<string, AssetJob>();
+	        const addJob = (key: string, job: AssetJob) => {
+	          if (!deduped.has(key)) deduped.set(key, job);
+	        };
+
+	        let concurrency = 2;
+	        let scopeLabel = 'director';
+
+	        for (const a of generateActions) {
+	          const payload = (a as any).payload || {};
+	          if (a.type === 'GENERATE_PROJECT_ASSETS') {
+	            const scope = String(payload.scope || 'all') as any;
+	            if (typeof payload.concurrency === 'number' && payload.concurrency > 0 && payload.concurrency <= 6) {
+	              concurrency = Math.floor(payload.concurrency);
+	            }
+	            scopeLabel = `director:${scope}`;
+	            const jobs = buildAssetJobs(storyAfterUpdates, scope);
+	            for (const j of jobs) {
+	              if (j.kind === 'shot') addJob(`shot:${j.sequenceId}:${j.shot.id}`, j);
+	              if (j.kind === 'location') addJob(`location:${j.locationId}`, j);
+	              if (j.kind === 'character') addJob(`character:${j.characterId}`, j);
+	              if (j.kind === 'look') addJob(`look:${j.characterId}:${j.lookId}`, j);
+	            }
+	            continue;
+	          }
+
+	          if (a.type === 'GENERATE_SHOT_IMAGE') {
+	            const sequenceId = String(payload.sequenceId || '');
+	            const shotId = String(payload.shotId || '');
+	            const seq = storyAfterUpdates.sequences.find((s) => s.id === sequenceId);
+	            const shot = seq?.shots.find((s) => s.id === shotId);
+	            if (shot && sequenceId) addJob(`shot:${sequenceId}:${shotId}`, { kind: 'shot', sequenceId, shot });
+	            continue;
+	          }
+
+	          if (a.type === 'GENERATE_LOCATION_PREVIEW') {
+	            const locationId = String(payload.locationId || '');
+	            const loc = storyAfterUpdates.locations.find((l) => l.id === locationId);
+	            if (loc) addJob(`location:${locationId}`, { kind: 'location', locationId, prompt: buildLocationPreviewPrompt(loc) });
+	            continue;
+	          }
+
+	          if (a.type === 'GENERATE_CHARACTER_AVATAR') {
+	            const characterId = String(payload.characterId || '');
+	            const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
+	            if (ch) addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch) });
+	            continue;
+	          }
+
+	          if (a.type === 'GENERATE_CHARACTER_LOOK') {
+	            const characterId = String(payload.characterId || '');
+	            const lookId = String(payload.lookId || '');
+	            const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
+	            const lk = ch?.looks?.find((x) => x.id === lookId);
+	            if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk) });
+	            continue;
+	          }
+	        }
+
+	        const jobs = Array.from(deduped.values());
+	        if (jobs.length && aiSettings.image.provider !== 'mock') {
+	          addToast(`Queued asset generation (${jobs.length})…`, 'info');
+	          addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
+	          setTimeout(() => {
+              let storyRef = storyAfterUpdates;
+	            executeAssetJobs({
+	              jobs,
+	              settings: aiSettings.image,
+	              aspectRatio: storyAfterUpdates.aspectRatio,
+	              concurrency,
+                getStoryForRefs: () => storyRef,
+	              onEvent: (ev) => {
+	                if (ev.type === 'start') {
+                    storyRef = applyAssetStart(storyRef, ev.job);
+	                  updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
+	                  addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
+	                }
+	                if (ev.type === 'success') {
+                    storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl);
+	                  updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl));
+	                  addDebugEvent({
+	                    level: 'info',
+	                    scope: 'asset.exec',
+	                    message: 'Success',
+	                    data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
+	                  });
+	                }
+	                if (ev.type === 'error') {
+                    storyRef = applyAssetError(storyRef, ev.job);
+	                  updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job));
+	                  addDebugEvent({
+	                    level: 'warn',
+	                    scope: 'asset.exec',
+	                    message: 'Error',
+	                    data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error },
+	                  });
+	                }
+	                if (ev.done === ev.total) addToast('Assets generated (director).', 'success');
+	              },
+	            }).catch(() => {
+	              addToast('Asset generation had errors. Check Debug.', 'info');
+	            });
+	          }, 0);
+	        } else if (jobs.length) {
+	          addToast('Asset generation requested, but Image Provider is Mock.', 'info');
+	        }
+	      }
+	    } else {
+	      addToast('No changes applied', 'info');
+	    }
+	  };
 
   // ----- Screens -----
 
@@ -654,7 +817,6 @@ export default function App() {
                 setIsPlayingMaster(true);
                 addToast('Starting Master Screen...', 'success');
               }}
-              onStartProduction={() => setIsStartProductionOpen(true)}
             />
           )}
 
@@ -666,7 +828,7 @@ export default function App() {
               isImmersive={isCinemaMode}
               onToggleImmersive={() => setIsCinemaMode(!isCinemaMode)}
               onSelectShot={(id) => setSelection({ type: 'shot', id, parentId: (activeItem as Sequence).id })}
-              onAddShot={() => handleAddShot((activeItem as Sequence).id)}
+              onAddShot={(opts) => handleAddShot((activeItem as Sequence).id, opts)}
               onDeleteShot={(id) => handleDeleteShot((activeItem as Sequence).id, id)}
               onMoveShot={(id, direction) => handleMoveShot((activeItem as Sequence).id, id, direction)}
               onUpdateShot={handleShotUpdate}
@@ -684,6 +846,11 @@ export default function App() {
               onToggleImmersive={() => setIsCinemaMode(!isCinemaMode)}
               onUpdateShot={handleShotUpdate}
               imageSettings={aiSettings.image}
+              onStartProduction={() => {
+                const seqId = selection.parentId || '';
+                if (!seqId) return;
+                setProductionTarget({ sequenceId: seqId, shotId: (activeItem as Shot).id });
+              }}
               onBack={() =>
                 setSelection({ type: 'sequence', id: selection.parentId || activeStory.sequences[0]?.id || activeStory.id })
               }
@@ -749,6 +916,12 @@ export default function App() {
           availableLocations={activeStory.locations}
           availableCharacters={activeStory.characters}
           keyVisualUrl={activeStory.keyVisualUrl}
+          masterStyle={[
+            activeStory.intent ? `Intent: ${activeStory.intent}` : '',
+            activeStory.logline ? `Logline: ${activeStory.logline}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n')}
           onCastingUpdate={handleCastingUpdate}
           onCharacterPromptChange={handleCharacterPromptChange}
           onScriptUpdate={handleScriptUpdate}
@@ -778,13 +951,20 @@ export default function App() {
         />
       )}
 
-      {isStartProductionOpen && (
+      {productionTarget && (
         <StartProductionModal
+          target={(() => {
+            const seq = activeStory.sequences.find((s) => s.id === productionTarget.sequenceId);
+            const shot = seq?.shots.find((s) => s.id === productionTarget.shotId);
+            if (!shot) return { label: 'Shot' };
+            const loc = activeStory.locations.find((l) => l.id === shot.locationId);
+            return { label: `Shot #${shot.sequence}${loc?.name ? ` · ${loc.name}` : ''}`, detail: shot.description };
+          })()}
           onConfirm={() => {
-            setIsStartProductionOpen(false);
-            startVideoProduction();
+            startShotProduction(productionTarget.sequenceId, productionTarget.shotId);
+            setProductionTarget(null);
           }}
-          onClose={() => setIsStartProductionOpen(false)}
+          onClose={() => setProductionTarget(null)}
         />
       )}
 

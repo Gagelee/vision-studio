@@ -8,6 +8,7 @@ interface ShotEditorProps {
   shot: Shot;
   onUpdateShot: (updatedShot: Shot) => void;
   onBack: () => void;
+  onStartProduction?: () => void;
   aspectRatio?: AspectRatio;
   isImmersive?: boolean;
   onToggleImmersive?: () => void;
@@ -18,6 +19,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   shot,
   onUpdateShot,
   onBack,
+  onStartProduction,
   aspectRatio = '16:9',
   isImmersive,
   onToggleImmersive,
@@ -114,6 +116,15 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 >
                     {isImmersive ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                 </button>
+            )}
+            {onStartProduction && (
+              <button
+                onClick={onStartProduction}
+                className="flex items-center gap-2 bg-[#ee4d2d] hover:bg-[#f05d40] text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-colors shadow-lg shadow-orange-500/10"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                Start Production
+              </button>
             )}
              <button className="flex items-center gap-2 bg-white text-black hover:bg-zinc-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-white/5">
                 <Download className="w-3.5 h-3.5" />

@@ -1,8 +1,37 @@
+import crypto from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { buildDirectorActionsPrompt, buildScaffoldPrompt } from './lib/ai/prompts';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+const GENERATED_ASSETS_DIR = path.resolve(process.cwd(), '.vision-assets');
+
+const ensureGeneratedDir = () => {
+  try {
+    fs.mkdirSync(GENERATED_ASSETS_DIR, { recursive: true });
+  } catch {
+    // ignore
+  }
+};
+
+const safeGeneratedAssetPath = (urlPathname: string) => {
+  const decoded = decodeURIComponent(String(urlPathname || ''));
+  const rel = decoded.replace(/^\/+/, '');
+  if (!rel) return null;
+  if (rel.includes('..') || rel.includes('\\')) return null;
+  return path.join(GENERATED_ASSETS_DIR, rel);
+};
+
+const mimeByExt = (ext: string) => {
+  const e = ext.toLowerCase();
+  if (e === '.png') return 'image/png';
+  if (e === '.jpg' || e === '.jpeg') return 'image/jpeg';
+  if (e === '.webp') return 'image/webp';
+  return 'application/octet-stream';
+};
 
 const readJsonBody = async (req: any): Promise<any> => {
   const chunks: Buffer[] = [];
@@ -37,16 +66,60 @@ const callGeminiJson = async (args: {
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/```$/i, '')
       .trim();
+    const extractFirstJsonObject = (input: string) => {
+      const start = input.indexOf('{');
+      if (start < 0) return null;
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < input.length; i++) {
+        const ch = input[i];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (ch === '\\\\') {
+            escaped = true;
+            continue;
+          }
+          if (ch === '\"') inString = false;
+          continue;
+        }
+        if (ch === '\"') {
+          inString = true;
+          continue;
+        }
+        if (ch === '{') depth++;
+        if (ch === '}') {
+          depth--;
+          if (depth === 0) return input.slice(start, i + 1);
+        }
+      }
+      return null;
+    };
     try {
       return JSON.parse(stripped);
     } catch {
+      const firstObj = extractFirstJsonObject(stripped);
+      if (firstObj) {
+        try {
+          return JSON.parse(firstObj);
+        } catch {
+          // fall through
+        }
+      }
       const start = stripped.indexOf('{');
       const end = stripped.lastIndexOf('}');
       if (start >= 0 && end > start) {
         const candidate = stripped.slice(start, end + 1);
-        return JSON.parse(candidate);
+        try {
+          return JSON.parse(candidate);
+        } catch {
+          // fall through
+        }
       }
-      throw new Error('Gemini: response was not valid JSON');
+      throw new Error(`Gemini: response was not valid JSON. Preview: ${stripped.slice(0, 240)}`);
     }
   };
 
@@ -109,32 +182,304 @@ const callOpenAICompatibleJson = async (args: {
   return JSON.parse(content);
 };
 
-const agentApiPlugin = (env: Record<string, string>): Plugin => {
+type ModelProvider = 'gemini' | 'openai' | 'deepseek';
+
+const getProviderCandidates = (preferred: string, env: Record<string, string>): ModelProvider[] => {
+  const all: ModelProvider[] = ['gemini', 'openai', 'deepseek'];
+  const pref = all.includes(preferred as any) ? (preferred as ModelProvider) : null;
+  const unique = [pref, ...all].filter(Boolean) as ModelProvider[];
+
+  const hasKey = (p: ModelProvider) => {
+    if (p === 'gemini') return Boolean(env.GEMINI_API_KEY);
+    if (p === 'openai') return Boolean(env.OPENAI_API_KEY);
+    if (p === 'deepseek') return Boolean(env.DEEPSEEK_API_KEY);
+    return false;
+  };
+
+  const seen = new Set<ModelProvider>();
+  return unique.filter((p) => {
+    if (seen.has(p)) return false;
+    seen.add(p);
+    return hasKey(p);
+  });
+};
+
+const normalizeGeminiImageModel = (model: string) => {
+  const m = String(model || '').trim();
+  if (!m) return 'gemini-2.5-flash-image';
+  // Product/UX alias: "Nano Banana" image generation.
+  if (m === 'nano-banana') return 'gemini-2.5-flash-image';
+  if (m === 'nano-banana-pro') return 'gemini-3-pro-image-preview';
+  return m;
+};
+
+const summarizeStoryForPrompt = (story: any) => {
+  if (!story || typeof story !== 'object') return null;
+  const trim = (v: any, n: number) => String(v || '').slice(0, n);
+  const safeArr = (v: any) => (Array.isArray(v) ? v : []);
+
+  const locations = safeArr(story.locations).slice(0, 30).map((l: any) => ({
+    id: String(l?.id || ''),
+    name: trim(l?.name, 60),
+    visualStyle: trim(l?.visualStyle, 80),
+  }));
+
+  const characters = safeArr(story.characters).slice(0, 30).map((c: any) => ({
+    id: String(c?.id || ''),
+    name: trim(c?.name, 60),
+    looks: safeArr(c?.looks)
+      .slice(0, 10)
+      .map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 60) })),
+  }));
+
+  const sequences = safeArr(story.sequences).slice(0, 20).map((s: any) => ({
+    id: String(s?.id || ''),
+    title: trim(s?.title, 80),
+    shots: safeArr(s?.shots)
+      .slice(0, 20)
+      .map((sh: any) => ({
+        id: String(sh?.id || ''),
+        sequence: Number(sh?.sequence || 0),
+        locationId: String(sh?.locationId || ''),
+        description: trim(sh?.description, 120),
+      })),
+  }));
+
   return {
-    name: 'vision-studio-agent-api',
-    configureServer(server) {
-      server.middlewares.use('/api/asset/image/generate', async (req, res, next) => {
-        if (req.method !== 'POST') return next();
+    id: String(story.id || ''),
+    title: trim(story.title, 120),
+    aspectRatio: String(story.aspectRatio || ''),
+    counts: {
+      locations: safeArr(story.locations).length,
+      characters: safeArr(story.characters).length,
+      sequences: safeArr(story.sequences).length,
+    },
+    locations,
+    characters,
+    sequences,
+  };
+};
+
+const callGeminiImage = async (args: {
+  apiKey: string;
+  model: string;
+  temperature: number;
+  prompt: string;
+  aspectRatio?: string;
+  references?: Array<{ mimeType: string; bytes: Buffer; label?: string }>;
+}): Promise<{ mimeType: string; bytes: Buffer }> => {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
+
+  const generationConfig: any = {
+    temperature: args.temperature,
+    responseModalities: ['IMAGE'],
+  };
+  if (args.aspectRatio) {
+    generationConfig.imageConfig = { aspectRatio: String(args.aspectRatio) };
+  }
+
+  const inputParts: any[] = [{ text: args.prompt }];
+  const refs = Array.isArray(args.references) ? args.references.slice(0, 6) : [];
+  for (const r of refs) {
+    if (r.label) inputParts.push({ text: `Reference (${String(r.label).slice(0, 80)}):` });
+    inputParts.push({ inlineData: { mimeType: r.mimeType, data: r.bytes.toString('base64') } });
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: inputParts }],
+      generationConfig,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Gemini Image HTTP ${res.status}${text ? `: ${text}` : ''}`);
+  }
+
+  const data = (await res.json()) as any;
+  const parts = (data?.candidates?.[0]?.content?.parts || []) as any[];
+  const inline = parts.find((p) => p?.inlineData?.data || p?.inline_data?.data);
+  const inlineData = inline?.inlineData || inline?.inline_data;
+  const mimeType = String(inlineData?.mimeType || inlineData?.mime_type || 'image/png');
+  const b64 = inlineData?.data;
+  if (typeof b64 !== 'string' || !b64) throw new Error('Gemini Image: missing inlineData');
+  return { mimeType, bytes: Buffer.from(b64, 'base64') };
+};
+
+const agentApiPlugin = (env: Record<string, string>): Plugin => {
+  const applyRoutes = (middlewares: any) => {
+    middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+      const pathname = String(req?.url || '').split('?')[0];
+      const filePath = safeGeneratedAssetPath(pathname);
+      if (!filePath) {
+        res.statusCode = 400;
+        return res.end('Bad path');
+      }
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) {
+          res.statusCode = 404;
+          return res.end('Not found');
+        }
+        res.statusCode = 200;
+        res.setHeader('content-type', mimeByExt(path.extname(filePath)));
+        res.setHeader('cache-control', 'public, max-age=31536000, immutable');
+        if (req.method === 'HEAD') return res.end();
+        fs.createReadStream(filePath).pipe(res);
+      } catch {
+        res.statusCode = 404;
+        return res.end('Not found');
+      }
+    });
+
+    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
+      if (req.method !== 'POST') return next();
         const body = await readJsonBody(req);
 
         const prompt = String(body?.prompt || '').trim();
+        const aspectRatio = body?.aspectRatio ? String(body.aspectRatio) : undefined;
+        const referencesRaw = Array.isArray(body?.references) ? body.references : [];
         const settings = body?.settings || {};
         const provider = String(settings?.provider || 'gemini');
         const model = String(settings?.model || 'nano-banana-pro');
+        const temperature = Number(settings?.temperature ?? 0.6);
+
+        if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
+
+        const promptPreview = prompt.slice(0, 120);
+
+        try {
+          if (provider === 'gemini' && env.GEMINI_API_KEY) {
+            const usedModel = normalizeGeminiImageModel(model);
+            ensureGeneratedDir();
+
+            const loadReference = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
+              const u = String(url || '').trim();
+              if (!u) return null;
+
+              // Local generated assets: /__generated__/...
+              if (u.startsWith('/__generated__/')) {
+                const filePath = safeGeneratedAssetPath(u);
+                if (!filePath) return null;
+                const bytes = await fs.promises.readFile(filePath);
+                const mimeType = mimeByExt(path.extname(filePath));
+                return { mimeType, bytes };
+              }
+
+              // data: URLs
+              if (u.startsWith('data:image/')) {
+                const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(u);
+                if (!match) return null;
+                return { mimeType: match[1], bytes: Buffer.from(match[2], 'base64') };
+              }
+
+              // Remote http(s) URLs
+              if (u.startsWith('http://') || u.startsWith('https://')) {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 15_000);
+                try {
+                  const resp = await fetch(u, { signal: controller.signal });
+                  if (!resp.ok) return null;
+                  const ct = String(resp.headers.get('content-type') || '');
+                  if (!ct.startsWith('image/')) return null;
+                  const buf = Buffer.from(await resp.arrayBuffer());
+                  return { mimeType: ct.split(';')[0] || 'image/png', bytes: buf };
+                } finally {
+                  clearTimeout(timeout);
+                }
+              }
+
+              return null;
+            };
+
+            const references = (
+              Array.isArray(referencesRaw) ? referencesRaw : []
+            )
+              .slice(0, 6)
+              .map((r: any) => ({ url: String(r?.url || '').trim(), label: r?.label ? String(r.label) : undefined }))
+              .filter((r: any) => r.url);
+
+            const loadedRefs: Array<{ mimeType: string; bytes: Buffer; label?: string }> = [];
+            for (const r of references) {
+              try {
+                const loaded = await loadReference(r.url);
+                if (!loaded) continue;
+                // Keep refs reasonably small to avoid request bloat.
+                if (loaded.bytes.length > 6 * 1024 * 1024) continue;
+                loadedRefs.push({ ...loaded, label: r.label });
+              } catch {
+                // Ignore bad refs; still allow generation.
+              }
+            }
+
+            const out = await callGeminiImage({
+              apiKey: env.GEMINI_API_KEY,
+              model: usedModel,
+              temperature,
+              prompt,
+              aspectRatio,
+              references: loadedRefs,
+            });
+
+            const ext =
+              out.mimeType === 'image/png'
+                ? 'png'
+                : out.mimeType === 'image/jpeg'
+                  ? 'jpg'
+                  : out.mimeType === 'image/webp'
+                    ? 'webp'
+                    : 'bin';
+            const hash = crypto
+              .createHash('sha256')
+              .update(`${usedModel}\n${aspectRatio || ''}\n${prompt}`)
+              .digest('hex')
+              .slice(0, 16);
+            const filename = `${Date.now()}-${hash}.${ext}`;
+            fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
+            return sendJson(res, 200, {
+              imageUrl: `/__generated__/${filename}`,
+              debug: {
+                transport: 'http',
+                provider,
+                model: usedModel,
+                mimeType: out.mimeType,
+                bytes: out.bytes.length,
+                promptPreview,
+                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
+              },
+            });
+          }
+        } catch (e: any) {
+          return sendJson(res, 200, {
+            imageUrl:
+              `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
+              `${Math.floor(Math.random() * 100000)}`,
+            debug: {
+              transport: 'mock',
+              provider,
+              model,
+              promptPreview,
+              error: e?.message || String(e),
+            },
+          });
+        }
 
         const url =
           `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
           `${Math.floor(Math.random() * 100000)}`;
 
-        // Image generation is intentionally stubbed for now; we return a deterministic URL-like output
-        // and include model metadata for debugging.
+        // If no image provider is configured, fall back to a deterministic URL-like output and include metadata for debugging.
         return sendJson(res, 200, {
           imageUrl: url,
-          debug: { transport: 'mock', provider, model, promptPreview: prompt.slice(0, 120) },
+          debug: { transport: 'mock', provider, model, promptPreview },
         });
       });
 
-      server.middlewares.use('/api/agent/scaffold', async (req, res, next) => {
+    middlewares.use('/api/agent/scaffold', async (req, res, next) => {
         if (req.method !== 'POST') return next();
         const body = await readJsonBody(req);
 
@@ -193,17 +538,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	          };
 	        };
 
-	        const scaffoldPrompt =
-	          `You are scaffolding a video project. Output a JSON object with keys: ` +
-	          `"title","logline","locations","characters","sequences".\n` +
-	          `- locations: array of {name,description,visualStyle}\n` +
-	          `- characters: array of {name,description,looks:[{name,description}]}\n` +
-	          `- sequences: array of {title,context,shots:[{description,timeOfDay,duration,camera,lighting,audio,locationName,castNames[]}]}\n` +
-	          `Rules: duration is seconds (integer 2-8). 3-6 sequences, each 3-6 shots.\n` +
-	          `Intent: ${intent}\n` +
-	          `AspectRatio: ${aspectRatio}\n`;
+	        const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
 
-	        const buildFromSpec = (spec: any, source: string, usedModel: string) => {
+	        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string) => {
 	          // Minimal mapping into the app's Story schema. IDs generated server-side for stability.
 	          const projectId = mkId('proj');
 	          const locations = Array.isArray(spec?.locations) ? spec.locations : [];
@@ -331,57 +668,75 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              ],
 	              actions: [{ type: 'SCAFFOLD_PROJECT' }],
 	            },
-	            debug: { transport: 'http', provider, model: usedModel, source },
+	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source },
 	          };
 	        };
 
-        try {
-	          if (provider === 'gemini' && env.GEMINI_API_KEY) {
-	            const chosenModel = plannerModel || model;
-	            const spec = await callGeminiJson({
-	              apiKey: env.GEMINI_API_KEY,
-	              model: chosenModel,
-	              temperature: plannerModel ? plannerTemperature : temperature,
-	              maxOutputTokens: plannerModel ? plannerMaxOutputTokens : maxOutputTokens,
-	              prompt: scaffoldPrompt,
-	            });
-	            return sendJson(res, 200, buildFromSpec(spec, 'Gemini', chosenModel));
-	          }
+        const chosenModel = (plannerModel || model).trim() || model;
+        const chosenTemperature = plannerModel ? plannerTemperature : temperature;
+        const chosenMaxOutputTokens = plannerModel ? plannerMaxOutputTokens : maxOutputTokens;
 
-	          if (provider === 'openai' && env.OPENAI_API_KEY) {
-	            const spec = await callOpenAICompatibleJson({
-	              baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-	              apiKey: env.OPENAI_API_KEY,
-	              model,
-	              temperature,
-	              prompt: scaffoldPrompt,
-	            });
-	            return sendJson(res, 200, buildFromSpec(spec, 'OpenAI', model));
-	          }
+        const attemptedProviders: string[] = [];
+        let lastError: any = null;
+        for (const p of getProviderCandidates(provider, env)) {
+          attemptedProviders.push(p);
+          try {
+            if (p === 'gemini') {
+              const spec = await callGeminiJson({
+                apiKey: env.GEMINI_API_KEY,
+                model: chosenModel,
+                temperature: chosenTemperature,
+                maxOutputTokens: chosenMaxOutputTokens ?? 4096,
+                prompt: scaffoldPrompt,
+              });
+              return sendJson(res, 200, buildFromSpec(spec, 'Gemini', p, chosenModel));
+            }
 
-	          if (provider === 'deepseek' && env.DEEPSEEK_API_KEY) {
-	            const spec = await callOpenAICompatibleJson({
-	              baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-	              apiKey: env.DEEPSEEK_API_KEY,
-	              model,
-	              temperature,
-	              prompt: scaffoldPrompt,
-	            });
-	            return sendJson(res, 200, buildFromSpec(spec, 'DeepSeek', model));
-	          }
-	        } catch (e: any) {
-	          return sendJson(res, 200, { ...mock(), debug: { transport: 'mock', provider, model, error: e?.message || String(e) } });
-	        }
+            if (p === 'openai') {
+              const spec = await callOpenAICompatibleJson({
+                baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+                apiKey: env.OPENAI_API_KEY,
+                model: chosenModel,
+                temperature: chosenTemperature,
+                prompt: scaffoldPrompt,
+              });
+              return sendJson(res, 200, buildFromSpec(spec, 'OpenAI', p, chosenModel));
+            }
 
-        return sendJson(res, 200, mock());
+            if (p === 'deepseek') {
+              const spec = await callOpenAICompatibleJson({
+                baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+                apiKey: env.DEEPSEEK_API_KEY,
+                model: chosenModel,
+                temperature: chosenTemperature,
+                prompt: scaffoldPrompt,
+              });
+              return sendJson(res, 200, buildFromSpec(spec, 'DeepSeek', p, chosenModel));
+            }
+          } catch (e: any) {
+            lastError = e;
+          }
+        }
+
+        return sendJson(res, 200, {
+          ...mock(),
+          debug: {
+            transport: 'mock',
+            provider,
+            model,
+            attemptedProviders,
+            error: lastError?.message || String(lastError || 'No provider keys configured'),
+          },
+        });
       });
 
-      server.middlewares.use('/api/agent/direct', async (req, res, next) => {
+    middlewares.use('/api/agent/direct', async (req, res, next) => {
         if (req.method !== 'POST') return next();
         const body = await readJsonBody(req);
 
         const message = String(body?.message || '').trim();
         const selection = body?.selection || {};
+        const story = body?.story || null;
         const settings = body?.settings || {};
         const provider = String(settings?.provider || 'gemini');
         const model = String(settings?.model || 'gemini-2.5-flash');
@@ -396,6 +751,44 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	          const lower = message.toLowerCase();
 	          const actions: any[] = [];
 	          const notes: string[] = [];
+
+            const wantsGenerate = ['generate', 'render', 'asset', 'assets', 'image', 'images', '出图', '生成', '渲染', '资产', '缩略图'].some((k) =>
+              lower.includes(k)
+            );
+            if (wantsGenerate) {
+              if (selection?.type === 'shot') {
+                const shotId = String(selection?.id || '');
+                const sequenceId = String(selection?.parentId || '');
+                if (shotId && sequenceId) {
+                  actions.push({ type: 'GENERATE_SHOT_IMAGE', payload: { shotId, sequenceId } });
+                  notes.push('generate shot image');
+                }
+              } else if (selection?.type === 'location') {
+                const locationId = String(selection?.id || '');
+                if (locationId) {
+                  actions.push({ type: 'GENERATE_LOCATION_PREVIEW', payload: { locationId } });
+                  notes.push('generate location preview');
+                }
+              } else if (selection?.type === 'character') {
+                const characterId = String(selection?.id || '');
+                if (characterId) {
+                  actions.push({ type: 'GENERATE_CHARACTER_AVATAR', payload: { characterId } });
+                  notes.push('generate character avatar');
+                }
+              } else {
+                const scope = ['shot', 'shots', '镜头', '分镜'].some((k) => lower.includes(k))
+                  ? 'shots'
+                  : ['location', 'locations', '环境', '置景'].some((k) => lower.includes(k))
+                    ? 'locations'
+                    : ['character', 'characters', '角色', '人物'].some((k) => lower.includes(k))
+                      ? 'characters'
+                      : ['look', 'looks', '造型'].some((k) => lower.includes(k))
+                        ? 'looks'
+                        : 'all';
+                actions.push({ type: 'GENERATE_PROJECT_ASSETS', payload: { scope, concurrency: 2 } });
+                notes.push(`generate project assets (${scope})`);
+              }
+            }
 
 	          if (selection?.type === 'shot') {
 	            const shotId = String(selection?.id || '');
@@ -456,17 +849,21 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
 	        // For now, we keep direct as a thin wrapper; the frontend already has a rule-based fallback.
 	        // When keys are configured, Gemini can propose UPDATE_ELEMENT actions as JSON.
-	        try {
-	          if (provider === 'gemini' && env.GEMINI_API_KEY) {
+          const attemptedProviders: string[] = [];
+          let lastError: any = null;
+          for (const p of getProviderCandidates(provider, env)) {
+            attemptedProviders.push(p);
+            try {
+	          if (p === 'gemini' && env.GEMINI_API_KEY) {
             const output = await callGeminiJson({
               apiKey: env.GEMINI_API_KEY,
               model,
               temperature,
-              prompt:
-                `Given a user directive and current selection, propose structured actions.\\n` +
-                `Return JSON: { "reply": string, "actions": [ { "type": "UPDATE_ELEMENT", "payload": { "sequenceId": string, "shotId": string, "elementType": "CAMERA"|"LIGHTING"|"AUDIO"|"SCRIPT", "prompt": string } } ] }\\n` +
-                `Selection: ${JSON.stringify(selection)}\\n` +
-                `Directive: ${message}\\n`,
+              prompt: buildDirectorActionsPrompt({
+                selectionJson: JSON.stringify(selection),
+                storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
+                directive: message,
+              }),
             });
 
             const actions = Array.isArray(output?.actions) ? output.actions : [];
@@ -482,20 +879,21 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                actions,
 	              },
 	              actions,
-	              debug: { transport: 'http', provider, model },
+	              debug: { transport: 'http', provider: p, model },
 	            });
 	          }
 
-	          if (provider === 'openai' && env.OPENAI_API_KEY) {
+	          if (p === 'openai' && env.OPENAI_API_KEY) {
 	            const output = await callOpenAICompatibleJson({
 	              baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
 	              apiKey: env.OPENAI_API_KEY,
 	              model,
 	              temperature,
-	              prompt:
-	                `Return JSON: { "reply": string, "actions": [ { "type": "UPDATE_ELEMENT", "payload": { "sequenceId": string, "shotId": string, "elementType": "CAMERA"|"LIGHTING"|"AUDIO"|"SCRIPT", "prompt": string } } ] }.\n` +
-	                `Selection: ${JSON.stringify(selection)}\n` +
-	                `Directive: ${message}\n`,
+	              prompt: buildDirectorActionsPrompt({
+	                selectionJson: JSON.stringify(selection),
+	                storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
+	                directive: message,
+	              }),
 	            });
 	            const actions = Array.isArray(output?.actions) ? output.actions : [];
 	            return sendJson(res, 200, {
@@ -510,20 +908,21 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                actions,
 	              },
 	              actions,
-	              debug: { transport: 'http', provider, model },
+	              debug: { transport: 'http', provider: p, model },
 	            });
 	          }
 
-	          if (provider === 'deepseek' && env.DEEPSEEK_API_KEY) {
+	          if (p === 'deepseek' && env.DEEPSEEK_API_KEY) {
 	            const output = await callOpenAICompatibleJson({
 	              baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
 	              apiKey: env.DEEPSEEK_API_KEY,
 	              model,
 	              temperature,
-	              prompt:
-	                `Return JSON: { "reply": string, "actions": [ { "type": "UPDATE_ELEMENT", "payload": { "sequenceId": string, "shotId": string, "elementType": "CAMERA"|"LIGHTING"|"AUDIO"|"SCRIPT", "prompt": string } } ] }.\n` +
-	                `Selection: ${JSON.stringify(selection)}\n` +
-	                `Directive: ${message}\n`,
+	              prompt: buildDirectorActionsPrompt({
+	                selectionJson: JSON.stringify(selection),
+	                storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
+	                directive: message,
+	              }),
 	            });
 	            const actions = Array.isArray(output?.actions) ? output.actions : [];
 	            return sendJson(res, 200, {
@@ -538,15 +937,35 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                actions,
 	              },
 	              actions,
-	              debug: { transport: 'http', provider, model },
+	              debug: { transport: 'http', provider: p, model },
 	            });
 	          }
-	        } catch (e: any) {
-	          return sendJson(res, 200, { ...rule(), debug: { transport: 'rule', provider, model, error: e?.message || String(e) } });
-	        }
+            } catch (e: any) {
+              lastError = e;
+            }
+          }
 
-        return sendJson(res, 200, rule());
+          const fallback = rule();
+          return sendJson(res, 200, {
+            ...fallback,
+            debug: {
+              transport: 'rule',
+              provider,
+              model,
+              attemptedProviders,
+              error: lastError?.message || String(lastError || 'No provider keys configured'),
+            },
+          });
       });
+  };
+
+  return {
+    name: 'vision-studio-agent-api',
+    configureServer(server) {
+      applyRoutes(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      applyRoutes(server.middlewares);
     },
   };
 };

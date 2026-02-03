@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:api": "node scripts/check-api.mjs --base http://127.0.0.1:3000",
+    "check:api:py": "python3 scripts/check_api.py --base http://127.0.0.1:3000"
   },
   "dependencies": {
     "lucide-react": "^0.561.0",
@@ -16,6 +18,9 @@
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

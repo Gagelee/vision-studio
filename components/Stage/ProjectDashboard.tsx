@@ -2,7 +2,6 @@
 import React from 'react';
 import { Story, SelectionState } from '../../types';
 import { 
-  Film, 
   Play, 
   ChevronRight,
   TrendingUp,
@@ -18,10 +17,9 @@ interface ProjectDashboardProps {
   story: Story;
   onSelect: (sel: SelectionState) => void;
   onPlayCinema: () => void;
-  onStartProduction?: () => void;
 }
 
-export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ story, onSelect, onPlayCinema, onStartProduction }) => {
+export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ story, onSelect, onPlayCinema }) => {
   const totalShots = story.sequences.reduce((acc, seq) => acc + seq.shots.length, 0);
   const totalDuration = story.sequences.reduce((acc, seq) => acc + seq.shots.reduce((sAcc, shot) => sAcc + shot.duration, 0), 0);
   const firstSeqId = story.sequences[0]?.id;
@@ -73,15 +71,6 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ story, onSel
                     <Play className="w-6 h-6 fill-current" />
                     {totalShots === 0 ? 'No Shots' : 'Screen Master'}
                 </button>
-                {onStartProduction && (
-                  <button 
-                      onClick={onStartProduction}
-                      className="flex items-center gap-3 px-8 py-5 bg-black/10 dark:bg-white/5 hover:bg-black/20 dark:hover:bg-white/10 text-zinc-900 dark:text-white border border-zinc-200 dark:border-white/10 rounded-2xl text-lg font-bold transition-all backdrop-blur-xl"
-                  >
-                      <Film className="w-5 h-5" />
-                      Start Production
-                  </button>
-                )}
                 <button 
                     disabled={!firstSeqId}
                     onClick={() => firstSeqId && onSelect({ type: 'sequence', id: firstSeqId })}

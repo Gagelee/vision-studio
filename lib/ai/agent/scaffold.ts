@@ -22,6 +22,11 @@ export interface ScaffoldProjectResponse {
   };
 }
 
+const joinUrl = (baseUrl: string | undefined, pathname: string) => {
+  const base = String(baseUrl || '').trim().replace(/\/$/, '');
+  return base ? `${base}${pathname}` : pathname;
+};
+
 const isUsefulScaffold = (story: Story | undefined | null) => {
   if (!story) return false;
   const seqs = Array.isArray(story.sequences) ? story.sequences : [];
@@ -104,7 +109,7 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
     return createMockProject(req.intent, req.aspectRatio, req.keyVisualUrl);
   }
 
-  const endpoint = (req.settings.baseUrl || '') + '/api/agent/scaffold';
+  const endpoint = joinUrl(req.settings.baseUrl, '/api/agent/scaffold');
 
   try {
     const res = await postJson<ScaffoldProjectResponse>(

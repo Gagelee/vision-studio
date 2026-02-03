@@ -102,6 +102,10 @@ export interface Shot {
   elements: { [key in ElementType]: DirectorElement };
   aiState?: 'idle' | 'thinking' | 'rendering';
   aiPrompt?: string;
+  production?: {
+    status: 'idle' | 'queued' | 'running' | 'done' | 'error';
+    lastStartedAt?: number;
+  };
 }
 
 export interface Sequence {
@@ -156,7 +160,12 @@ export type AgentActionType =
   | 'MOVE_SHOT'
   | 'UPDATE_SHOT'
   | 'UPDATE_ELEMENT'
-  | 'SET_CAST';
+  | 'SET_CAST'
+  | 'GENERATE_PROJECT_ASSETS'
+  | 'GENERATE_SHOT_IMAGE'
+  | 'GENERATE_LOCATION_PREVIEW'
+  | 'GENERATE_CHARACTER_AVATAR'
+  | 'GENERATE_CHARACTER_LOOK';
 
 export interface AgentAction {
   type: AgentActionType;

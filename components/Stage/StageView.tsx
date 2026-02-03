@@ -14,7 +14,7 @@ interface StageViewProps {
   onUpdateShot: (shot: Shot) => void;
   onDeleteShot: (id: string) => void;
   onMoveShot: (id: string, direction: 'left' | 'right') => void;
-  onAddShot: () => void;
+  onAddShot: (opts?: { afterShotId?: string; locationId?: string; timeOfDay?: string }) => void;
   onBackToSequence: () => void;
   onEditLocation: () => void;
   onPlay?: () => void;
@@ -100,7 +100,7 @@ export const StageView: React.FC<StageViewProps> = ({
       {/* --- BOARD CONTENT --- */}
       <div className="flex-1 overflow-y-auto custom-scrollbar p-8 pb-48 w-full max-w-[1800px] mx-auto z-0">
           {groupedScenes.length === 0 ? (
-            <div onClick={onAddShot} className="mt-20 p-20 border-2 border-dashed border-zinc-300 dark:border-zinc-800 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-white dark:hover:bg-zinc-900/30 hover:border-zinc-400 dark:hover:border-zinc-700 transition-all text-zinc-400 dark:text-zinc-600 hover:text-indigo-500 dark:hover:text-indigo-400 group">
+            <div onClick={() => onAddShot()} className="mt-20 p-20 border-2 border-dashed border-zinc-300 dark:border-zinc-800 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-white dark:hover:bg-zinc-900/30 hover:border-zinc-400 dark:hover:border-zinc-700 transition-all text-zinc-400 dark:text-zinc-600 hover:text-indigo-500 dark:hover:text-indigo-400 group">
                 <div className="w-16 h-16 rounded-full bg-zinc-100 dark:bg-zinc-900 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-xl">
                     <Plus className="w-8 h-8" />
                 </div>
@@ -116,7 +116,9 @@ export const StageView: React.FC<StageViewProps> = ({
                       <div className="flex items-center gap-4 mb-6">
                           <span className="text-2xl font-black text-zinc-300 dark:text-white/20 select-none">0{i+1}</span>
                           <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-white/5 px-4 py-2 rounded-lg backdrop-blur-sm shadow-sm">
-                              <span className="text-zinc-800 dark:text-white font-bold text-lg tracking-tight mr-3">{allLocations.find(l=>l.id===group.locationId)?.name}</span>
+                              <span className="text-zinc-800 dark:text-white font-bold text-lg tracking-tight mr-3">
+                                {allLocations.find((l) => l.id === group.locationId)?.name || 'Unknown Location'}
+                              </span>
                               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-100 dark:bg-black/40 border border-zinc-200 dark:border-white/10 text-[10px] text-zinc-500 dark:text-zinc-400 font-mono uppercase">
                                  <Clock className="w-3 h-3" />
                                  {group.timeOfDay}
@@ -159,7 +161,13 @@ export const StageView: React.FC<StageViewProps> = ({
                           
                           {/* "Add Shot" Card inside the flow */}
                           <div 
-                              onClick={onAddShot} 
+                              onClick={() =>
+                                onAddShot({
+                                  afterShotId: group.shots[group.shots.length - 1]?.id,
+                                  locationId: group.locationId,
+                                  timeOfDay: group.timeOfDay,
+                                })
+                              }
                               className="aspect-video border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl flex flex-col gap-3 items-center justify-center text-zinc-400 dark:text-zinc-600 hover:text-indigo-600 dark:hover:text-white hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/5 cursor-pointer transition-all group/add"
                           >
                               <div className="w-10 h-10 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 flex items-center justify-center group-hover/add:scale-110 group-hover/add:border-indigo-500 transition-all">
@@ -195,7 +203,7 @@ export const StageView: React.FC<StageViewProps> = ({
                       </div>
                   ))}
                   <button 
-                    onClick={onAddShot}
+                    onClick={() => onAddShot()}
                     className="w-12 aspect-video rounded-lg border-2 border-dashed border-zinc-200 dark:border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-[#ee4d2d] hover:border-[#ee4d2d] transition-all shrink-0 bg-white dark:bg-zinc-900"
                   >
                       <Plus className="w-4 h-4" />

@@ -21,6 +21,11 @@ export interface DirectorCommandResponse {
   };
 }
 
+const joinUrl = (baseUrl: string | undefined, pathname: string) => {
+  const base = String(baseUrl || '').trim().replace(/\/$/, '');
+  return base ? `${base}${pathname}` : pathname;
+};
+
 const postJson = async <T>(url: string, body: unknown, timeoutMs: number): Promise<T> => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -52,6 +57,42 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
   const msg = req.message.toLowerCase();
   const actions: AgentAction[] = [];
   const notes: string[] = [];
+
+  const wantsGenerate = includesAny(msg, ['generate', 'render', 'asset', 'assets', 'image', 'images', '出图', '生成', '渲染', '资产', '缩略图']);
+  if (wantsGenerate) {
+    if (req.selection.type === 'shot') {
+      const shotId = req.selection.id;
+      const sequenceId = req.selection.parentId || '';
+      if (shotId && sequenceId) {
+        actions.push({ type: 'GENERATE_SHOT_IMAGE', payload: { shotId, sequenceId } });
+        notes.push('generate shot image');
+      }
+    } else if (req.selection.type === 'location') {
+      const locationId = req.selection.id;
+      if (locationId) {
+        actions.push({ type: 'GENERATE_LOCATION_PREVIEW', payload: { locationId } });
+        notes.push('generate location preview');
+      }
+    } else if (req.selection.type === 'character') {
+      const characterId = req.selection.id;
+      if (characterId) {
+        actions.push({ type: 'GENERATE_CHARACTER_AVATAR', payload: { characterId } });
+        notes.push('generate character avatar');
+      }
+    } else {
+      const scope = includesAny(msg, ['shot', 'shots', '镜头', '分镜'])
+        ? 'shots'
+        : includesAny(msg, ['location', 'locations', '环境', '置景'])
+          ? 'locations'
+          : includesAny(msg, ['character', 'characters', '角色', '人物'])
+            ? 'characters'
+            : includesAny(msg, ['look', 'looks', '造型'])
+              ? 'looks'
+              : 'all';
+      actions.push({ type: 'GENERATE_PROJECT_ASSETS', payload: { scope, concurrency: 2 } });
+      notes.push(`generate project assets (${scope})`);
+    }
+  }
 
   if (req.selection.type === 'shot') {
     const shotId = req.selection.id;
@@ -102,7 +143,7 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
   };
 
   const reply = actions.length
-    ? `I mapped your directive into ${actions.length} structured change(s): ${notes.join(', ')}.`
+    ? `I mapped your directive into ${actions.length} structured action(s): ${notes.join(', ')}.`
     : `I couldn't map that into a structured change yet. Try: "warmer light", "close up", "wide establishing".`;
 
   return {
@@ -116,7 +157,7 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
 export const runDirectorCommand = async (req: DirectorCommandRequest): Promise<DirectorCommandResponse> => {
   if (req.settings.provider === 'mock') return ruleBased(req);
 
-  const endpoint = (req.settings.baseUrl || '') + '/api/agent/direct';
+  const endpoint = joinUrl(req.settings.baseUrl, '/api/agent/direct');
   try {
     const res = await postJson<DirectorCommandResponse>(
       endpoint,

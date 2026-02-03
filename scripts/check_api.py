@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""
+Quick API connectivity check for local dev/preview servers.
+
+Examples:
+  python scripts/check_api.py --base http://127.0.0.1:3000
+  python scripts/check_api.py --base http://127.0.0.1:4173 --require-http
+  python scripts/check_api.py --base http://127.0.0.1:4173 --include-image
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+def _strip_trailing_slash(url: str) -> str:
+    return url[:-1] if url.endswith("/") else url
+
+
+def _pretty(obj) -> str:
+    return json.dumps(obj, indent=2, ensure_ascii=False)
+
+
+def _request_json(method: str, url: str, body_obj, timeout_s: float):
+    data = json.dumps(body_obj).encode("utf-8") if body_obj is not None else None
+    req = urllib.request.Request(
+        url=url,
+        method=method,
+        data=data,
+        headers={"content-type": "application/json"},
+    )
+    started = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read() or b""
+            text = raw.decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            return {
+                "url": url,
+                "ms": int((time.time() - started) * 1000),
+                "status": resp.status,
+                "ok": 200 <= resp.status < 300,
+                "json": parsed,
+                "textPreview": text[:280],
+            }
+    except urllib.error.HTTPError as e:
+        raw = e.read() or b""
+        text = raw.decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        return {
+            "url": url,
+            "ms": int((time.time() - started) * 1000),
+            "status": e.code,
+            "ok": False,
+            "json": parsed,
+            "textPreview": text[:280],
+        }
+
+
+def _head(url: str, timeout_s: float):
+    req = urllib.request.Request(url=url, method="HEAD")
+    started = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return {
+                "url": url,
+                "ms": int((time.time() - started) * 1000),
+                "status": resp.status,
+                "ok": 200 <= resp.status < 300,
+                "contentType": resp.headers.get("content-type", ""),
+                "contentLength": resp.headers.get("content-length", ""),
+            }
+    except urllib.error.HTTPError as e:
+        return {
+            "url": url,
+            "ms": int((time.time() - started) * 1000),
+            "status": e.code,
+            "ok": False,
+            "contentType": e.headers.get("content-type", "") if e.headers else "",
+            "contentLength": e.headers.get("content-length", "") if e.headers else "",
+        }
+
+
+def _assert(cond: bool, msg: str):
+    if not cond:
+        raise RuntimeError(msg)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default="http://127.0.0.1:3000", help="Base URL, e.g. http://127.0.0.1:3000")
+    ap.add_argument("--require-http", action="store_true", help='Fail if debug.transport != "http"')
+    ap.add_argument("--include-image", action="store_true", help="Also test /api/asset/image/generate and fetch generated asset")
+    ap.add_argument("--timeout-s", type=float, default=15.0, help="Timeout in seconds (default 15)")
+    args = ap.parse_args(argv)
+
+    base = _strip_trailing_slash(args.base)
+    results = []
+
+    # Scaffold
+    scaffold = _request_json(
+        "POST",
+        f"{base}/api/agent/scaffold",
+        {
+            "intent": "API connectivity test",
+            "aspectRatio": "16:9",
+            "settings": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "temperature": 0.4, "maxOutputTokens": 1024},
+        },
+        args.timeout_s,
+    )
+    results.append({"name": "scaffold", **{k: scaffold[k] for k in ["url", "ms", "status", "ok", "textPreview"]}, "debug": (scaffold.get("json") or {}).get("debug")})
+    _assert(scaffold["ok"], f"scaffold HTTP {scaffold['status']}")
+    _assert(isinstance(scaffold.get("json"), dict) and scaffold["json"].get("ok") is True, f"scaffold: expected {{ok:true}} (got {scaffold['textPreview']})")
+    _assert("story" in scaffold["json"] and "plan" in scaffold["json"], "scaffold: missing story/plan")
+    if args.require_http:
+        _assert(scaffold["json"].get("debug", {}).get("transport") == "http", f"scaffold: transport={scaffold['json'].get('debug', {}).get('transport')}")
+
+    story = scaffold["json"]["story"]
+
+    # Director
+    direct = _request_json(
+        "POST",
+        f"{base}/api/agent/direct",
+        {
+            "message": "make it warmer",
+            "selection": {"type": "shot", "id": "shot-1", "parentId": "seq-1"},
+            "story": story,
+            "settings": {"provider": "gemini", "model": "gemini-2.5-flash", "temperature": 0.3, "maxOutputTokens": 1024},
+        },
+        args.timeout_s,
+    )
+    results.append({"name": "direct", **{k: direct[k] for k in ["url", "ms", "status", "ok", "textPreview"]}, "debug": (direct.get("json") or {}).get("debug")})
+    _assert(direct["ok"], f"direct HTTP {direct['status']}")
+    _assert(isinstance(direct.get("json"), dict) and isinstance(direct["json"].get("reply"), str), f"direct: missing reply (got {direct['textPreview']})")
+    _assert(isinstance(direct["json"].get("actions"), list), "direct: missing actions[]")
+    if args.require_http:
+        _assert(direct["json"].get("debug", {}).get("transport") == "http", f"direct: transport={direct['json'].get('debug', {}).get('transport')}")
+
+    # Image (optional)
+    if args.include_image:
+        img = _request_json(
+            "POST",
+            f"{base}/api/asset/image/generate",
+            {
+                "prompt": "Cinematic environment concept art, sunrise. No text. No watermark.",
+                "aspectRatio": "16:9",
+                "settings": {"provider": "gemini", "model": "nano-banana-pro", "temperature": 0.4},
+            },
+            args.timeout_s,
+        )
+        results.append({"name": "image.generate", **{k: img[k] for k in ["url", "ms", "status", "ok", "textPreview"]}, "debug": (img.get("json") or {}).get("debug")})
+        _assert(img["ok"], f"image.generate HTTP {img['status']}")
+        _assert(isinstance(img.get("json"), dict) and isinstance(img["json"].get("imageUrl"), str), f"image.generate: missing imageUrl (got {img['textPreview']})")
+        image_url = img["json"]["imageUrl"]
+        if image_url.startswith("/__generated__/"):
+            fetched = _head(f"{base}{image_url}", args.timeout_s)
+            results.append({"name": "image.fetch", **fetched})
+            _assert(fetched["ok"], f"image.fetch HTTP {fetched['status']}")
+            _assert(str(fetched.get("contentType", "")).startswith("image/"), f"image.fetch: content-type={fetched.get('contentType')}")
+
+    print(_pretty({"base": base, "requireHttp": args.require_http, "includeImage": args.include_image, "results": results}))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except Exception as e:
+        sys.stderr.write(f"{e}\n")
+        raise SystemExit(1)
+

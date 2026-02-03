@@ -147,6 +147,7 @@ interface InspectorPanelProps {
   availableLocations: Location[];
   availableCharacters: Character[];
   keyVisualUrl?: string; 
+  masterStyle?: string;
   type: 'story' | 'location' | 'character' | 'sequence' | 'shot';
   onCharacterPromptChange: (shotId: string, seqId: string, charId: string, prompt: string) => void;
   onCastingUpdate: (shotId: string, seqId: string, chars: Character[]) => void;
@@ -159,8 +160,10 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   selection,
   selectedItem,
   contextLocation,
+  availableLocations,
   availableCharacters,
   keyVisualUrl,
+  masterStyle,
   type,
   onCharacterPromptChange,
   onCastingUpdate,
@@ -223,7 +226,8 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                         </div>
                         <div className="flex-1 flex flex-col justify-between">
                             <p className="text-[11px] text-zinc-600 dark:text-zinc-400 line-clamp-3 leading-relaxed font-medium bg-white dark:bg-black/20 p-2 rounded border border-zinc-100 dark:border-zinc-800/50">
-                                {contextLocation?.visualStyle || "Master Style: High contrast, cinematic noir, teal and magenta highlights. Volumetric fog presence. Anamorphic lens distortion."}
+                                {masterStyle ||
+                                  "Master Style: Use the project key visual as the primary constitution. Keep consistency across shots (lighting, palette, lens language)."}
                             </p>
                             <button 
                                 onClick={handleSyncKV}
@@ -251,9 +255,42 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                 <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100 line-clamp-1 leading-tight">
                     {shot.description}
                 </h2>
-                <div className="mt-2 flex items-center gap-2 text-xs text-zinc-500">
-                     <MapPin className="w-3 h-3" />
-                     <span className="truncate">{contextLocation?.name || 'Unknown Location'}</span>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                    <label className="flex items-center gap-2 text-[11px] text-zinc-500">
+                        <MapPin className="w-3.5 h-3.5" />
+                        <select
+                            value={shot.locationId}
+                            onChange={(e) => onShotUpdate({ ...shot, locationId: e.target.value })}
+                            className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-zinc-700 dark:text-zinc-200 text-[11px] font-medium"
+                        >
+                            {shot.locationId && !(availableLocations || []).some((l) => l.id === shot.locationId) && (
+                                <option value={shot.locationId}>(Missing environment)</option>
+                            )}
+                            {(availableLocations || []).map((l) => (
+                                <option key={l.id} value={l.id}>
+                                    {l.name}
+                                </option>
+                            ))}
+                            {!shot.locationId && <option value="">(No environment)</option>}
+                        </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] text-zinc-500">
+                        <Clock className="w-3.5 h-3.5" />
+                        <select
+                            value={shot.timeOfDay}
+                            onChange={(e) => onShotUpdate({ ...shot, timeOfDay: e.target.value })}
+                            className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-zinc-700 dark:text-zinc-200 text-[11px] font-medium"
+                        >
+                            {shot.timeOfDay && !['Day', 'Night', 'Dawn', 'Dusk', 'Interior', 'Exterior'].includes(shot.timeOfDay) && (
+                                <option value={shot.timeOfDay}>{shot.timeOfDay}</option>
+                            )}
+                            {['Day', 'Night', 'Dawn', 'Dusk', 'Interior', 'Exterior'].map((t) => (
+                                <option key={t} value={t}>
+                                    {t}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
                 </div>
             </div>
 

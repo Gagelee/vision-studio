@@ -1,5 +1,11 @@
-import { ModelRuntimeSettings, Shot } from '../../types';
+import { ModelRuntimeSettings, Shot } from '../../../types';
 import { addDebugEvent } from '../../debug/eventLog';
+import { buildShotImagePrompt } from '../prompts';
+
+export interface ImageReference {
+  url: string;
+  label?: string;
+}
 
 export interface GenerateShotImageRequest {
   shot: Shot;
@@ -12,26 +18,42 @@ export interface GenerateShotImageResponse {
   debug?: any;
 }
 
+const joinUrl = (baseUrl: string | undefined, pathname: string) => {
+  const base = String(baseUrl || '').trim().replace(/\/$/, '');
+  return base ? `${base}${pathname}` : pathname;
+};
+
 const fallbackUrl = () =>
   `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=${Math.floor(Math.random() * 100000)}`;
 
-export const generateShotImage = async (req: GenerateShotImageRequest): Promise<GenerateShotImageResponse> => {
+export const generateImageFromPrompt = async (req: {
+  prompt: string;
+  settings: ModelRuntimeSettings;
+  aspectRatio?: string;
+  references?: ImageReference[];
+}): Promise<GenerateShotImageResponse> => {
   try {
+    const endpoint = joinUrl(req.settings.baseUrl, '/api/asset/image/generate');
     addDebugEvent({
       level: 'info',
       scope: 'asset.image',
       message: 'POST /api/asset/image/generate',
       data: {
+        endpoint,
         settings: { provider: req.settings.provider, model: req.settings.model, temperature: req.settings.temperature },
-        promptPreview: buildPrompt(req.shot).slice(0, 120),
+        promptPreview: String(req.prompt || '').slice(0, 120),
+        references: Array.isArray(req.references) ? req.references.length : 0,
       },
     });
-    const res = await fetch('/api/asset/image/generate', {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60_000);
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        prompt: buildPrompt(req.shot),
+        prompt: String(req.prompt || ''),
         aspectRatio: req.aspectRatio,
+        references: Array.isArray(req.references) ? req.references : [],
         settings: {
           provider: req.settings.provider,
           model: req.settings.model,
@@ -39,7 +61,8 @@ export const generateShotImage = async (req: GenerateShotImageRequest): Promise<
           maxOutputTokens: req.settings.maxOutputTokens,
         },
       }),
-    });
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as any;
     addDebugEvent({ level: 'info', scope: 'asset.image', message: 'Response', data });
@@ -51,16 +74,10 @@ export const generateShotImage = async (req: GenerateShotImageRequest): Promise<
   }
 };
 
-const buildPrompt = (shot: Shot) => {
-  const parts = [
-    shot.description,
-    `Time: ${shot.timeOfDay}`,
-    `Camera: ${shot.elements?.CAMERA?.prompt || ''}`,
-    `Lighting: ${shot.elements?.LIGHTING?.prompt || ''}`,
-    `Audio: ${shot.elements?.AUDIO?.prompt || ''}`,
-  ]
-    .map((s) => String(s || '').trim())
-    .filter(Boolean);
-
-  return parts.join('\n');
+export const generateShotImage = async (req: GenerateShotImageRequest): Promise<GenerateShotImageResponse> => {
+  return generateImageFromPrompt({
+    prompt: buildShotImagePrompt(req.shot),
+    settings: req.settings,
+    aspectRatio: req.aspectRatio,
+  });
 };

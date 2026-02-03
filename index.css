@@ -1,4 +1,8 @@
-/* Minimal global helpers used across the UI (kept framework-agnostic). */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Minimal global helpers used across the UI. */
 
 .custom-scrollbar {
   scrollbar-width: thin;
@@ -11,3 +15,28 @@
   display: none;
 }
 
+@layer base {
+  body {
+    font-family: 'Inter', sans-serif;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #71717a;
+    border-radius: 3px;
+  }
+
+  .dark ::-webkit-scrollbar-track {
+    background: #18181b;
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: #3f3f46;
+  }
+}

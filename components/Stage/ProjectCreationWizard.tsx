@@ -1,8 +1,9 @@
 
-import React, { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
 import { scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
+import { applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
 
 interface ProjectCreationWizardProps {
   aiSettings: AiSettings;
@@ -16,6 +17,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
   const [isProcessing, setIsProcessing] = useState(false);
   const [plan, setPlan] = useState<AgentPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [phase, setPhase] = useState<'scaffold' | 'assets'>('scaffold');
+  const [assetTotal, setAssetTotal] = useState(0);
+  const [assetDone, setAssetDone] = useState(0);
+  const [assetErrors, setAssetErrors] = useState(0);
+  const [assetCurrent, setAssetCurrent] = useState<string>('');
+  const storyRef = useRef<Story | null>(null);
 
   const formats: { label: string; ratio: AspectRatio; icon: any }[] = [
     { label: 'Cinema', ratio: '16:9', icon: Tv },
@@ -24,22 +31,85 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     { label: 'Portrait', ratio: '4:5', icon: Clapperboard },
   ];
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const progressPct = useMemo(() => {
+    if (!isProcessing) return 0;
+    if (phase === 'scaffold') return 30;
+    const denom = Math.max(1, assetTotal);
+    return 30 + Math.round((assetDone / denom) * 70);
+  }, [assetDone, assetTotal, isProcessing, phase]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!intent.trim()) return;
     setIsProcessing(true);
     setPlan(null);
     setError(null);
+    setPhase('scaffold');
+    setAssetTotal(0);
+    setAssetDone(0);
+    setAssetErrors(0);
+    setAssetCurrent('');
+    storyRef.current = null;
 
-    scaffoldProjectWithSettings({ intent, aspectRatio: ratio, aiSettings })
-      .then((res) => {
-        setPlan(res.plan);
-        onComplete(res.story, res.plan, res.debug);
-      })
-      .catch((e) => {
-        setError(e instanceof Error ? e.message : String(e));
-        setIsProcessing(false);
+    try {
+      const res = await scaffoldProjectWithSettings({ intent, aspectRatio: ratio, aiSettings });
+      storyRef.current = res.story;
+
+      setPlan(res.plan);
+
+      // Auto-generate assets during creation so the progress UI is honest and users understand the wait.
+      let total = 0;
+      let done = 0;
+      let errors = 0;
+
+      if (aiSettings.image.provider !== 'mock') {
+        setPhase('assets');
+        const jobs = buildAssetJobs(res.story, 'all');
+        total = jobs.length;
+        setAssetTotal(jobs.length);
+
+        if (jobs.length > 0) {
+          await executeAssetJobs({
+            jobs,
+            settings: aiSettings.image,
+            aspectRatio: res.story.aspectRatio,
+            concurrency: 2,
+            getStoryForRefs: () => storyRef.current,
+            onEvent: (ev) => {
+              const currentStory = storyRef.current || res.story;
+              if (ev.type === 'start') {
+                storyRef.current = applyAssetStart(currentStory, ev.job);
+                setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                return;
+              }
+              if (ev.type === 'success') {
+                storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl);
+                done = ev.done;
+                setAssetDone(ev.done);
+                setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                return;
+              }
+              // error
+              storyRef.current = applyAssetError(currentStory, ev.job);
+              done = ev.done;
+              errors += 1;
+              setAssetDone(ev.done);
+              setAssetErrors((n) => n + 1);
+              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+            },
+          });
+        }
+      }
+
+      const finalStory = storyRef.current || res.story;
+      onComplete(finalStory, res.plan, {
+        ...res.debug,
+        assets: { total, done, errors },
       });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -65,11 +135,13 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
                         </div>
                     </div>
                     <div>
-                        <h2 className="text-4xl font-black text-white tracking-tighter mb-4">Director AI is Thinking...</h2>
-                        <p className="text-white/40 font-medium text-lg max-w-md mx-auto">
-                            Scaffolding story architecture, casting performers, and置景 (Sets) for your masterwork.
-                        </p>
-                    </div>
+	                        <h2 className="text-4xl font-black text-white tracking-tighter mb-4">Director AI is Thinking...</h2>
+	                        <p className="text-white/40 font-medium text-lg max-w-md mx-auto">
+	                            {phase === 'scaffold'
+                                ? 'Scaffolding story architecture, casting performers, and 置景 (Sets) for your masterwork.'
+                                : `Generating assets (${assetDone}/${Math.max(1, assetTotal)})…`}
+	                        </p>
+	                    </div>
                     {error && (
                         <div className="max-w-xl mx-auto p-4 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-200 text-sm flex items-start gap-3">
                             <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
@@ -107,17 +179,25 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
                             </div>
                         </div>
                     )}
-                    <div className="flex flex-col gap-2 max-w-xs mx-auto">
-                        <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                            <div className="h-full bg-[#ee4d2d] animate-[progress_4s_ease-in-out]"></div>
-                        </div>
-                        <div className="flex justify-between text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-                            <span>Analysis</span>
-                            <span>Scaffolding</span>
-                        </div>
-                    </div>
-                </div>
-            ) : (
+	                    <div className="flex flex-col gap-2 max-w-xs mx-auto">
+	                        <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+	                            <div
+                                  className="h-full bg-[#ee4d2d] transition-all duration-500"
+                                  style={{ width: `${progressPct}%` }}
+                                />
+	                        </div>
+	                        <div className="flex justify-between text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+	                            <span>Analysis</span>
+	                            <span>{phase === 'assets' ? `Assets ${assetDone}/${Math.max(1, assetTotal)}` : 'Scaffolding'}</span>
+	                        </div>
+                          {phase === 'assets' && assetCurrent && (
+                            <div className="text-[11px] text-white/30 font-mono break-words">
+                              {assetCurrent}{assetErrors ? ` (errors: ${assetErrors})` : ''}
+                            </div>
+                          )}
+	                    </div>
+	                </div>
+	            ) : (
                 <div className="space-y-16 animate-in slide-in-from-bottom-20 duration-1000">
                     <div className="space-y-4">
                         <div className="flex items-center justify-center gap-3 text-[#ee4d2d] mb-4">

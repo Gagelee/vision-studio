@@ -31,12 +31,14 @@ export const getDefaultAiSettings = (): AiSettings => ({
     ...getDefaultModelSettings(),
     model: 'gemini-2.5-flash',
     temperature: 0.4,
+    maxOutputTokens: 4096,
   },
   scaffoldWorker: {
     ...getDefaultModelSettings(),
     // Default to a fast/cheap flash model; can switch to gemini-2.5-flash if needed.
     model: 'gemini-2.5-flash-lite',
     temperature: 0.6,
+    maxOutputTokens: 4096,
   },
   direct: {
     ...getDefaultModelSettings(),
@@ -85,10 +87,17 @@ export const loadAiSettings = (): AiSettings => {
     const normalize = (s: ModelRuntimeSettings): ModelRuntimeSettings =>
       s.provider === 'gemini' ? { ...s, model: normalizeGeminiModel(s.model) } : s;
 
+    const bumpScaffoldTokens = (s: ModelRuntimeSettings): ModelRuntimeSettings => {
+      if (s.provider !== 'gemini') return s;
+      const cur = Number(s.maxOutputTokens || 0);
+      if (!cur || cur < 4096) return { ...s, maxOutputTokens: 4096 };
+      return s;
+    };
+
     return {
       ...loaded,
-      scaffoldPlanner: normalize(loaded.scaffoldPlanner),
-      scaffoldWorker: normalize(loaded.scaffoldWorker),
+      scaffoldPlanner: bumpScaffoldTokens(normalize(loaded.scaffoldPlanner)),
+      scaffoldWorker: bumpScaffoldTokens(normalize(loaded.scaffoldWorker)),
       direct: normalize(loaded.direct),
       image: normalize(loaded.image),
     };
