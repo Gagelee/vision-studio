@@ -3,7 +3,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
 import { scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
-import { applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
+import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
 
 interface ProjectCreationWizardProps {
   aiSettings: AiSettings;
@@ -22,6 +22,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
   const [assetDone, setAssetDone] = useState(0);
   const [assetErrors, setAssetErrors] = useState(0);
   const [assetCurrent, setAssetCurrent] = useState<string>('');
+  const lastScaffoldRef = useRef<Awaited<ReturnType<typeof scaffoldProjectWithSettings>> | null>(null);
   const storyRef = useRef<Story | null>(null);
 
   const formats: { label: string; ratio: AspectRatio; icon: any }[] = [
@@ -38,10 +39,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     return 30 + Math.round((assetDone / denom) * 70);
   }, [assetDone, assetTotal, isProcessing, phase]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!intent.trim()) return;
-    setIsProcessing(true);
+  const resetProgress = () => {
     setPlan(null);
     setError(null);
     setPhase('scaffold');
@@ -50,65 +48,102 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     setAssetErrors(0);
     setAssetCurrent('');
     storyRef.current = null;
+    lastScaffoldRef.current = null;
+  };
 
-    try {
-      const res = await scaffoldProjectWithSettings({ intent, aspectRatio: ratio, aiSettings });
-      storyRef.current = res.story;
+  const runAssets = async (res: Awaited<ReturnType<typeof scaffoldProjectWithSettings>>) => {
+    // Auto-generate assets during creation so the progress UI is honest and users understand the wait.
+    let total = 0;
+    let done = 0;
+    let errors = 0;
 
-      setPlan(res.plan);
+    if (aiSettings.image.provider !== 'mock') {
+      setPhase('assets');
+      const jobs = buildAssetJobs(res.story, 'all');
+      total = jobs.length;
+      setAssetTotal(jobs.length);
 
-      // Auto-generate assets during creation so the progress UI is honest and users understand the wait.
-      let total = 0;
-      let done = 0;
-      let errors = 0;
-
-      if (aiSettings.image.provider !== 'mock') {
-        setPhase('assets');
-        const jobs = buildAssetJobs(res.story, 'all');
-        total = jobs.length;
-        setAssetTotal(jobs.length);
-
-        if (jobs.length > 0) {
-          await executeAssetJobs({
-            jobs,
-            settings: aiSettings.image,
-            aspectRatio: res.story.aspectRatio,
-            concurrency: 2,
-            getStoryForRefs: () => storyRef.current,
-            onEvent: (ev) => {
-              const currentStory = storyRef.current || res.story;
-              if (ev.type === 'start') {
-                storyRef.current = applyAssetStart(currentStory, ev.job);
-                setAssetCurrent(getJobLabel(ev.job, storyRef.current));
-                return;
-              }
-              if (ev.type === 'success') {
-                storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl);
-                done = ev.done;
-                setAssetDone(ev.done);
-                setAssetCurrent(getJobLabel(ev.job, storyRef.current));
-                return;
-              }
-              // error
-              storyRef.current = applyAssetError(currentStory, ev.job);
+      if (jobs.length > 0) {
+        await executeAssetJobs({
+          jobs,
+          settings: aiSettings.image,
+          aspectRatio: res.story.aspectRatio,
+          concurrency: 2,
+          getStoryForRefs: () => storyRef.current,
+          maxAttempts: 3,
+          stopAfterMasterKvFailure: true,
+          onEvent: (ev) => {
+            const currentStory = storyRef.current || res.story;
+            if (ev.type === 'start') {
+              storyRef.current = applyAssetStart(currentStory, ev.job);
+              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+              return;
+            }
+            if (ev.type === 'success') {
+              storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl);
               done = ev.done;
-              errors += 1;
+              setAssetDone(ev.done);
+              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+              return;
+            }
+            if (ev.type === 'blocked') {
+              storyRef.current = applyAssetBlocked(currentStory, ev.job, ev.reason);
+              done = ev.done;
               setAssetDone(ev.done);
               setAssetErrors((n) => n + 1);
               setAssetCurrent(getJobLabel(ev.job, storyRef.current));
-            },
-          });
-        }
+              return;
+            }
+            // error
+            storyRef.current = applyAssetError(currentStory, ev.job, ev.error);
+            done = ev.done;
+            errors += 1;
+            setAssetDone(ev.done);
+            setAssetErrors((n) => n + 1);
+            setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+          },
+        });
       }
+    }
 
-      const finalStory = storyRef.current || res.story;
-      onComplete(finalStory, res.plan, {
-        ...res.debug,
-        assets: { total, done, errors },
-      });
+    const finalStory = storyRef.current || res.story;
+    onComplete(finalStory, res.plan, {
+      ...res.debug,
+      assets: { total, done, errors },
+    });
+  };
+
+  const runScaffold = async () => {
+    if (!intent.trim()) return;
+    setIsProcessing(true);
+    setError(null);
+    setPhase('scaffold');
+    setAssetTotal(0);
+    setAssetDone(0);
+    setAssetErrors(0);
+    setAssetCurrent('');
+    storyRef.current = null;
+
+    const res = await scaffoldProjectWithSettings({ intent, aspectRatio: ratio, aiSettings });
+    lastScaffoldRef.current = res;
+    storyRef.current = res.story;
+    setPlan(res.plan);
+
+    if (res.debug?.error && aiSettings.scaffoldWorker.provider !== 'mock') {
+      setError(res.debug.error);
+      return;
+    }
+
+    await runAssets(res);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    resetProgress();
+    try {
+      await runScaffold();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setIsProcessing(false);
     }
   };
 
@@ -146,14 +181,44 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
                         <div className="max-w-xl mx-auto p-4 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-200 text-sm flex items-start gap-3">
                             <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
                             <div className="text-left">
-                                <div className="font-bold mb-1">Scaffolding failed</div>
+                                <div className="font-bold mb-1">Scaffolding needs retry</div>
                                 <div className="opacity-80 break-words">{error}</div>
-                                <button
-                                  onClick={() => setIsProcessing(false)}
-                                  className="mt-3 text-[11px] font-black uppercase tracking-widest text-rose-200 hover:underline"
-                                >
-                                  Back
-                                </button>
+                                <div className="mt-3 flex items-center gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setError(null);
+                                      runScaffold().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+                                    }}
+                                    className="px-4 py-2 rounded-xl bg-rose-500/20 border border-rose-500/30 text-rose-100 text-[11px] font-black uppercase tracking-widest hover:bg-rose-500/25"
+                                  >
+                                    Retry Scaffold
+                                  </button>
+                                  {lastScaffoldRef.current && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const res = lastScaffoldRef.current;
+                                        setError(null);
+                                        if (!res) return;
+                                        runAssets(res).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+                                      }}
+                                      className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white/70 text-[11px] font-black uppercase tracking-widest hover:bg-white/10"
+                                    >
+                                      Continue Anyway
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setError(null);
+                                      setIsProcessing(false);
+                                    }}
+                                    className="text-[11px] font-black uppercase tracking-widest text-rose-200/80 hover:underline"
+                                  >
+                                    Back
+                                  </button>
+                                </div>
                             </div>
                         </div>
                     )}

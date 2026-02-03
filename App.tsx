@@ -20,7 +20,7 @@ import { loadAiSettings, saveAiSettings } from './lib/ai/aiSettingsStorage';
 import { runDirectorCommand } from './lib/ai/agent/direct';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
-import { applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
+import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -369,7 +369,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
     }
 
     if (action.type === 'UPDATE_ELEMENT') {
-      const { shotId, sequenceId, elementType, prompt } = action.payload || {};
+      const { shotId, sequenceId, elementType, prompt, metadata } = action.payload || {};
       if (!shotId || !sequenceId || !elementType) return acc;
       return {
         ...acc,
@@ -379,14 +379,20 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
             ...seq,
             shots: seq.shots.map((shot) => {
               if (shot.id !== shotId) return shot;
+              const prev = shot.elements[elementType as ElementType] || null;
+              const nextMetadata =
+                metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+                  ? { ...(prev?.metadata || {}), ...metadata }
+                  : prev?.metadata;
               return {
                 ...shot,
                 elements: {
                   ...shot.elements,
                   [elementType]: {
-                    ...shot.elements[elementType as ElementType],
+                    ...prev,
                     prompt: typeof prompt === 'string' ? prompt : shot.elements[elementType as ElementType]?.prompt,
                     status: 'manual' as const,
+                    metadata: nextMetadata,
                   },
                 },
               };
@@ -970,15 +976,17 @@ export default function App() {
 	              settings: aiSettings.image,
 	              aspectRatio: storyAfterUpdates.aspectRatio,
 	              concurrency,
-                getStoryForRefs: () => storyRef,
+	                getStoryForRefs: () => storyRef,
+                maxAttempts: 3,
+                stopAfterMasterKvFailure: true,
 	              onEvent: (ev) => {
 	                if (ev.type === 'start') {
-                    storyRef = applyAssetStart(storyRef, ev.job);
+	                    storyRef = applyAssetStart(storyRef, ev.job);
 	                  updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
 	                  addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
 	                }
 	                if (ev.type === 'success') {
-                    storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl);
+	                    storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl);
 	                  updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl));
 	                  addDebugEvent({
 	                    level: 'info',
@@ -987,14 +995,24 @@ export default function App() {
 	                    data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
 	                  });
 	                }
+	                if (ev.type === 'blocked') {
+                    storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
+                    updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
+                    addDebugEvent({
+                      level: 'warn',
+                      scope: 'asset.exec',
+                      message: 'Blocked',
+                      data: { done: ev.done, total: ev.total, job: ev.job, reason: ev.reason },
+                    });
+                  }
 	                if (ev.type === 'error') {
-                    storyRef = applyAssetError(storyRef, ev.job);
-	                  updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job));
+	                    storyRef = applyAssetError(storyRef, ev.job, ev.error);
+	                  updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
 	                  addDebugEvent({
 	                    level: 'warn',
 	                    scope: 'asset.exec',
 	                    message: 'Error',
-	                    data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error },
+	                    data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error, attempt: (ev as any).attempt, attempts: (ev as any).attempts },
 	                  });
 	                }
 	                if (ev.done === ev.total) addToast('Assets generated (director).', 'success');

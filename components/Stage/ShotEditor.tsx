@@ -63,11 +63,20 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
           temperature: 0.5,
         };
 
-      const references: ImageReference[] = [];
-      if (story?.keyVisualUrl) references.push({ url: story.keyVisualUrl, label: 'master kv' });
+      const isDone = (st: any) => st && st.status === 'done';
+
+      if (!story || !isDone((story as any).masterKvState) || !story.keyVisualUrl) {
+        throw new Error('Blocked: Master KV not generated yet. Please generate Master KV first.');
+      }
 
       const loc = story?.locations?.find((l) => l.id === shot.locationId);
-      if (loc?.previewUrl) references.push({ url: loc.previewUrl, label: `environment: ${loc.name}` });
+      if (!loc || !isDone((loc as any).assetState) || !loc.previewUrl) {
+        throw new Error('Blocked: Environment asset not generated yet. Please generate the environment first.');
+      }
+
+      const references: ImageReference[] = [];
+      references.push({ url: story.keyVisualUrl, label: 'master kv' });
+      references.push({ url: loc.previewUrl, label: `environment: ${loc.name}` });
 
       const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
       const castArr = Array.isArray(cast) ? cast : [];
@@ -76,10 +85,18 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         if (!charId) continue;
         const activeLookId = String(c?.activeLookId || '');
         const master = story?.characters?.find((x) => x.id === charId);
-        if (!master) continue;
-        const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
-        const url = look?.previewUrl || master.avatarUrl;
-        if (url) references.push({ url, label: `character: ${master.name}${look?.name ? ` (${look.name})` : ''}` });
+        if (!master || !isDone((master as any).assetState) || !master.avatarUrl) {
+          throw new Error('Blocked: Character avatar not generated yet. Please generate character avatar(s) first.');
+        }
+        if (activeLookId) {
+          const look = master.looks?.find((lk) => lk.id === activeLookId);
+          if (!look || !isDone((look as any).assetState) || !look.previewUrl) {
+            throw new Error('Blocked: Character look not generated yet. Please generate the look first.');
+          }
+          references.push({ url: look.previewUrl, label: `character: ${master.name} (${look.name})` });
+        } else {
+          references.push({ url: master.avatarUrl, label: `character: ${master.name}` });
+        }
       }
 
       const lines: string[] = [];

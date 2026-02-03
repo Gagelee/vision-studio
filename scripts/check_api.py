@@ -100,7 +100,11 @@ def _assert(cond: bool, msg: str):
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:3000", help="Base URL, e.g. http://127.0.0.1:3000")
-    ap.add_argument("--require-http", action="store_true", help='Fail if debug.transport != "http"')
+    ap.add_argument(
+        "--require-http",
+        action="store_true",
+        help='Fail if any endpoint falls back (debug.transport != "http")',
+    )
     ap.add_argument("--include-image", action="store_true", help="Also test /api/asset/image/generate and fetch generated asset")
     ap.add_argument("--timeout-s", type=float, default=15.0, help="Timeout in seconds (default 15)")
     args = ap.parse_args(argv)
@@ -115,7 +119,7 @@ def main(argv: list[str]) -> int:
         {
             "intent": "API connectivity test",
             "aspectRatio": "16:9",
-            "settings": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "temperature": 0.4, "maxOutputTokens": 1024},
+            "settings": {"provider": "gemini", "model": "gemini-3-thinking", "temperature": 0.4, "maxOutputTokens": 2048},
         },
         args.timeout_s,
     )
@@ -124,9 +128,29 @@ def main(argv: list[str]) -> int:
     _assert(isinstance(scaffold.get("json"), dict) and scaffold["json"].get("ok") is True, f"scaffold: expected {{ok:true}} (got {scaffold['textPreview']})")
     _assert("story" in scaffold["json"] and "plan" in scaffold["json"], "scaffold: missing story/plan")
     if args.require_http:
-        _assert(scaffold["json"].get("debug", {}).get("transport") == "http", f"scaffold: transport={scaffold['json'].get('debug', {}).get('transport')}")
+        transport = scaffold["json"].get("debug", {}).get("transport")
+        err = scaffold["json"].get("debug", {}).get("error")
+        _assert(
+            transport == "http",
+            f"scaffold: transport={transport!r}{(' error=' + repr(err)) if err else ''}",
+        )
 
     story = scaffold["json"]["story"]
+
+    # Try to pick a real selection from the scaffolded story for /api/agent/direct.
+    selection = {"type": "story", "id": str(story.get("id") or "")}
+    try:
+        seqs = story.get("sequences") if isinstance(story, dict) else None
+        if isinstance(seqs, list) and seqs:
+            seq0 = seqs[0] if isinstance(seqs[0], dict) else None
+            if isinstance(seq0, dict) and seq0.get("id"):
+                shots = seq0.get("shots")
+                if isinstance(shots, list) and shots and isinstance(shots[0], dict) and shots[0].get("id"):
+                    selection = {"type": "shot", "id": str(shots[0]["id"]), "parentId": str(seq0["id"])}
+                else:
+                    selection = {"type": "sequence", "id": str(seq0["id"])}
+    except Exception:
+        selection = {"type": "story", "id": str(story.get("id") or "")}
 
     # Director
     direct = _request_json(
@@ -134,9 +158,9 @@ def main(argv: list[str]) -> int:
         f"{base}/api/agent/direct",
         {
             "message": "make it warmer",
-            "selection": {"type": "shot", "id": "shot-1", "parentId": "seq-1"},
+            "selection": selection,
             "story": story,
-            "settings": {"provider": "gemini", "model": "gemini-2.5-flash", "temperature": 0.3, "maxOutputTokens": 1024},
+            "settings": {"provider": "gemini", "model": "gemini-3-thinking", "temperature": 0.3, "maxOutputTokens": 2048},
         },
         args.timeout_s,
     )
@@ -145,7 +169,12 @@ def main(argv: list[str]) -> int:
     _assert(isinstance(direct.get("json"), dict) and isinstance(direct["json"].get("reply"), str), f"direct: missing reply (got {direct['textPreview']})")
     _assert(isinstance(direct["json"].get("actions"), list), "direct: missing actions[]")
     if args.require_http:
-        _assert(direct["json"].get("debug", {}).get("transport") == "http", f"direct: transport={direct['json'].get('debug', {}).get('transport')}")
+        transport = direct["json"].get("debug", {}).get("transport")
+        err = direct["json"].get("debug", {}).get("error")
+        _assert(
+            transport == "http",
+            f"direct: transport={transport!r}{(' error=' + repr(err)) if err else ''}",
+        )
 
     # Image (optional)
     if args.include_image:
@@ -163,6 +192,17 @@ def main(argv: list[str]) -> int:
         _assert(img["ok"], f"image.generate HTTP {img['status']}")
         _assert(isinstance(img.get("json"), dict) and isinstance(img["json"].get("imageUrl"), str), f"image.generate: missing imageUrl (got {img['textPreview']})")
         image_url = img["json"]["imageUrl"]
+        if args.require_http:
+            transport = img["json"].get("debug", {}).get("transport")
+            err = img["json"].get("debug", {}).get("error")
+            _assert(
+                transport == "http",
+                f"image.generate: transport={transport!r}{(' error=' + repr(err)) if err else ''}",
+            )
+            _assert(
+                image_url.startswith("/__generated__/"),
+                f"image.generate: expected local /__generated__/ URL (got {image_url})",
+            )
         if image_url.startswith("/__generated__/"):
             fetched = _head(f"{base}{image_url}", args.timeout_s)
             results.append({"name": "image.fetch", **fetched})
@@ -179,4 +219,3 @@ if __name__ == "__main__":
     except Exception as e:
         sys.stderr.write(f"{e}\n")
         raise SystemExit(1)
-

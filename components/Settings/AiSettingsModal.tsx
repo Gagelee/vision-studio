@@ -70,7 +70,7 @@ const ProfileEditor: React.FC<{
               value={value.model}
               onChange={(e) => onChange({ model: e.target.value })}
               className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-sm font-mono"
-              placeholder="e.g. gemini-1.5-flash"
+              placeholder="e.g. gemini-3-thinking"
             />
           </label>
 
@@ -179,7 +179,7 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ settings, onSa
 
         <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto custom-scrollbar">
           <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4 text-sm text-zinc-600 dark:text-zinc-300 leading-relaxed">
-            默认以 Gemini 为主（Planner 用 thinking，Worker 用 flash），需要对比推理效果时可切换到 OpenAI / DeepSeek。图片生成默认模型名为 nano-banana-pro（目前生成端为占位实现，后续可替换为真实图片生成 API）。若暂时没有可用 key，可将 Provider 设为 Mock 以保证本地流程可跑。
+            默认以 Gemini 为主（推荐 Planner/Director 用 thinking；Worker 可按质量/速度/成本切换）。需要对比效果时可切换到 OpenAI / DeepSeek。图片生成默认模型名为 nano-banana-pro（目前生成端为占位实现，后续可替换为真实图片生成 API）。若暂时没有可用 key，可将 Provider 设为 Mock 以保证本地流程可跑。
           </div>
 
           <ProfileEditor

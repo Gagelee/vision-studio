@@ -50,6 +50,7 @@ export interface Location {
   visualStyle: string;
   previewUrl: string;
   status: 'draft' | 'locked';
+  assetState?: AssetGenerationState;
 }
 
 export interface CharacterLook {
@@ -57,6 +58,7 @@ export interface CharacterLook {
   name: string;
   description: string;
   previewUrl: string;
+  assetState?: AssetGenerationState;
 }
 
 export interface Character {
@@ -67,6 +69,14 @@ export interface Character {
   avatarUrl?: string;
   status?: 'draft' | 'locked';
   looks: CharacterLook[];
+  assetState?: AssetGenerationState;
+}
+
+export interface AssetGenerationState {
+  status: 'idle' | 'running' | 'done' | 'error' | 'blocked';
+  lastError?: string;
+  lastAttemptAt?: number;
+  attempts?: number;
 }
 
 export interface DirectorElement {
@@ -102,6 +112,7 @@ export interface Shot {
   elements: { [key in ElementType]: DirectorElement };
   aiState?: 'idle' | 'thinking' | 'rendering';
   aiPrompt?: string;
+  assetState?: AssetGenerationState;
   production?: {
     status: 'idle' | 'queued' | 'running' | 'done' | 'error';
     lastStartedAt?: number;
@@ -121,6 +132,7 @@ export interface Story {
   logline: string;
   intent?: string;
   keyVisualUrl?: string; 
+  masterKvState?: AssetGenerationState;
   aspectRatio: AspectRatio;
   status: 'scaffolding' | 'ready';
   createdAt?: number;

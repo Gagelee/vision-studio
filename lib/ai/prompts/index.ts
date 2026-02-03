@@ -7,3 +7,15 @@ export {
   buildCharacterAvatarPrompt,
   buildCharacterLookPrompt,
 } from './assetAuto';
+export {
+  buildTeamScaffoldDirectorBriefPrompt,
+  buildTeamScaffoldScriptWriterPrompt,
+  buildTeamScaffoldCastingDirectorPrompt,
+  buildTeamScaffoldEnvironmentDirectorPrompt,
+  buildTeamScaffoldEditorPrompt,
+  buildTeamScaffoldCameraArtPrompt,
+  buildTeamScaffoldDirectorMergePrompt,
+  buildTeamDirectPlannerPrompt,
+  buildTeamDirectSpecialistPrompt,
+  buildTeamDirectMergePrompt,
+} from './team';

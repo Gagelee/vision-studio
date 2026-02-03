@@ -3,7 +3,20 @@ import fs from 'fs';
 import path from 'path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
-import { buildDirectorActionsPrompt, buildScaffoldPrompt } from './lib/ai/prompts';
+import {
+  buildDirectorActionsPrompt,
+  buildScaffoldPrompt,
+  buildTeamDirectMergePrompt,
+  buildTeamDirectPlannerPrompt,
+  buildTeamDirectSpecialistPrompt,
+  buildTeamScaffoldCameraArtPrompt,
+  buildTeamScaffoldCastingDirectorPrompt,
+  buildTeamScaffoldDirectorBriefPrompt,
+  buildTeamScaffoldDirectorMergePrompt,
+  buildTeamScaffoldEditorPrompt,
+  buildTeamScaffoldEnvironmentDirectorPrompt,
+  buildTeamScaffoldScriptWriterPrompt,
+} from './lib/ai/prompts';
 import { ProxyAgent } from 'undici';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -581,7 +594,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const plannerSettings = body?.plannerSettings || {};
         const provider = String(settings?.provider || 'gemini');
         // Gemini 1.5 models were shut down in 2025; default to a supported 2.5 model.
-        const model = String(settings?.model || 'gemini-2.5-flash');
+        const model = String(settings?.model || 'gemini-3-thinking');
         const temperature = Number(settings?.temperature ?? 0.6);
         const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
         const plannerModel = String(plannerSettings?.model || '');
@@ -631,7 +644,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
 	        const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
 
-	        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string) => {
+	        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string, debugExtra?: any) => {
 	          // Minimal mapping into the app's Story schema. IDs generated server-side for stability.
 	          const projectId = mkId('proj');
 	          const locations = Array.isArray(spec?.locations) ? spec.locations : [];
@@ -709,9 +722,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                  },
 	                ],
 	                elements: {
-	                  SCRIPT: { type: 'SCRIPT', prompt: '', status: 'auto' },
+	                  SCRIPT: { type: 'SCRIPT', prompt: String(sh?.script || ''), status: 'auto' },
 	                  CASTING: { type: 'CASTING', prompt: '', status: 'manual', metadata: { characters: cast } },
-	                  CAMERA: { type: 'CAMERA', prompt: String(sh?.camera || 'Cinematic shot'), status: 'auto' },
+	                  CAMERA: { type: 'CAMERA', prompt: String(sh?.camera || 'Cinematic shot'), status: 'auto', metadata: { videoPrompt: String(sh?.videoPrompt || '') } },
 	                  LIGHTING: { type: 'LIGHTING', prompt: String(sh?.lighting || 'Cinematic lighting'), status: 'auto' },
 	                  AUDIO: { type: 'AUDIO', prompt: String(sh?.audio || 'Ambient sound'), status: 'auto' },
 	                },
@@ -752,20 +765,25 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              id: mkId('plan'),
 	              summary: `Scaffolded a first-pass story structure (${source}).`,
 	              steps: [
-	                { id: mkId('step'), title: 'Analyze intent', status: 'done' },
-	                { id: mkId('step'), title: 'Draft environments', status: 'done' },
-	                { id: mkId('step'), title: 'Draft casting', status: 'done' },
-	                { id: mkId('step'), title: 'Assemble sequences & shots', status: 'done' },
+	                { id: mkId('step'), title: 'Director: define vision & constraints', status: 'done' },
+	                { id: mkId('step'), title: 'Script Writer: screenplay beats + dialogue', status: 'done' },
+	                { id: mkId('step'), title: 'Casting Director: characters + looks', status: 'done' },
+	                { id: mkId('step'), title: 'Environment Director: locations/sets', status: 'done' },
+	                { id: mkId('step'), title: 'Editor: sequences & shots', status: 'done' },
+	                { id: mkId('step'), title: 'Camera & Art: shot settings + video prompts', status: 'done' },
 	              ],
 	              actions: [{ type: 'SCAFFOLD_PROJECT' }],
 	            },
-	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source },
+	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source, ...(debugExtra || {}) },
 	          };
 	        };
 
         const chosenModel = (plannerModel || model).trim() || model;
         const chosenTemperature = plannerModel ? plannerTemperature : temperature;
         const chosenMaxOutputTokens = plannerModel ? plannerMaxOutputTokens : maxOutputTokens;
+        const workerModel = model;
+        const workerTemperature = temperature;
+        const workerMaxOutputTokens = maxOutputTokens;
 
         const attemptedProviders: string[] = [];
         let lastError: any = null;
@@ -773,39 +791,263 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           attemptedProviders.push(p);
           try {
             if (p === 'gemini') {
-              const spec = await callGeminiJson({
-                apiKey: env.GEMINI_API_KEY,
-                model: chosenModel,
-                temperature: chosenTemperature,
-                maxOutputTokens: chosenMaxOutputTokens ?? 4096,
-                prompt: scaffoldPrompt,
-                env,
-              });
-              return sendJson(res, 200, buildFromSpec(spec, 'Gemini', p, chosenModel));
+              const teamTrace: any[] = [];
+              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number; maxOutputTokens?: number }) => {
+                const started = Date.now();
+                try {
+                  const out = await callGeminiJson({
+                    apiKey: env.GEMINI_API_KEY,
+                    model: String(opts?.model || chosenModel),
+                    temperature: Number(opts?.temperature ?? chosenTemperature),
+                    maxOutputTokens: Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192),
+                    prompt,
+                    env,
+                  });
+                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: true });
+                  return out;
+                } catch (e: any) {
+                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: false, error: e?.message || String(e) });
+                  throw e;
+                }
+              };
+
+              try {
+                const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
+                  model: chosenModel,
+                  temperature: chosenTemperature,
+                  maxOutputTokens: chosenMaxOutputTokens ?? 8192,
+                });
+                const directorBriefJson = JSON.stringify(directorBrief);
+                const casting = await call('casting_director', buildTeamScaffoldCastingDirectorPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                  maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                });
+                const environmentSpec = await call('environment_director', buildTeamScaffoldEnvironmentDirectorPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                  maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                });
+                const scriptSpec = await call('script_writer', buildTeamScaffoldScriptWriterPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                  maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                });
+                const editorSpec = await call(
+                  'editor',
+                  buildTeamScaffoldEditorPrompt({
+                    directorBriefJson,
+                    scriptJson: JSON.stringify(scriptSpec),
+                    environmentJson: JSON.stringify(environmentSpec),
+                  }),
+                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: workerMaxOutputTokens ?? 4096 },
+                );
+                const cameraArtSpec = await call(
+                  'camera_art',
+                  buildTeamScaffoldCameraArtPrompt({
+                    directorBriefJson,
+                    editorJson: JSON.stringify(editorSpec),
+                    aspectRatio,
+                  }),
+                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: workerMaxOutputTokens ?? 4096 },
+                );
+
+                const spec = await call(
+                  'director.merge',
+                  buildTeamScaffoldDirectorMergePrompt({
+                    directorBriefJson,
+                    castingJson: JSON.stringify(casting),
+                    environmentJson: JSON.stringify(environmentSpec),
+                    editorJson: JSON.stringify(editorSpec),
+                    cameraArtJson: JSON.stringify(cameraArtSpec),
+                  }),
+                  { model: chosenModel, temperature: chosenTemperature, maxOutputTokens: chosenMaxOutputTokens ?? 8192 },
+                );
+
+                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (Gemini)', p, chosenModel, { teamTrace }));
+              } catch (e: any) {
+                // Fall back to a single-call scaffold for this provider if multi-agent fails.
+                lastError = e;
+                const spec = await callGeminiJson({
+                  apiKey: env.GEMINI_API_KEY,
+                  model: chosenModel,
+                  temperature: chosenTemperature,
+                  maxOutputTokens: chosenMaxOutputTokens ?? 4096,
+                  prompt: scaffoldPrompt,
+                  env,
+                });
+                return sendJson(res, 200, buildFromSpec(spec, 'Single-call (Gemini)', p, chosenModel, { teamTrace, multiAgentError: e?.message || String(e) }));
+              }
             }
 
             if (p === 'openai') {
-              const spec = await callOpenAICompatibleJson({
-                baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-                apiKey: env.OPENAI_API_KEY,
-                model: chosenModel,
-                temperature: chosenTemperature,
-                prompt: scaffoldPrompt,
-                env,
-              });
-              return sendJson(res, 200, buildFromSpec(spec, 'OpenAI', p, chosenModel));
+              const teamTrace: any[] = [];
+              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
+                const started = Date.now();
+                try {
+                  const out = await callOpenAICompatibleJson({
+                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+                    apiKey: env.OPENAI_API_KEY,
+                    model: String(opts?.model || chosenModel),
+                    temperature: Number(opts?.temperature ?? chosenTemperature),
+                    prompt,
+                    env,
+                  });
+                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: true });
+                  return out;
+                } catch (e: any) {
+                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: false, error: e?.message || String(e) });
+                  throw e;
+                }
+              };
+
+              try {
+                const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
+                  model: chosenModel,
+                  temperature: chosenTemperature,
+                });
+                const directorBriefJson = JSON.stringify(directorBrief);
+                const casting = await call('casting_director', buildTeamScaffoldCastingDirectorPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                });
+                const environmentSpec = await call('environment_director', buildTeamScaffoldEnvironmentDirectorPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                });
+                const scriptSpec = await call('script_writer', buildTeamScaffoldScriptWriterPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                });
+                const editorSpec = await call(
+                  'editor',
+                  buildTeamScaffoldEditorPrompt({
+                    directorBriefJson,
+                    scriptJson: JSON.stringify(scriptSpec),
+                    environmentJson: JSON.stringify(environmentSpec),
+                  }),
+                  { model: workerModel, temperature: workerTemperature },
+                );
+                const cameraArtSpec = await call(
+                  'camera_art',
+                  buildTeamScaffoldCameraArtPrompt({
+                    directorBriefJson,
+                    editorJson: JSON.stringify(editorSpec),
+                    aspectRatio,
+                  }),
+                  { model: workerModel, temperature: workerTemperature },
+                );
+
+                const spec = await call(
+                  'director.merge',
+                  buildTeamScaffoldDirectorMergePrompt({
+                    directorBriefJson,
+                    castingJson: JSON.stringify(casting),
+                    environmentJson: JSON.stringify(environmentSpec),
+                    editorJson: JSON.stringify(editorSpec),
+                    cameraArtJson: JSON.stringify(cameraArtSpec),
+                  }),
+                  { model: chosenModel, temperature: chosenTemperature },
+                );
+
+                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (OpenAI)', p, chosenModel, { teamTrace }));
+              } catch (e: any) {
+                lastError = e;
+                const spec = await callOpenAICompatibleJson({
+                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+                  apiKey: env.OPENAI_API_KEY,
+                  model: chosenModel,
+                  temperature: chosenTemperature,
+                  prompt: scaffoldPrompt,
+                  env,
+                });
+                return sendJson(res, 200, buildFromSpec(spec, 'Single-call (OpenAI)', p, chosenModel, { teamTrace, multiAgentError: e?.message || String(e) }));
+              }
             }
 
             if (p === 'deepseek') {
-              const spec = await callOpenAICompatibleJson({
-                baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-                apiKey: env.DEEPSEEK_API_KEY,
-                model: chosenModel,
-                temperature: chosenTemperature,
-                prompt: scaffoldPrompt,
-                env,
-              });
-              return sendJson(res, 200, buildFromSpec(spec, 'DeepSeek', p, chosenModel));
+              const teamTrace: any[] = [];
+              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
+                const started = Date.now();
+                try {
+                  const out = await callOpenAICompatibleJson({
+                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+                    apiKey: env.DEEPSEEK_API_KEY,
+                    model: String(opts?.model || chosenModel),
+                    temperature: Number(opts?.temperature ?? chosenTemperature),
+                    prompt,
+                    env,
+                  });
+                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: true });
+                  return out;
+                } catch (e: any) {
+                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: false, error: e?.message || String(e) });
+                  throw e;
+                }
+              };
+
+              try {
+                const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
+                  model: chosenModel,
+                  temperature: chosenTemperature,
+                });
+                const directorBriefJson = JSON.stringify(directorBrief);
+                const casting = await call('casting_director', buildTeamScaffoldCastingDirectorPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                });
+                const environmentSpec = await call('environment_director', buildTeamScaffoldEnvironmentDirectorPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                });
+                const scriptSpec = await call('script_writer', buildTeamScaffoldScriptWriterPrompt({ directorBriefJson }), {
+                  model: workerModel,
+                  temperature: workerTemperature,
+                });
+                const editorSpec = await call(
+                  'editor',
+                  buildTeamScaffoldEditorPrompt({
+                    directorBriefJson,
+                    scriptJson: JSON.stringify(scriptSpec),
+                    environmentJson: JSON.stringify(environmentSpec),
+                  }),
+                  { model: workerModel, temperature: workerTemperature },
+                );
+                const cameraArtSpec = await call(
+                  'camera_art',
+                  buildTeamScaffoldCameraArtPrompt({
+                    directorBriefJson,
+                    editorJson: JSON.stringify(editorSpec),
+                    aspectRatio,
+                  }),
+                  { model: workerModel, temperature: workerTemperature },
+                );
+
+                const spec = await call(
+                  'director.merge',
+                  buildTeamScaffoldDirectorMergePrompt({
+                    directorBriefJson,
+                    castingJson: JSON.stringify(casting),
+                    environmentJson: JSON.stringify(environmentSpec),
+                    editorJson: JSON.stringify(editorSpec),
+                    cameraArtJson: JSON.stringify(cameraArtSpec),
+                  }),
+                  { model: chosenModel, temperature: chosenTemperature },
+                );
+
+                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (DeepSeek)', p, chosenModel, { teamTrace }));
+              } catch (e: any) {
+                lastError = e;
+                const spec = await callOpenAICompatibleJson({
+                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+                  apiKey: env.DEEPSEEK_API_KEY,
+                  model: chosenModel,
+                  temperature: chosenTemperature,
+                  prompt: scaffoldPrompt,
+                  env,
+                });
+                return sendJson(res, 200, buildFromSpec(spec, 'Single-call (DeepSeek)', p, chosenModel, { teamTrace, multiAgentError: e?.message || String(e) }));
+              }
             }
           } catch (e: any) {
             lastError = e;
@@ -833,7 +1075,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const story = body?.story || null;
         const settings = body?.settings || {};
         const provider = String(settings?.provider || 'gemini');
-        const model = String(settings?.model || 'gemini-2.5-flash');
+        const model = String(settings?.model || 'gemini-3-thinking');
         const temperature = Number(settings?.temperature ?? 0.6);
 
         if (!message) return sendJson(res, 400, { ok: false, error: 'Missing message' });
@@ -1069,97 +1311,368 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	        // When keys are configured, Gemini can propose UPDATE_ELEMENT actions as JSON.
           const attemptedProviders: string[] = [];
           let lastError: any = null;
+          const selectionJson = JSON.stringify(selection || {});
+          const storyJson = story ? JSON.stringify(summarizeStoryForPrompt(story)) : '{}';
+          const allowedActionsText = [
+            'NAVIGATE',
+            'UPDATE_STORY',
+            'CREATE_LOCATION',
+            'UPDATE_LOCATION',
+            'CREATE_CHARACTER',
+            'UPDATE_CHARACTER',
+            'CREATE_CHARACTER_LOOK',
+            'UPDATE_CHARACTER_LOOK',
+            'CREATE_SEQUENCE',
+            'RENAME_SEQUENCE',
+            'DELETE_SEQUENCE',
+            'CREATE_SHOT',
+            'MOVE_SHOT',
+            'DELETE_SHOT',
+            'UPDATE_SHOT',
+            'UPDATE_ELEMENT',
+            'SET_CAST',
+            'GENERATE_PROJECT_ASSETS',
+            'GENERATE_SHOT_IMAGE',
+            'GENERATE_LOCATION_PREVIEW',
+            'GENERATE_CHARACTER_AVATAR',
+            'GENERATE_CHARACTER_LOOK',
+          ]
+            .map((t) => `- ${t}`)
+            .join('\n');
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
 	          if (p === 'gemini' && env.GEMINI_API_KEY) {
-            const output = await callGeminiJson({
-              apiKey: env.GEMINI_API_KEY,
-              model,
-              temperature,
-              prompt: buildDirectorActionsPrompt({
-                selectionJson: JSON.stringify(selection),
-                storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
-                directive: message,
-              }),
-              env,
-            });
+              const teamTrace: any[] = [];
+              const call = async (agent: string, prompt: string) => {
+                const started = Date.now();
+                try {
+                  const out = await callGeminiJson({ apiKey: env.GEMINI_API_KEY, model, temperature, prompt, env });
+                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: true });
+                  return out;
+                } catch (e: any) {
+                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: false, error: e?.message || String(e) });
+                  throw e;
+                }
+              };
 
-            const actions = Array.isArray(output?.actions) ? output.actions : [];
-	            return sendJson(res, 200, {
-	              reply: String(output?.reply || 'OK'),
-	              plan: {
-	                id: mkId('plan'),
-	                summary: 'Generated structured actions (Gemini).',
-	                steps: [
-	                  { id: mkId('step'), title: 'Parse directive', status: 'done' },
-	                  { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
-	                ],
-	                actions,
-	              },
-	              actions,
-	              debug: { transport: 'http', provider: p, model },
-	            });
+              try {
+                const planner = await call(
+                  'director.plan',
+                  buildTeamDirectPlannerPrompt({
+                    selectionJson,
+                    storyJson,
+                    directive: message,
+                  }),
+                );
+                const requestedAgents = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const allowedAgents = new Set(['script_writer', 'casting_director', 'editor', 'environment_director', 'camera_art']);
+                const uniqAgents: string[] = Array.from(
+                  new Set(requestedAgents.map((x: any) => String(x || '').trim()).filter((x: string) => allowedAgents.has(x))),
+                );
+                const focusObj: Record<string, unknown> =
+                  planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
+
+                const specialistJsonByAgent: Record<string, string> = {};
+                for (const a of uniqAgents.slice(0, 4)) {
+                  const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
+                  const out = await call(
+                    a,
+                    buildTeamDirectSpecialistPrompt({
+                      agent: a as any,
+                      focus,
+                      selectionJson,
+                      storyJson,
+                      directive: message,
+                    }),
+                  );
+                  specialistJsonByAgent[a] = JSON.stringify(out || {});
+                }
+
+                const final = await call(
+                  'director.merge',
+                  buildTeamDirectMergePrompt({
+                    selectionJson,
+                    storyJson,
+                    directive: message,
+                    plannerJson: JSON.stringify(planner || {}),
+                    specialistJsonByAgent,
+                    allowedActionsText,
+                  }),
+                );
+
+                const actions = Array.isArray(final?.actions) ? final.actions : [];
+                return sendJson(res, 200, {
+                  reply: String(final?.reply || planner?.reply || 'OK'),
+                  plan: {
+                    id: mkId('plan'),
+                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
+                    steps: [
+                      { id: mkId('step'), title: 'Director: plan', status: 'done' },
+                      ...(uniqAgents.map((a: string) => ({ id: mkId('step'), title: `Specialist: ${a}`, status: 'done' })) as any),
+                      { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
+                    ],
+                    actions,
+                  },
+                  actions,
+                  debug: { transport: 'http', provider: p, model, teamTrace, mode: 'multi-agent' },
+                });
+              } catch (e: any) {
+                lastError = e;
+                // Single-call fallback
+                const output = await callGeminiJson({
+                  apiKey: env.GEMINI_API_KEY,
+                  model,
+                  temperature,
+                  prompt: buildDirectorActionsPrompt({
+                    selectionJson,
+                    storyJson: story ? storyJson : undefined,
+                    directive: message,
+                  }),
+                  env,
+                });
+                const actions = Array.isArray(output?.actions) ? output.actions : [];
+                return sendJson(res, 200, {
+                  reply: String(output?.reply || 'OK'),
+                  plan: {
+                    id: mkId('plan'),
+                    summary: 'Generated structured actions (Gemini, single-call fallback).',
+                    steps: [
+                      { id: mkId('step'), title: 'Parse directive', status: 'done' },
+                      { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
+                    ],
+                    actions,
+                  },
+                  actions,
+                  debug: { transport: 'http', provider: p, model, mode: 'single-call', multiAgentError: e?.message || String(e) },
+                });
+              }
 	          }
 
 	          if (p === 'openai' && env.OPENAI_API_KEY) {
-	            const output = await callOpenAICompatibleJson({
-	              baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-	              apiKey: env.OPENAI_API_KEY,
-	              model,
-	              temperature,
-	              prompt: buildDirectorActionsPrompt({
-	                selectionJson: JSON.stringify(selection),
-	                storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
-	                directive: message,
-	              }),
-                env,
-	            });
-	            const actions = Array.isArray(output?.actions) ? output.actions : [];
-	            return sendJson(res, 200, {
-	              reply: String(output?.reply || 'OK'),
-	              plan: {
-	                id: mkId('plan'),
-	                summary: 'Generated structured actions (OpenAI).',
-	                steps: [
-	                  { id: mkId('step'), title: 'Parse directive', status: 'done' },
-	                  { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
-	                ],
-	                actions,
-	              },
-	              actions,
-	              debug: { transport: 'http', provider: p, model },
-	            });
+              const teamTrace: any[] = [];
+              const call = async (agent: string, prompt: string) => {
+                const started = Date.now();
+                try {
+                  const out = await callOpenAICompatibleJson({
+                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+                    apiKey: env.OPENAI_API_KEY,
+                    model,
+                    temperature,
+                    prompt,
+                    env,
+                  });
+                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: true });
+                  return out;
+                } catch (e: any) {
+                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: false, error: e?.message || String(e) });
+                  throw e;
+                }
+              };
+
+              try {
+                const planner = await call(
+                  'director.plan',
+                  buildTeamDirectPlannerPrompt({
+                    selectionJson,
+                    storyJson,
+                    directive: message,
+                  }),
+                );
+                const requestedAgents = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const allowedAgents = new Set(['script_writer', 'casting_director', 'editor', 'environment_director', 'camera_art']);
+                const uniqAgents: string[] = Array.from(
+                  new Set(requestedAgents.map((x: any) => String(x || '').trim()).filter((x: string) => allowedAgents.has(x))),
+                );
+                const focusObj: Record<string, unknown> =
+                  planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
+
+                const specialistJsonByAgent: Record<string, string> = {};
+                for (const a of uniqAgents.slice(0, 4)) {
+                  const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
+                  const out = await call(
+                    a,
+                    buildTeamDirectSpecialistPrompt({
+                      agent: a as any,
+                      focus,
+                      selectionJson,
+                      storyJson,
+                      directive: message,
+                    }),
+                  );
+                  specialistJsonByAgent[a] = JSON.stringify(out || {});
+                }
+
+                const final = await call(
+                  'director.merge',
+                  buildTeamDirectMergePrompt({
+                    selectionJson,
+                    storyJson,
+                    directive: message,
+                    plannerJson: JSON.stringify(planner || {}),
+                    specialistJsonByAgent,
+                    allowedActionsText,
+                  }),
+                );
+                const actions = Array.isArray(final?.actions) ? final.actions : [];
+                return sendJson(res, 200, {
+                  reply: String(final?.reply || planner?.reply || 'OK'),
+                  plan: {
+                    id: mkId('plan'),
+                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
+                    steps: [
+                      { id: mkId('step'), title: 'Director: plan', status: 'done' },
+                      ...(uniqAgents.map((a: string) => ({ id: mkId('step'), title: `Specialist: ${a}`, status: 'done' })) as any),
+                      { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
+                    ],
+                    actions,
+                  },
+                  actions,
+                  debug: { transport: 'http', provider: p, model, teamTrace, mode: 'multi-agent' },
+                });
+              } catch (e: any) {
+                lastError = e;
+                const output = await callOpenAICompatibleJson({
+                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+                  apiKey: env.OPENAI_API_KEY,
+                  model,
+                  temperature,
+                  prompt: buildDirectorActionsPrompt({
+                    selectionJson,
+                    storyJson: story ? storyJson : undefined,
+                    directive: message,
+                  }),
+                  env,
+                });
+                const actions = Array.isArray(output?.actions) ? output.actions : [];
+                return sendJson(res, 200, {
+                  reply: String(output?.reply || 'OK'),
+                  plan: {
+                    id: mkId('plan'),
+                    summary: 'Generated structured actions (OpenAI, single-call fallback).',
+                    steps: [
+                      { id: mkId('step'), title: 'Parse directive', status: 'done' },
+                      { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
+                    ],
+                    actions,
+                  },
+                  actions,
+                  debug: { transport: 'http', provider: p, model, mode: 'single-call', multiAgentError: e?.message || String(e) },
+                });
+              }
 	          }
 
 	          if (p === 'deepseek' && env.DEEPSEEK_API_KEY) {
-	            const output = await callOpenAICompatibleJson({
-	              baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-	              apiKey: env.DEEPSEEK_API_KEY,
-	              model,
-	              temperature,
-	              prompt: buildDirectorActionsPrompt({
-	                selectionJson: JSON.stringify(selection),
-	                storyJson: story ? JSON.stringify(summarizeStoryForPrompt(story)) : undefined,
-	                directive: message,
-	              }),
-                env,
-	            });
-	            const actions = Array.isArray(output?.actions) ? output.actions : [];
-	            return sendJson(res, 200, {
-	              reply: String(output?.reply || 'OK'),
-	              plan: {
-	                id: mkId('plan'),
-	                summary: 'Generated structured actions (DeepSeek).',
-	                steps: [
-	                  { id: mkId('step'), title: 'Parse directive', status: 'done' },
-	                  { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
-	                ],
-	                actions,
-	              },
-	              actions,
-	              debug: { transport: 'http', provider: p, model },
-	            });
+              const teamTrace: any[] = [];
+              const call = async (agent: string, prompt: string) => {
+                const started = Date.now();
+                try {
+                  const out = await callOpenAICompatibleJson({
+                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+                    apiKey: env.DEEPSEEK_API_KEY,
+                    model,
+                    temperature,
+                    prompt,
+                    env,
+                  });
+                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: true });
+                  return out;
+                } catch (e: any) {
+                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: false, error: e?.message || String(e) });
+                  throw e;
+                }
+              };
+
+              try {
+                const planner = await call(
+                  'director.plan',
+                  buildTeamDirectPlannerPrompt({
+                    selectionJson,
+                    storyJson,
+                    directive: message,
+                  }),
+                );
+                const requestedAgents = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const allowedAgents = new Set(['script_writer', 'casting_director', 'editor', 'environment_director', 'camera_art']);
+                const uniqAgents: string[] = Array.from(
+                  new Set(requestedAgents.map((x: any) => String(x || '').trim()).filter((x: string) => allowedAgents.has(x))),
+                );
+                const focusObj: Record<string, unknown> =
+                  planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
+
+                const specialistJsonByAgent: Record<string, string> = {};
+                for (const a of uniqAgents.slice(0, 4)) {
+                  const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
+                  const out = await call(
+                    a,
+                    buildTeamDirectSpecialistPrompt({
+                      agent: a as any,
+                      focus,
+                      selectionJson,
+                      storyJson,
+                      directive: message,
+                    }),
+                  );
+                  specialistJsonByAgent[a] = JSON.stringify(out || {});
+                }
+
+                const final = await call(
+                  'director.merge',
+                  buildTeamDirectMergePrompt({
+                    selectionJson,
+                    storyJson,
+                    directive: message,
+                    plannerJson: JSON.stringify(planner || {}),
+                    specialistJsonByAgent,
+                    allowedActionsText,
+                  }),
+                );
+                const actions = Array.isArray(final?.actions) ? final.actions : [];
+                return sendJson(res, 200, {
+                  reply: String(final?.reply || planner?.reply || 'OK'),
+                  plan: {
+                    id: mkId('plan'),
+                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
+                    steps: [
+                      { id: mkId('step'), title: 'Director: plan', status: 'done' },
+                      ...(uniqAgents.map((a: string) => ({ id: mkId('step'), title: `Specialist: ${a}`, status: 'done' })) as any),
+                      { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
+                    ],
+                    actions,
+                  },
+                  actions,
+                  debug: { transport: 'http', provider: p, model, teamTrace, mode: 'multi-agent' },
+                });
+              } catch (e: any) {
+                lastError = e;
+                const output = await callOpenAICompatibleJson({
+                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+                  apiKey: env.DEEPSEEK_API_KEY,
+                  model,
+                  temperature,
+                  prompt: buildDirectorActionsPrompt({
+                    selectionJson,
+                    storyJson: story ? storyJson : undefined,
+                    directive: message,
+                  }),
+                  env,
+                });
+                const actions = Array.isArray(output?.actions) ? output.actions : [];
+                return sendJson(res, 200, {
+                  reply: String(output?.reply || 'OK'),
+                  plan: {
+                    id: mkId('plan'),
+                    summary: 'Generated structured actions (DeepSeek, single-call fallback).',
+                    steps: [
+                      { id: mkId('step'), title: 'Parse directive', status: 'done' },
+                      { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
+                    ],
+                    actions,
+                  },
+                  actions,
+                  debug: { transport: 'http', provider: p, model, mode: 'single-call', multiAgentError: e?.message || String(e) },
+                });
+              }
 	          }
             } catch (e: any) {
               lastError = e;

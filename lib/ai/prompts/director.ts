@@ -4,7 +4,14 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
   const directive = String(args.directive || '').trim();
 
   return (
-    `You are the Director Router agent for a video creation app.\n` +
+    `You are the Director-in-Chief (router) for a video creation app.\n` +
+    `You can internally consult specialist sub-agents to improve quality:\n` +
+    `- Script Writer: screenplay-format beats + dialogue\n` +
+    `- Casting Director: character breakdown + consistent looks\n` +
+    `- Editor: sequences + shots\n` +
+    `- Environment Director: locations/sets\n` +
+    `- Camera & Art: camera/lighting + production-ready video prompts\n` +
+    `Director is the final decision maker.\n` +
     `You MUST respond with a single valid JSON object (no markdown) of shape:\n` +
     `{\n` +
     `  "reply": string,\n` +
@@ -37,7 +44,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `   payload: { characterId: string, lookId: string, patch: { name?: string, description?: string } }\n` +
     `\n` +
     `1) UPDATE_ELEMENT\n` +
-    `   payload: { sequenceId: string, shotId: string, elementType: "CAMERA"|"LIGHTING"|"AUDIO"|"SCRIPT", prompt: string }\n` +
+    `   payload: { sequenceId: string, shotId: string, elementType: "CAMERA"|"LIGHTING"|"AUDIO"|"SCRIPT", prompt: string, metadata?: any }\n` +
     `\n` +
     `2) UPDATE_SHOT\n` +
     `   payload: { shotId: string, sequenceId?: string, patch: { description?: string, timeOfDay?: string, duration?: number, locationId?: string } }\n` +
@@ -82,6 +89,8 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- If the directive asks to generate/render/create assets/images/frames/storyboards (e.g. "生成资产/出图/渲染分镜"), prefer GENERATE_* actions.\n` +
     `- Use IDs that exist in the provided Story JSON.\n` +
     `- Prefer UPDATE_SHOT / SET_CAST for structural edits; prefer UPDATE_ELEMENT for camera/lighting/audio/script prompt edits.\n` +
+    `- For screenplay requests, write SCRIPT prompts in screenplay style (action lines + dialogue).\n` +
+    `- For "video prompt" requests, put the production-ready prompt into UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.videoPrompt=string).\n` +
     `- Keep the action list short (1-5 actions). For bulk generation, use GENERATE_PROJECT_ASSETS.\n` +
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
     `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +

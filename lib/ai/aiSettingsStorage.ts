@@ -4,19 +4,19 @@ const AI_SETTINGS_STORAGE_KEY = 'vision-studio.ai.settings.v1';
 
 const normalizeGeminiModel = (model: string): string => {
   const m = String(model || '').trim();
-  if (!m) return 'gemini-2.5-flash';
+  if (!m) return 'gemini-3-thinking';
   // Gemini 1.5 (including gemini-1.5-flash / -pro) was shut down on 2025-09-29.
-  if (m.startsWith('gemini-1.5-')) return 'gemini-2.5-flash';
+  if (m.startsWith('gemini-1.5-')) return 'gemini-3-thinking';
   // Older internal names we used during prototyping.
-  if (m === 'gemini-2.0-flash-thinking') return 'gemini-2.5-flash';
+  if (m === 'gemini-2.0-flash-thinking') return 'gemini-3-thinking';
   return m;
 };
 
 const getDefaultModelSettings = (): ModelRuntimeSettings => ({
   provider: 'gemini',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3-thinking',
   temperature: 0.6,
-  maxOutputTokens: 2048,
+  maxOutputTokens: 4096,
   baseUrl: '',
   debug: {
     enabled: true,
@@ -29,20 +29,20 @@ export const getDefaultAiSettings = (): AiSettings => ({
   version: 2,
   scaffoldPlanner: {
     ...getDefaultModelSettings(),
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3-thinking',
     temperature: 0.4,
-    maxOutputTokens: 4096,
+    maxOutputTokens: 8192,
   },
   scaffoldWorker: {
     ...getDefaultModelSettings(),
-    // Default to a fast/cheap flash model; can switch to gemini-2.5-flash if needed.
-    model: 'gemini-2.5-flash-lite',
+    // Default to a "thinking" model for higher-quality scaffolds; users can switch to flash for speed/cost.
+    model: 'gemini-3-thinking',
     temperature: 0.6,
-    maxOutputTokens: 4096,
+    maxOutputTokens: 8192,
   },
   direct: {
     ...getDefaultModelSettings(),
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3-thinking',
     temperature: 0.5,
   },
   image: {
