@@ -19,6 +19,7 @@ export interface ScaffoldProjectResponse {
     model: string;
     endpoint?: string;
     error?: string;
+    [key: string]: any;
   };
 }
 
@@ -147,11 +148,12 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
       return {
         ...fallback,
         debug: {
-          transport: 'http',
-          provider: req.settings.provider,
-          model: req.settings.model,
+          transport: 'mock',
+          provider: 'mock',
+          model: 'mock',
           endpoint,
-          error: 'Empty/invalid scaffold response; fell back to local mock.',
+          error: `Empty/invalid scaffold response from ${req.settings.provider}/${req.settings.model}; fell back to local mock.`,
+          upstream: { provider: req.settings.provider, model: req.settings.model, transport: (res as any)?.debug?.transport || 'http' },
         },
       };
     }
@@ -159,7 +161,7 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
       ...res,
       debug: {
         ...(res.debug || {}),
-        transport: 'http',
+        transport: (res as any)?.debug?.transport || 'http',
         provider: req.settings.provider,
         model: req.settings.model,
         endpoint,
@@ -170,11 +172,12 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
     return {
       ...fallback,
       debug: {
-        transport: 'http',
-        provider: req.settings.provider,
-        model: req.settings.model,
+        transport: 'mock',
+        provider: 'mock',
+        model: 'mock',
         endpoint,
-        error: e instanceof Error ? e.message : String(e),
+        error: `HTTP scaffold failed for ${req.settings.provider}/${req.settings.model}: ${e instanceof Error ? e.message : String(e)}`,
+        upstream: { provider: req.settings.provider, model: req.settings.model },
       },
     };
   }

@@ -17,6 +17,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
   const [isProcessing, setIsProcessing] = useState(false);
   const [plan, setPlan] = useState<AgentPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fallbackConfirmArmed, setFallbackConfirmArmed] = useState(false);
   const [phase, setPhase] = useState<'scaffold' | 'assets'>('scaffold');
   const [assetTotal, setAssetTotal] = useState(0);
   const [assetDone, setAssetDone] = useState(0);
@@ -42,6 +43,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
   const resetProgress = () => {
     setPlan(null);
     setError(null);
+    setFallbackConfirmArmed(false);
     setPhase('scaffold');
     setAssetTotal(0);
     setAssetDone(0);
@@ -117,6 +119,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     if (!intent.trim()) return;
     setIsProcessing(true);
     setError(null);
+    setFallbackConfirmArmed(false);
     setPhase('scaffold');
     setAssetTotal(0);
     setAssetDone(0);
@@ -129,8 +132,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     storyRef.current = res.story;
     setPlan(res.plan);
 
-    if (res.debug?.error && aiSettings.scaffoldWorker.provider !== 'mock') {
-      setError(res.debug.error);
+    const isFallback = res.debug?.transport === 'mock' && aiSettings.scaffoldWorker.provider !== 'mock';
+    if ((res.debug?.error || isFallback) && aiSettings.scaffoldWorker.provider !== 'mock') {
+      setError(res.debug?.error || 'Scaffold fell back to local mock output. Confirm to continue or retry.');
       return;
     }
 
@@ -188,6 +192,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
                                     type="button"
                                     onClick={() => {
                                       setError(null);
+                                      setFallbackConfirmArmed(false);
                                       runScaffold().catch((e) => setError(e instanceof Error ? e.message : String(e)));
                                     }}
                                     className="px-4 py-2 rounded-xl bg-rose-500/20 border border-rose-500/30 text-rose-100 text-[11px] font-black uppercase tracking-widest hover:bg-rose-500/25"
@@ -199,19 +204,25 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
                                       type="button"
                                       onClick={() => {
                                         const res = lastScaffoldRef.current;
+                                        if (!fallbackConfirmArmed) {
+                                          setFallbackConfirmArmed(true);
+                                          return;
+                                        }
                                         setError(null);
+                                        setFallbackConfirmArmed(false);
                                         if (!res) return;
                                         runAssets(res).catch((e) => setError(e instanceof Error ? e.message : String(e)));
                                       }}
                                       className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white/70 text-[11px] font-black uppercase tracking-widest hover:bg-white/10"
                                     >
-                                      Continue Anyway
+                                      {fallbackConfirmArmed ? 'Confirm Fallback' : 'Use Fallback'}
                                     </button>
                                   )}
                                   <button
                                     type="button"
                                     onClick={() => {
                                       setError(null);
+                                      setFallbackConfirmArmed(false);
                                       setIsProcessing(false);
                                     }}
                                     className="text-[11px] font-black uppercase tracking-widest text-rose-200/80 hover:underline"

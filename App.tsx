@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle, Info } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Info, X } from 'lucide-react';
 import { Sidebar } from './components/Layout/Sidebar';
 import { DirectorConsole } from './components/Console/DirectorConsole';
 import { InspectorPanel } from './components/Inspector/InspectorPanel';
@@ -17,7 +17,7 @@ import { StartProductionModal } from './components/Production/StartProductionMod
 import { DebugPanel } from './components/Debug/DebugPanel';
 import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
 import { loadAiSettings, saveAiSettings } from './lib/ai/aiSettingsStorage';
-import { runDirectorCommand } from './lib/ai/agent/direct';
+import { runDirectorCommand, type DirectorCommandResponse } from './lib/ai/agent/direct';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
 import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
@@ -411,6 +411,8 @@ export default function App() {
   const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'info' }>>([]);
+  const [pendingDirectorFallback, setPendingDirectorFallback] = useState<null | { projectId: string; res: DirectorCommandResponse }>(null);
+  const [pendingDirectorFallbackArmed, setPendingDirectorFallbackArmed] = useState(false);
 
   const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace());
   const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
@@ -843,11 +845,157 @@ export default function App() {
     // TODO: structured dialogue lines (future).
   };
 
+  const applyDirectorActions = (projectId: string, story: Story, actions: AgentAction[]) => {
+    if (!actions.length) {
+      addToast('No changes applied', 'info');
+      return;
+    }
+
+    const navigateActions = actions.filter((a) => a.type === 'NAVIGATE');
+    const mutationActions = actions.filter((a) => !a.type.startsWith('GENERATE_') && a.type !== 'NAVIGATE');
+    const generateActions = actions.filter((a) => a.type.startsWith('GENERATE_'));
+
+    if (mutationActions.length) {
+      updateStoryById(projectId, (prev) => applyActionsToStory(prev, mutationActions));
+      addToast('Director applied edits', 'success');
+    }
+
+    if (navigateActions.length) {
+      const last = navigateActions[navigateActions.length - 1];
+      const nextSel = last?.payload as SelectionState | undefined;
+      if (nextSel?.type && nextSel?.id) setSelection(nextSel);
+    }
+
+    if (!generateActions.length) return;
+
+    const storyAfterUpdates = mutationActions.length ? applyActionsToStory(story, mutationActions) : story;
+
+    const deduped = new Map<string, AssetJob>();
+    const addJob = (key: string, job: AssetJob) => {
+      if (!deduped.has(key)) deduped.set(key, job);
+    };
+
+    let concurrency = 2;
+    let scopeLabel = 'director';
+
+    for (const a of generateActions) {
+      const payload = (a as any).payload || {};
+      if (a.type === 'GENERATE_PROJECT_ASSETS') {
+        const scope = String(payload.scope || 'all') as any;
+        if (typeof payload.concurrency === 'number' && payload.concurrency > 0 && payload.concurrency <= 6) {
+          concurrency = Math.floor(payload.concurrency);
+        }
+        scopeLabel = `director:${scope}`;
+        const jobs = buildAssetJobs(storyAfterUpdates, scope);
+        for (const j of jobs) {
+          if (j.kind === 'masterkv') addJob(`masterkv`, j);
+          if (j.kind === 'shot') addJob(`shot:${j.sequenceId}:${j.shot.id}`, j);
+          if (j.kind === 'location') addJob(`location:${j.locationId}`, j);
+          if (j.kind === 'character') addJob(`character:${j.characterId}`, j);
+          if (j.kind === 'look') addJob(`look:${j.characterId}:${j.lookId}`, j);
+        }
+        continue;
+      }
+
+      if (a.type === 'GENERATE_SHOT_IMAGE') {
+        const sequenceId = String(payload.sequenceId || '');
+        const shotId = String(payload.shotId || '');
+        const seq = storyAfterUpdates.sequences.find((s) => s.id === sequenceId);
+        const shot = seq?.shots.find((s) => s.id === shotId);
+        if (shot && sequenceId) addJob(`shot:${sequenceId}:${shotId}`, { kind: 'shot', sequenceId, shot });
+        continue;
+      }
+
+      if (a.type === 'GENERATE_LOCATION_PREVIEW') {
+        const locationId = String(payload.locationId || '');
+        const loc = storyAfterUpdates.locations.find((l) => l.id === locationId);
+        if (loc) addJob(`location:${locationId}`, { kind: 'location', locationId, prompt: buildLocationPreviewPrompt(loc) });
+        continue;
+      }
+
+      if (a.type === 'GENERATE_CHARACTER_AVATAR') {
+        const characterId = String(payload.characterId || '');
+        const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
+        if (ch) addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch) });
+        continue;
+      }
+
+      if (a.type === 'GENERATE_CHARACTER_LOOK') {
+        const characterId = String(payload.characterId || '');
+        const lookId = String(payload.lookId || '');
+        const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
+        const lk = ch?.looks?.find((x) => x.id === lookId);
+        if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk) });
+        continue;
+      }
+    }
+
+    const jobs = Array.from(deduped.values());
+    if (jobs.length && aiSettings.image.provider !== 'mock') {
+      addToast(`Queued asset generation (${jobs.length})…`, 'info');
+      addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
+      setTimeout(() => {
+        let storyRef = storyAfterUpdates;
+        executeAssetJobs({
+          jobs,
+          settings: aiSettings.image,
+          aspectRatio: storyAfterUpdates.aspectRatio,
+          concurrency,
+          getStoryForRefs: () => storyRef,
+          maxAttempts: 3,
+          stopAfterMasterKvFailure: true,
+          onEvent: (ev) => {
+            if (ev.type === 'start') {
+              storyRef = applyAssetStart(storyRef, ev.job);
+              updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
+              addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
+            }
+            if (ev.type === 'success') {
+              storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl);
+              updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl));
+              addDebugEvent({
+                level: 'info',
+                scope: 'asset.exec',
+                message: 'Success',
+                data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
+              });
+            }
+            if (ev.type === 'blocked') {
+              storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
+              updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
+              addDebugEvent({
+                level: 'warn',
+                scope: 'asset.exec',
+                message: 'Blocked',
+                data: { done: ev.done, total: ev.total, job: ev.job, reason: ev.reason },
+              });
+            }
+            if (ev.type === 'error') {
+              storyRef = applyAssetError(storyRef, ev.job, ev.error);
+              updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
+              addDebugEvent({
+                level: 'warn',
+                scope: 'asset.exec',
+                message: 'Error',
+                data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error },
+              });
+            }
+            if (ev.done === ev.total) addToast('Assets generated (director).', 'success');
+          },
+        }).catch(() => {
+          addToast('Asset generation had errors. Check Debug.', 'info');
+        });
+      }, 0);
+    } else if (jobs.length) {
+      addToast('Asset generation requested, but Image Provider is Mock.', 'info');
+    }
+  };
+
   // ----- Director Console -----
 
-	  const handleDirectorMessage = async (msg: string) => {
-	    if (!activeStory || !workspace.activeProjectId) return;
-      const projectId = workspace.activeProjectId;
+		  const handleDirectorMessage = async (msg: string) => {
+		    if (!activeStory || !workspace.activeProjectId) return;
+	      const projectId = workspace.activeProjectId;
 
 	    const userEntry: AgentLogEntry = {
 	      id: `u-${Date.now()}`,
@@ -861,174 +1009,37 @@ export default function App() {
 	      [projectId]: [...(prev[projectId] || []), userEntry],
 	    }));
 
-	    const res = await runDirectorCommand({
-	      message: msg,
-	      selection,
-	      story: activeStory,
-	      settings: aiSettings.direct,
-	    });
+		    const res = await runDirectorCommand({
+		      message: msg,
+		      selection,
+		      story: activeStory,
+		      settings: aiSettings.direct,
+		    });
+        const isFallback = res.debug?.transport === 'rule' && aiSettings.direct.provider !== 'mock';
 
-    const agentEntry: AgentLogEntry = {
-      id: `a-${Date.now()}`,
-      role: 'agent',
-      content: res.reply,
-      timestamp: Date.now(),
-      actionDetails: { type: 'DIRECTOR_COMMAND', actions: res.actions, planId: res.plan.id },
-      debug: res.debug,
-    };
+	    const agentEntry: AgentLogEntry = {
+	      id: `a-${Date.now()}`,
+	      role: 'agent',
+	      content: res.reply,
+	      timestamp: Date.now(),
+	      actionDetails: { type: isFallback ? 'DIRECTOR_FALLBACK_PENDING' : 'DIRECTOR_COMMAND', actions: res.actions, planId: res.plan.id },
+	      debug: res.debug,
+	    };
 
-	    setAgentHistoryByProject((prev) => ({
-	      ...prev,
-	      [projectId]: [...(prev[projectId] || []), agentEntry],
-	    }));
+		    setAgentHistoryByProject((prev) => ({
+		      ...prev,
+		      [projectId]: [...(prev[projectId] || []), agentEntry],
+		    }));
 
-	    if (res.debug?.error && aiSettings.direct.provider !== 'mock') {
-	      addToast('Director command fell back to rule-based output. Open Debug (Ctrl/Cmd+Shift+D) for details.', 'info');
-		    }
-	
-		    if (res.actions.length > 0) {
-		      const navigateActions = res.actions.filter((a) => a.type === 'NAVIGATE');
-		      const mutationActions = res.actions.filter((a) => !a.type.startsWith('GENERATE_') && a.type !== 'NAVIGATE');
-		      const generateActions = res.actions.filter((a) => a.type.startsWith('GENERATE_'));
-	
-		      if (mutationActions.length) {
-		        updateStoryById(projectId, (prev) => applyActionsToStory(prev, mutationActions));
-		        addToast('Director AI applied edits', 'success');
-		      }
-	
-		      if (navigateActions.length) {
-		        const last = navigateActions[navigateActions.length - 1];
-		        const nextSel = last?.payload as SelectionState | undefined;
-		        if (nextSel?.type && nextSel?.id) setSelection(nextSel);
-		      }
-	
-		      if (generateActions.length) {
-		        const storyAfterUpdates = mutationActions.length ? applyActionsToStory(activeStory, mutationActions) : activeStory;
-	
-		        const deduped = new Map<string, AssetJob>();
-		        const addJob = (key: string, job: AssetJob) => {
-		          if (!deduped.has(key)) deduped.set(key, job);
-	        };
-
-	        let concurrency = 2;
-	        let scopeLabel = 'director';
-
-	        for (const a of generateActions) {
-	          const payload = (a as any).payload || {};
-	          if (a.type === 'GENERATE_PROJECT_ASSETS') {
-	            const scope = String(payload.scope || 'all') as any;
-	            if (typeof payload.concurrency === 'number' && payload.concurrency > 0 && payload.concurrency <= 6) {
-	              concurrency = Math.floor(payload.concurrency);
-	            }
-	            scopeLabel = `director:${scope}`;
-		            const jobs = buildAssetJobs(storyAfterUpdates, scope);
-		            for (const j of jobs) {
-		              if (j.kind === 'masterkv') addJob(`masterkv`, j);
-		              if (j.kind === 'shot') addJob(`shot:${j.sequenceId}:${j.shot.id}`, j);
-		              if (j.kind === 'location') addJob(`location:${j.locationId}`, j);
-		              if (j.kind === 'character') addJob(`character:${j.characterId}`, j);
-		              if (j.kind === 'look') addJob(`look:${j.characterId}:${j.lookId}`, j);
-		            }
-	            continue;
-	          }
-
-	          if (a.type === 'GENERATE_SHOT_IMAGE') {
-	            const sequenceId = String(payload.sequenceId || '');
-	            const shotId = String(payload.shotId || '');
-	            const seq = storyAfterUpdates.sequences.find((s) => s.id === sequenceId);
-	            const shot = seq?.shots.find((s) => s.id === shotId);
-	            if (shot && sequenceId) addJob(`shot:${sequenceId}:${shotId}`, { kind: 'shot', sequenceId, shot });
-	            continue;
-	          }
-
-	          if (a.type === 'GENERATE_LOCATION_PREVIEW') {
-	            const locationId = String(payload.locationId || '');
-	            const loc = storyAfterUpdates.locations.find((l) => l.id === locationId);
-	            if (loc) addJob(`location:${locationId}`, { kind: 'location', locationId, prompt: buildLocationPreviewPrompt(loc) });
-	            continue;
-	          }
-
-	          if (a.type === 'GENERATE_CHARACTER_AVATAR') {
-	            const characterId = String(payload.characterId || '');
-	            const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
-	            if (ch) addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch) });
-	            continue;
-	          }
-
-	          if (a.type === 'GENERATE_CHARACTER_LOOK') {
-	            const characterId = String(payload.characterId || '');
-	            const lookId = String(payload.lookId || '');
-	            const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
-	            const lk = ch?.looks?.find((x) => x.id === lookId);
-	            if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk) });
-	            continue;
-	          }
-	        }
-
-	        const jobs = Array.from(deduped.values());
-	        if (jobs.length && aiSettings.image.provider !== 'mock') {
-	          addToast(`Queued asset generation (${jobs.length})…`, 'info');
-	          addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
-	          setTimeout(() => {
-              let storyRef = storyAfterUpdates;
-	            executeAssetJobs({
-	              jobs,
-	              settings: aiSettings.image,
-	              aspectRatio: storyAfterUpdates.aspectRatio,
-	              concurrency,
-	                getStoryForRefs: () => storyRef,
-                maxAttempts: 3,
-                stopAfterMasterKvFailure: true,
-	              onEvent: (ev) => {
-	                if (ev.type === 'start') {
-	                    storyRef = applyAssetStart(storyRef, ev.job);
-	                  updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
-	                  addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
-	                }
-	                if (ev.type === 'success') {
-	                    storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl);
-	                  updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl));
-	                  addDebugEvent({
-	                    level: 'info',
-	                    scope: 'asset.exec',
-	                    message: 'Success',
-	                    data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
-	                  });
-	                }
-	                if (ev.type === 'blocked') {
-                    storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
-                    updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
-                    addDebugEvent({
-                      level: 'warn',
-                      scope: 'asset.exec',
-                      message: 'Blocked',
-                      data: { done: ev.done, total: ev.total, job: ev.job, reason: ev.reason },
-                    });
-                  }
-	                if (ev.type === 'error') {
-	                    storyRef = applyAssetError(storyRef, ev.job, ev.error);
-	                  updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
-	                  addDebugEvent({
-	                    level: 'warn',
-	                    scope: 'asset.exec',
-	                    message: 'Error',
-	                    data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error, attempt: (ev as any).attempt, attempts: (ev as any).attempts },
-	                  });
-	                }
-	                if (ev.done === ev.total) addToast('Assets generated (director).', 'success');
-	              },
-	            }).catch(() => {
-	              addToast('Asset generation had errors. Check Debug.', 'info');
-	            });
-	          }, 0);
-	        } else if (jobs.length) {
-	          addToast('Asset generation requested, but Image Provider is Mock.', 'info');
-	        }
-	      }
-	    } else {
-	      addToast('No changes applied', 'info');
-	    }
-	  };
+        if (isFallback) {
+          setPendingDirectorFallback({ projectId, res });
+          setPendingDirectorFallbackArmed(false);
+          addToast('Director returned fallback output. Confirm before applying.', 'info');
+          return;
+        }
+		
+        applyDirectorActions(projectId, activeStory, res.actions);
+		  };
 
   // ----- Screens -----
 
@@ -1272,6 +1283,78 @@ export default function App() {
           agentHistory={agentHistory}
           onClose={() => setIsDebugOpen(false)}
         />
+      )}
+
+      {pendingDirectorFallback && pendingDirectorFallback.projectId === activeStory.id && !isPlayingMaster && (
+        <div className="fixed inset-0 z-[3500] bg-black/60 backdrop-blur-sm p-6 flex items-center justify-center">
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden">
+            <div className="h-14 px-5 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-amber-500" />
+                <div className="text-sm font-bold">Fallback confirmation</div>
+              </div>
+              <button
+                onClick={() => {
+                  setPendingDirectorFallback(null);
+                  setPendingDirectorFallbackArmed(false);
+                }}
+                className="p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
+                title="Close"
+              >
+                <X className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="text-sm text-zinc-700 dark:text-zinc-200">
+                Director returned a <span className="font-bold">fallback</span> (rule-based) result. This is not guaranteed to match your intent.
+                Confirm explicitly before applying.
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4 text-sm text-zinc-700 dark:text-zinc-200">
+                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Reply</div>
+                <div className="whitespace-pre-wrap">{pendingDirectorFallback.res.reply}</div>
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                    Actions ({pendingDirectorFallback.res.actions.length})
+                  </div>
+                </div>
+                <pre className="p-4 text-[11px] leading-relaxed font-mono whitespace-pre-wrap text-zinc-700 dark:text-zinc-200 max-h-56 overflow-y-auto custom-scrollbar">
+                  {JSON.stringify(pendingDirectorFallback.res.actions, null, 2)}
+                </pre>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  onClick={() => {
+                    setPendingDirectorFallback(null);
+                    setPendingDirectorFallbackArmed(false);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-200 text-[11px] font-black uppercase tracking-widest hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  Discard
+                </button>
+                <button
+                  onClick={() => {
+                    if (!pendingDirectorFallbackArmed) {
+                      setPendingDirectorFallbackArmed(true);
+                      return;
+                    }
+                    applyDirectorActions(pendingDirectorFallback.projectId, activeStory, pendingDirectorFallback.res.actions);
+                    setPendingDirectorFallback(null);
+                    setPendingDirectorFallbackArmed(false);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest hover:opacity-90"
+                >
+                  {pendingDirectorFallbackArmed ? 'Confirm Apply' : 'Apply Fallback'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {productionTarget && (

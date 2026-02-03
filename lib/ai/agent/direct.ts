@@ -18,6 +18,7 @@ export interface DirectorCommandResponse {
     model: string;
     endpoint?: string;
     error?: string;
+    [key: string]: any;
   };
 }
 
@@ -338,7 +339,7 @@ export const runDirectorCommand = async (req: DirectorCommandRequest): Promise<D
       ...res,
       debug: {
         ...(res.debug || {}),
-        transport: 'http',
+        transport: (res as any)?.debug?.transport || 'http',
         provider: req.settings.provider,
         model: req.settings.model,
         endpoint,
@@ -349,11 +350,12 @@ export const runDirectorCommand = async (req: DirectorCommandRequest): Promise<D
     return {
       ...fallback,
       debug: {
-        transport: 'http',
-        provider: req.settings.provider,
-        model: req.settings.model,
+        transport: 'rule',
+        provider: 'mock',
+        model: 'rule',
         endpoint,
-        error: e instanceof Error ? e.message : String(e),
+        error: `HTTP director failed for ${req.settings.provider}/${req.settings.model}: ${e instanceof Error ? e.message : String(e)}`,
+        upstream: { provider: req.settings.provider, model: req.settings.model },
       },
     };
   }
