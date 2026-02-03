@@ -42,8 +42,330 @@ type Screen = 'library' | 'creation' | 'project';
 
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
 
+function renumberShots(shots: Shot[]): Shot[] {
+  return shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
+}
+
+function createBlankShot(
+  story: Story,
+  seq: Sequence,
+  init?: Partial<Pick<Shot, 'locationId' | 'timeOfDay' | 'description' | 'duration'>>,
+): Shot {
+  const now = Date.now();
+  const fallbackLocationId = story.locations[0]?.id || '';
+  const shotNumber = seq.shots.length + 1;
+  const thumb = IMAGES.SHOT_WIDE;
+
+  return {
+    id: `shot-${now}`,
+    sequence: shotNumber,
+    locationId: init?.locationId || fallbackLocationId,
+    timeOfDay: init?.timeOfDay || 'Day',
+    description: init?.description || 'New shot',
+    duration: typeof init?.duration === 'number' && Number.isFinite(init.duration) ? Math.max(1, Math.round(init.duration)) : 4,
+    thumbnailUrl: thumb,
+    activeVersionId: 'v1',
+    versions: [{ id: 'v1', imageUrl: thumb, createdAt: now, type: 'base' }],
+    elements: {
+      [ElementType.SCRIPT]: { type: ElementType.SCRIPT, prompt: '', status: 'auto' },
+      [ElementType.CASTING]: { type: ElementType.CASTING, prompt: '', status: 'manual', metadata: { characters: [] } },
+      [ElementType.CAMERA]: { type: ElementType.CAMERA, prompt: 'Cinematic shot', status: 'auto' },
+      [ElementType.LIGHTING]: { type: ElementType.LIGHTING, prompt: 'Natural cinematic lighting', status: 'auto' },
+      [ElementType.AUDIO]: { type: ElementType.AUDIO, prompt: 'Ambient sound', status: 'auto' },
+    },
+    aiState: 'idle',
+    production: { status: 'idle' },
+  };
+}
+
 const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
   return actions.reduce<Story>((acc, action) => {
+    if (action.type === 'UPDATE_STORY') {
+      const patch = action.payload?.patch || action.payload || {};
+      return {
+        ...acc,
+        title: typeof patch.title === 'string' ? patch.title : acc.title,
+        logline: typeof patch.logline === 'string' ? patch.logline : acc.logline,
+        intent: typeof patch.intent === 'string' ? patch.intent : acc.intent,
+        keyVisualUrl: typeof patch.keyVisualUrl === 'string' ? patch.keyVisualUrl : acc.keyVisualUrl,
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'CREATE_SEQUENCE') {
+      const now = Date.now();
+      const title = typeof action.payload?.title === 'string' ? action.payload.title : 'New Sequence';
+      const context = typeof action.payload?.context === 'string' ? action.payload.context : 'Describe the narrative beat...';
+      const newSeq: Sequence = { id: `seq-${now}-${Math.random().toString(16).slice(2, 8)}`, title, context, shots: [] };
+      return { ...acc, sequences: [...acc.sequences, newSeq], updatedAt: Date.now() };
+    }
+
+    if (action.type === 'RENAME_SEQUENCE') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      const title = action.payload?.title;
+      if (!sequenceId || typeof title !== 'string') return acc;
+      return {
+        ...acc,
+        sequences: acc.sequences.map((s) => (s.id === sequenceId ? { ...s, title } : s)),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'DELETE_SEQUENCE') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      if (!sequenceId) return acc;
+      return { ...acc, sequences: acc.sequences.filter((s) => s.id !== sequenceId), updatedAt: Date.now() };
+    }
+
+    if (action.type === 'CREATE_SHOT') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      if (!sequenceId) return acc;
+      const afterShotId = action.payload?.afterShotId ? String(action.payload.afterShotId) : undefined;
+      const init = {
+        locationId: action.payload?.locationId ? String(action.payload.locationId) : undefined,
+        timeOfDay: action.payload?.timeOfDay ? String(action.payload.timeOfDay) : undefined,
+        description: action.payload?.description ? String(action.payload.description) : undefined,
+        duration: typeof action.payload?.duration === 'number' ? action.payload.duration : undefined,
+      };
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          const newShot = createBlankShot(acc, seq, init);
+          const shots = seq.shots.slice();
+          let insertAt = shots.length;
+          if (afterShotId) {
+            const idx = shots.findIndex((s) => s.id === afterShotId);
+            if (idx >= 0) insertAt = idx + 1;
+          }
+          shots.splice(insertAt, 0, newShot);
+          return { ...seq, shots: renumberShots(shots) };
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'DELETE_SHOT') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      const shotId = String(action.payload?.shotId || '');
+      if (!sequenceId || !shotId) return acc;
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          return { ...seq, shots: renumberShots(seq.shots.filter((s) => s.id !== shotId)) };
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'MOVE_SHOT') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      const shotId = String(action.payload?.shotId || '');
+      if (!sequenceId || !shotId) return acc;
+      const direction = action.payload?.direction === 'left' || action.payload?.direction === 'right' ? action.payload.direction : null;
+      const toIndex = typeof action.payload?.toIndex === 'number' ? Math.floor(action.payload.toIndex) : null;
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          const idx = seq.shots.findIndex((s) => s.id === shotId);
+          if (idx < 0) return seq;
+          const next = seq.shots.slice();
+          const [item] = next.splice(idx, 1);
+          if (!item) return seq;
+          let insertAt = idx;
+          if (direction) insertAt = direction === 'left' ? Math.max(0, idx - 1) : Math.min(next.length, idx + 1);
+          if (toIndex !== null) insertAt = Math.min(Math.max(0, toIndex), next.length);
+          next.splice(insertAt, 0, item);
+          return { ...seq, shots: renumberShots(next) };
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'UPDATE_SHOT') {
+      const shotId = String(action.payload?.shotId || '');
+      const sequenceId = action.payload?.sequenceId ? String(action.payload.sequenceId) : null;
+      const patch = action.payload?.patch || {};
+      if (!shotId) return acc;
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (sequenceId && seq.id !== sequenceId) return seq;
+          if (!seq.shots.some((s) => s.id === shotId)) return seq;
+          return {
+            ...seq,
+            shots: seq.shots.map((s) => {
+              if (s.id !== shotId) return s;
+              return {
+                ...s,
+                description: typeof patch.description === 'string' ? patch.description : s.description,
+                timeOfDay: typeof patch.timeOfDay === 'string' ? patch.timeOfDay : s.timeOfDay,
+                locationId: typeof patch.locationId === 'string' ? patch.locationId : s.locationId,
+                duration:
+                  typeof patch.duration === 'number' && Number.isFinite(patch.duration)
+                    ? Math.max(1, Math.round(patch.duration))
+                    : s.duration,
+              };
+            }),
+          };
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'SET_CAST') {
+      const shotId = String(action.payload?.shotId || '');
+      const sequenceId = String(action.payload?.sequenceId || '');
+      const cast = Array.isArray(action.payload?.cast) ? action.payload.cast : [];
+      if (!shotId || !sequenceId) return acc;
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          return {
+            ...seq,
+            shots: seq.shots.map((shot) => {
+              if (shot.id !== shotId) return shot;
+              return {
+                ...shot,
+                elements: {
+                  ...shot.elements,
+                  [ElementType.CASTING]: {
+                    ...shot.elements[ElementType.CASTING],
+                    metadata: { ...(shot.elements[ElementType.CASTING].metadata || {}), characters: cast },
+                    status: 'manual' as const,
+                  },
+                },
+              };
+            }),
+          };
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'CREATE_LOCATION') {
+      const now = Date.now();
+      const name = typeof action.payload?.name === 'string' ? action.payload.name : 'New Environment';
+      const description = typeof action.payload?.description === 'string' ? action.payload.description : 'Describe the atmospheric details...';
+      const visualStyle = typeof action.payload?.visualStyle === 'string' ? action.payload.visualStyle : 'Cinematic style details...';
+      const newLoc: Location = {
+        id: `loc-${now}-${Math.random().toString(16).slice(2, 8)}`,
+        name,
+        description,
+        visualStyle,
+        previewUrl: acc.keyVisualUrl || IMAGES.SKYBRIDGE,
+        status: 'draft',
+      };
+      return { ...acc, locations: [...acc.locations, newLoc], updatedAt: Date.now() };
+    }
+
+    if (action.type === 'UPDATE_LOCATION') {
+      const locationId = String(action.payload?.locationId || '');
+      const patch = action.payload?.patch || {};
+      if (!locationId) return acc;
+      return {
+        ...acc,
+        locations: acc.locations.map((l) =>
+          l.id === locationId
+            ? {
+                ...l,
+                name: typeof patch.name === 'string' ? patch.name : l.name,
+                description: typeof patch.description === 'string' ? patch.description : l.description,
+                visualStyle: typeof patch.visualStyle === 'string' ? patch.visualStyle : l.visualStyle,
+                status: patch.status === 'draft' || patch.status === 'locked' ? patch.status : l.status,
+              }
+            : l,
+        ),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'CREATE_CHARACTER') {
+      const now = Date.now();
+      const name = typeof action.payload?.name === 'string' ? action.payload.name : 'New Character';
+      const description = typeof action.payload?.description === 'string' ? action.payload.description : 'Describe physical traits and personality...';
+      const newChar: Character = {
+        id: `char-${now}-${Math.random().toString(16).slice(2, 8)}`,
+        name,
+        description,
+        avatarUrl: acc.keyVisualUrl || IMAGES.SILAS,
+        status: 'draft',
+        looks: [],
+      };
+      return { ...acc, characters: [...acc.characters, newChar], updatedAt: Date.now() };
+    }
+
+    if (action.type === 'UPDATE_CHARACTER') {
+      const characterId = String(action.payload?.characterId || '');
+      const patch = action.payload?.patch || {};
+      if (!characterId) return acc;
+      return {
+        ...acc,
+        characters: acc.characters.map((c) =>
+          c.id === characterId
+            ? {
+                ...c,
+                name: typeof patch.name === 'string' ? patch.name : c.name,
+                description: typeof patch.description === 'string' ? patch.description : c.description,
+                status: patch.status === 'draft' || patch.status === 'locked' ? patch.status : c.status,
+              }
+            : c,
+        ),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'CREATE_CHARACTER_LOOK') {
+      const characterId = String(action.payload?.characterId || '');
+      if (!characterId) return acc;
+      const now = Date.now();
+      const name = typeof action.payload?.name === 'string' ? action.payload.name : 'New Look';
+      const description = typeof action.payload?.description === 'string' ? action.payload.description : 'Describe wardrobe and makeup...';
+      return {
+        ...acc,
+        characters: acc.characters.map((c) => {
+          if (c.id !== characterId) return c;
+          const look = {
+            id: `look-${now}-${Math.random().toString(16).slice(2, 8)}`,
+            name,
+            description,
+            previewUrl: c.avatarUrl || '',
+          };
+          return { ...c, looks: [...(c.looks || []), look] };
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'UPDATE_CHARACTER_LOOK') {
+      const characterId = String(action.payload?.characterId || '');
+      const lookId = String(action.payload?.lookId || '');
+      const patch = action.payload?.patch || {};
+      if (!characterId || !lookId) return acc;
+      return {
+        ...acc,
+        characters: acc.characters.map((c) => {
+          if (c.id !== characterId) return c;
+          return {
+            ...c,
+            looks: (c.looks || []).map((l: any) =>
+              l.id === lookId
+                ? {
+                    ...l,
+                    name: typeof patch.name === 'string' ? patch.name : l.name,
+                    description: typeof patch.description === 'string' ? patch.description : l.description,
+                  }
+                : l,
+            ),
+          };
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
     if (action.type === 'UPDATE_ELEMENT') {
       const { shotId, sequenceId, elementType, prompt } = action.payload || {};
       if (!shotId || !sequenceId || !elementType) return acc;
@@ -74,40 +396,6 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
 
     return acc;
   }, story);
-};
-
-const renumberShots = (shots: Shot[]): Shot[] => shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
-
-const createBlankShot = (
-  story: Story,
-  seq: Sequence,
-  init?: Partial<Pick<Shot, 'locationId' | 'timeOfDay' | 'description'>>,
-): Shot => {
-  const now = Date.now();
-  const fallbackLocationId = story.locations[0]?.id || '';
-  const shotNumber = seq.shots.length + 1;
-  const thumb = IMAGES.SHOT_WIDE;
-
-  return {
-    id: `shot-${now}`,
-    sequence: shotNumber,
-    locationId: init?.locationId || fallbackLocationId,
-    timeOfDay: init?.timeOfDay || 'Day',
-    description: init?.description || 'New shot',
-    duration: 4,
-    thumbnailUrl: thumb,
-    activeVersionId: 'v1',
-    versions: [{ id: 'v1', imageUrl: thumb, createdAt: now, type: 'base' }],
-    elements: {
-      [ElementType.SCRIPT]: { type: ElementType.SCRIPT, prompt: '', status: 'auto' },
-      [ElementType.CASTING]: { type: ElementType.CASTING, prompt: '', status: 'manual', metadata: { characters: [] } },
-      [ElementType.CAMERA]: { type: ElementType.CAMERA, prompt: 'Cinematic shot', status: 'auto' },
-      [ElementType.LIGHTING]: { type: ElementType.LIGHTING, prompt: 'Natural cinematic lighting', status: 'auto' },
-      [ElementType.AUDIO]: { type: ElementType.AUDIO, prompt: 'Ambient sound', status: 'auto' },
-    },
-    aiState: 'idle',
-    production: { status: 'idle' },
-  };
 };
 
 export default function App() {
@@ -588,23 +876,30 @@ export default function App() {
 
 	    if (res.debug?.error && aiSettings.direct.provider !== 'mock') {
 	      addToast('Director command fell back to rule-based output. Open Debug (Ctrl/Cmd+Shift+D) for details.', 'info');
-	    }
-
-	    if (res.actions.length > 0) {
-	      const updateActions = res.actions.filter((a) => a.type === 'UPDATE_ELEMENT');
-	      const generateActions = res.actions.filter((a) => a.type.startsWith('GENERATE_'));
-
-	      if (updateActions.length) {
-	        updateStoryById(projectId, (prev) => applyActionsToStory(prev, updateActions));
-	        addToast('Director AI applied edits', 'success');
-	      }
-
-	      if (generateActions.length) {
-	        const storyAfterUpdates = updateActions.length ? applyActionsToStory(activeStory, updateActions) : activeStory;
-
-	        const deduped = new Map<string, AssetJob>();
-	        const addJob = (key: string, job: AssetJob) => {
-	          if (!deduped.has(key)) deduped.set(key, job);
+		    }
+	
+		    if (res.actions.length > 0) {
+		      const navigateActions = res.actions.filter((a) => a.type === 'NAVIGATE');
+		      const mutationActions = res.actions.filter((a) => !a.type.startsWith('GENERATE_') && a.type !== 'NAVIGATE');
+		      const generateActions = res.actions.filter((a) => a.type.startsWith('GENERATE_'));
+	
+		      if (mutationActions.length) {
+		        updateStoryById(projectId, (prev) => applyActionsToStory(prev, mutationActions));
+		        addToast('Director AI applied edits', 'success');
+		      }
+	
+		      if (navigateActions.length) {
+		        const last = navigateActions[navigateActions.length - 1];
+		        const nextSel = last?.payload as SelectionState | undefined;
+		        if (nextSel?.type && nextSel?.id) setSelection(nextSel);
+		      }
+	
+		      if (generateActions.length) {
+		        const storyAfterUpdates = mutationActions.length ? applyActionsToStory(activeStory, mutationActions) : activeStory;
+	
+		        const deduped = new Map<string, AssetJob>();
+		        const addJob = (key: string, job: AssetJob) => {
+		          if (!deduped.has(key)) deduped.set(key, job);
 	        };
 
 	        let concurrency = 2;

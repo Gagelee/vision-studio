@@ -778,9 +778,103 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	        const mkId = (prefix: string) => `${prefix}-${now}-${Math.random().toString(16).slice(2, 8)}`;
 
 	        const rule = () => {
+	          const raw = message;
 	          const lower = message.toLowerCase();
+            const storyObj = story && typeof story === 'object' ? story : null;
+            const safeArr = (v: any) => (Array.isArray(v) ? v : []);
+            const findMentioned = (items: any[]) => {
+              const found: any[] = [];
+              for (const it of safeArr(items)) {
+                const name = String(it?.name || '').toLowerCase();
+                if (name && lower.includes(name)) found.push(it);
+              }
+              return found;
+            };
+
 	          const actions: any[] = [];
 	          const notes: string[] = [];
+
+            // Navigation
+            if (['open', 'go to', 'goto', '打开', '进入', '跳转'].some((k) => lower.includes(k))) {
+              const chars = storyObj ? findMentioned(safeArr((storyObj as any).characters)) : [];
+              if (chars.length) {
+                actions.push({ type: 'NAVIGATE', payload: { type: 'character', id: String(chars[0].id || '') } });
+                notes.push('navigate → character');
+              } else {
+                const locs = storyObj ? findMentioned(safeArr((storyObj as any).locations)) : [];
+                if (locs.length) {
+                  actions.push({ type: 'NAVIGATE', payload: { type: 'location', id: String(locs[0].id || '') } });
+                  notes.push('navigate → location');
+                }
+              }
+            }
+
+            // Simple story edits via "标题: xxx" / "logline: xxx"
+            if (/(title|标题)\s*[:：]\s*/i.test(raw)) {
+              const m = raw.match(/(?:title|标题)\s*[:：]\s*(.+)$/i);
+              const title = m?.[1]?.trim();
+              if (title) {
+                actions.push({ type: 'UPDATE_STORY', payload: { patch: { title } } });
+                notes.push('update story title');
+              }
+            }
+            if (/(logline|一句话)\s*[:：]\s*/i.test(raw)) {
+              const m = raw.match(/(?:logline|一句话)\s*[:：]\s*(.+)$/i);
+              const logline = m?.[1]?.trim();
+              if (logline) {
+                actions.push({ type: 'UPDATE_STORY', payload: { patch: { logline } } });
+                notes.push('update story logline');
+              }
+            }
+
+            // Create sequence / shot
+            if (['new sequence', '新增sequence', '新增段落', '新增序列', 'add sequence'].some((k) => lower.includes(k))) {
+              actions.push({ type: 'CREATE_SEQUENCE', payload: {} });
+              notes.push('create sequence');
+            }
+            if (['new shot', '新增镜头', '新增分镜', '新增beat', 'add shot', 'add beat'].some((k) => lower.includes(k))) {
+              if (selection?.type === 'shot') {
+                const shotId = String(selection?.id || '');
+                const sequenceId = String(selection?.parentId || '');
+                if (shotId && sequenceId) {
+                  actions.push({ type: 'CREATE_SHOT', payload: { sequenceId, afterShotId: shotId } });
+                  notes.push('create shot (after current)');
+                }
+              } else if (selection?.type === 'sequence') {
+                const sequenceId = String(selection?.id || '');
+                if (sequenceId) {
+                  actions.push({ type: 'CREATE_SHOT', payload: { sequenceId } });
+                  notes.push('create shot (append)');
+                }
+              }
+            }
+
+            // Shot structure edits
+            if (selection?.type === 'shot') {
+              const shotId = String(selection?.id || '');
+              const sequenceId = String(selection?.parentId || '');
+              if (shotId && sequenceId) {
+                if (lower.includes('night') || lower.includes('夜')) {
+                  actions.push({ type: 'UPDATE_SHOT', payload: { shotId, sequenceId, patch: { timeOfDay: 'Night' } } });
+                  notes.push('shot time → night');
+                }
+                if (lower.includes('day') || lower.includes('白天')) {
+                  actions.push({ type: 'UPDATE_SHOT', payload: { shotId, sequenceId, patch: { timeOfDay: 'Day' } } });
+                  notes.push('shot time → day');
+                }
+                const locs = storyObj ? findMentioned(safeArr((storyObj as any).locations)) : [];
+                if (locs.length) {
+                  actions.push({ type: 'UPDATE_SHOT', payload: { shotId, sequenceId, patch: { locationId: String(locs[0].id || '') } } });
+                  notes.push('shot environment → ' + String(locs[0].name || ''));
+                }
+                const chars = storyObj ? findMentioned(safeArr((storyObj as any).characters)) : [];
+                if (chars.length && ['add', '加入', '加上', '加', 'cast'].some((k) => lower.includes(k))) {
+                  const cast = chars.slice(0, 4).map((c: any) => ({ id: String(c?.id || ''), activeLookId: String(c?.looks?.[0]?.id || '') }));
+                  actions.push({ type: 'SET_CAST', payload: { shotId, sequenceId, cast } });
+                  notes.push('set cast');
+                }
+              }
+            }
 
             const wantsGenerate = ['generate', 'render', 'asset', 'assets', 'image', 'images', '出图', '生成', '渲染', '资产', '缩略图'].some((k) =>
               lower.includes(k)
@@ -799,26 +893,28 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   actions.push({ type: 'GENERATE_LOCATION_PREVIEW', payload: { locationId } });
                   notes.push('generate location preview');
                 }
-              } else if (selection?.type === 'character') {
-                const characterId = String(selection?.id || '');
-                if (characterId) {
-                  actions.push({ type: 'GENERATE_CHARACTER_AVATAR', payload: { characterId } });
-                  notes.push('generate character avatar');
-                }
-              } else {
-                const scope = ['shot', 'shots', '镜头', '分镜'].some((k) => lower.includes(k))
-                  ? 'shots'
-                  : ['location', 'locations', '环境', '置景'].some((k) => lower.includes(k))
-                    ? 'locations'
-                    : ['character', 'characters', '角色', '人物'].some((k) => lower.includes(k))
-                      ? 'characters'
-                      : ['look', 'looks', '造型'].some((k) => lower.includes(k))
-                        ? 'looks'
-                        : 'all';
-                actions.push({ type: 'GENERATE_PROJECT_ASSETS', payload: { scope, concurrency: 2 } });
-                notes.push(`generate project assets (${scope})`);
-              }
-            }
+	              } else if (selection?.type === 'character') {
+	                const characterId = String(selection?.id || '');
+	                if (characterId) {
+	                  actions.push({ type: 'GENERATE_CHARACTER_AVATAR', payload: { characterId } });
+	                  notes.push('generate character avatar');
+	                }
+	              } else {
+	                const scope = ['kv', 'key visual', '主视觉', '主kv'].some((k) => lower.includes(k))
+                    ? 'masterkv'
+                    : ['shot', 'shots', '镜头', '分镜'].some((k) => lower.includes(k))
+	                    ? 'shots'
+	                  : ['location', 'locations', '环境', '置景'].some((k) => lower.includes(k))
+	                    ? 'locations'
+	                    : ['character', 'characters', '角色', '人物'].some((k) => lower.includes(k))
+	                      ? 'characters'
+	                      : ['look', 'looks', '造型'].some((k) => lower.includes(k))
+	                        ? 'looks'
+	                        : 'all';
+	                actions.push({ type: 'GENERATE_PROJECT_ASSETS', payload: { scope, concurrency: 2 } });
+	                notes.push(`generate project assets (${scope})`);
+	              }
+	            }
 
 	          if (selection?.type === 'shot') {
 	            const shotId = String(selection?.id || '');

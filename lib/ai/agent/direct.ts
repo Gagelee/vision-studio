@@ -54,9 +54,138 @@ const includesAny = (text: string, phrases: string[]) => phrases.some((p) => tex
 
 const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
   const now = Date.now();
-  const msg = req.message.toLowerCase();
+  const raw = String(req.message || '').trim();
+  const msg = raw.toLowerCase();
   const actions: AgentAction[] = [];
   const notes: string[] = [];
+
+  const story = req.story;
+  const selection = req.selection;
+
+  const findByName = <T extends { id: string; name: string }>(items: T[], needle: string) => {
+    const q = needle.trim().toLowerCase();
+    if (!q) return null;
+    return items.find((x) => String(x.name || '').toLowerCase().includes(q)) || null;
+  };
+
+  const findMentioned = <T extends { id: string; name: string }>(items: T[]) => {
+    const found: T[] = [];
+    for (const it of items) {
+      const n = String(it.name || '').toLowerCase();
+      if (n && msg.includes(n)) found.push(it);
+    }
+    return found;
+  };
+
+  const getSelectedShot = () => {
+    if (selection.type !== 'shot') return null;
+    const seqId = selection.parentId || '';
+    const seq = story.sequences.find((s) => s.id === seqId);
+    const shot = seq?.shots.find((s) => s.id === selection.id) || null;
+    return shot ? { seqId, shot } : null;
+  };
+
+  // Navigation ("open/go to")
+  if (includesAny(msg, ['open', 'go to', 'goto', '打开', '进入', '跳转'])) {
+    const mentionedChars = findMentioned(story.characters || []);
+    if (mentionedChars.length) {
+      actions.push({ type: 'NAVIGATE', payload: { type: 'character', id: mentionedChars[0].id } });
+      notes.push('navigate → character');
+    }
+    const mentionedLocs = findMentioned(story.locations || []);
+    if (!mentionedChars.length && mentionedLocs.length) {
+      actions.push({ type: 'NAVIGATE', payload: { type: 'location', id: mentionedLocs[0].id } });
+      notes.push('navigate → location');
+    }
+  }
+
+  // Story-level edits
+  if (includesAny(msg, ['title:', '标题:', '标题：', '改标题', 'rename title'])) {
+    const m = raw.match(/(?:title|标题)\s*[:：]\s*(.+)$/i);
+    const title = m?.[1]?.trim();
+    if (title) {
+      actions.push({ type: 'UPDATE_STORY', payload: { patch: { title } } });
+      notes.push('update story title');
+    }
+  }
+
+  if (includesAny(msg, ['logline:', '一句话:', '一句话：', '改logline', '改一句话'])) {
+    const m = raw.match(/(?:logline|一句话)\s*[:：]\s*(.+)$/i);
+    const logline = m?.[1]?.trim();
+    if (logline) {
+      actions.push({ type: 'UPDATE_STORY', payload: { patch: { logline } } });
+      notes.push('update story logline');
+    }
+  }
+
+  if (includesAny(msg, ['intent:', '意图:', '意图：', '改意图'])) {
+    const m = raw.match(/(?:intent|意图)\s*[:：]\s*(.+)$/i);
+    const intent = m?.[1]?.trim();
+    if (intent) {
+      actions.push({ type: 'UPDATE_STORY', payload: { patch: { intent } } });
+      notes.push('update story intent');
+    }
+  }
+
+  // Create sequence / shot
+  if (includesAny(msg, ['new sequence', '新增sequence', '新增段落', '新增序列', 'add sequence'])) {
+    actions.push({ type: 'CREATE_SEQUENCE', payload: {} });
+    notes.push('create sequence');
+  }
+
+  if (includesAny(msg, ['new shot', '新增镜头', '新增分镜', '新增beat', 'add shot', 'add beat'])) {
+    const selected = getSelectedShot();
+    if (selected) {
+      actions.push({
+        type: 'CREATE_SHOT',
+        payload: {
+          sequenceId: selected.seqId,
+          afterShotId: selected.shot.id,
+          locationId: selected.shot.locationId,
+          timeOfDay: selected.shot.timeOfDay,
+        },
+      });
+      notes.push('create shot (after current)');
+    } else if (selection.type === 'sequence') {
+      actions.push({ type: 'CREATE_SHOT', payload: { sequenceId: selection.id } });
+      notes.push('create shot (append)');
+    }
+  }
+
+  // Shot structure edits: time/location/cast
+  const selected = getSelectedShot();
+  if (selected) {
+    if (includesAny(msg, ['night', '夜'])) {
+      actions.push({ type: 'UPDATE_SHOT', payload: { shotId: selected.shot.id, sequenceId: selected.seqId, patch: { timeOfDay: 'Night' } } });
+      notes.push('shot time → night');
+    } else if (includesAny(msg, ['day', '白天', '日'])) {
+      actions.push({ type: 'UPDATE_SHOT', payload: { shotId: selected.shot.id, sequenceId: selected.seqId, patch: { timeOfDay: 'Day' } } });
+      notes.push('shot time → day');
+    }
+
+    const mentionedLocs = findMentioned(story.locations || []);
+    if (mentionedLocs.length) {
+      actions.push({
+        type: 'UPDATE_SHOT',
+        payload: { shotId: selected.shot.id, sequenceId: selected.seqId, patch: { locationId: mentionedLocs[0].id } },
+      });
+      notes.push('shot environment → ' + mentionedLocs[0].name);
+    }
+
+    const mentionedChars = findMentioned(story.characters || []);
+    if (includesAny(msg, ['add', '加入', '加上', '加', 'cast']) && mentionedChars.length) {
+      const existing = (selected.shot.elements as any)?.CASTING?.metadata?.characters;
+      const existingArr = Array.isArray(existing) ? existing : [];
+      const seen = new Set(existingArr.map((c: any) => String(c?.id || '')));
+      const next = existingArr.slice();
+      for (const c of mentionedChars) {
+        if (seen.has(c.id)) continue;
+        next.push({ id: c.id, activeLookId: c.looks?.[0]?.id || '' });
+      }
+      actions.push({ type: 'SET_CAST', payload: { sequenceId: selected.seqId, shotId: selected.shot.id, cast: next } });
+      notes.push('update cast (+)');
+    }
+  }
 
   const wantsGenerate = includesAny(msg, ['generate', 'render', 'asset', 'assets', 'image', 'images', '出图', '生成', '渲染', '资产', '缩略图']);
   if (wantsGenerate) {
@@ -80,7 +209,9 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
         notes.push('generate character avatar');
       }
     } else {
-      const scope = includesAny(msg, ['shot', 'shots', '镜头', '分镜'])
+      const scope = includesAny(msg, ['kv', 'key visual', '主视觉', '主kv'])
+        ? 'masterkv'
+        : includesAny(msg, ['shot', 'shots', '镜头', '分镜'])
         ? 'shots'
         : includesAny(msg, ['location', 'locations', '环境', '置景'])
           ? 'locations'
