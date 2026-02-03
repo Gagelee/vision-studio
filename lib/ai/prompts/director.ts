@@ -31,7 +31,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `   payload: { characterId: string, patch: { name?: string, description?: string, status?: "draft"|"locked" } }\n` +
     `\n` +
     `F) CREATE_CHARACTER_LOOK\n` +
-    `   payload: { characterId: string, name?: string, description?: string }\n` +
+    `   payload: { characterId: string, name: string, description: string }\n` +
     `\n` +
     `G) UPDATE_CHARACTER_LOOK\n` +
     `   payload: { characterId: string, lookId: string, patch: { name?: string, description?: string } }\n` +
@@ -84,6 +84,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- Prefer UPDATE_SHOT / SET_CAST for structural edits; prefer UPDATE_ELEMENT for camera/lighting/audio/script prompt edits.\n` +
     `- Keep the action list short (1-5 actions). For bulk generation, use GENERATE_PROJECT_ASSETS.\n` +
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
+    `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +
     `\n` +
     `Selection: ${selectionJson}\n` +
     (storyJson ? `Story: ${storyJson}\n` : '') +

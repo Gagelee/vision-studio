@@ -225,6 +225,35 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
     }
   }
 
+  // Create look (2-level casting workflow)
+  if (includesAny(msg, ['new look', 'add look', 'create look', '新增look', '新增造型', '新增定妆', '新增服装', '新增造型照'])) {
+    const mentionedChars = findMentioned(story.characters || []);
+    const characterId =
+      req.selection.type === 'character'
+        ? req.selection.id
+        : mentionedChars[0]?.id
+          ? String(mentionedChars[0].id)
+          : '';
+    if (characterId) {
+      const ch = story.characters.find((c) => c.id === characterId) || null;
+      const n = (ch?.looks || []).length + 1;
+
+      const nameMatch =
+        raw.match(/(?:look|造型|定妆)\s*[:：]\s*([^\n,，;；]+)/i) ||
+        raw.match(/(?:叫|命名)\s*([^\n,，;；]+)/i) ||
+        raw.match(/new look\s+(.+)$/i);
+      const name = (nameMatch?.[1] || `Look ${n}`).trim();
+
+      const descMatch = raw.match(/(?:desc|description|描述)\s*[:：]\s*(.+)$/i);
+      const description =
+        (descMatch?.[1] || '').trim() ||
+        `Wardrobe/makeup/hair variation for ${ch?.name || 'this character'}. Keep identity consistent with the base avatar.`;
+
+      actions.push({ type: 'CREATE_CHARACTER_LOOK', payload: { characterId, name, description } });
+      notes.push('create character look');
+    }
+  }
+
   if (req.selection.type === 'shot') {
     const shotId = req.selection.id;
     const sequenceId = req.selection.parentId || '';

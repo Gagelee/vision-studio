@@ -221,15 +221,17 @@ const summarizeStoryForPrompt = (story: any) => {
   const locations = safeArr(story.locations).slice(0, 30).map((l: any) => ({
     id: String(l?.id || ''),
     name: trim(l?.name, 60),
+    description: trim(l?.description, 120),
     visualStyle: trim(l?.visualStyle, 80),
   }));
 
   const characters = safeArr(story.characters).slice(0, 30).map((c: any) => ({
     id: String(c?.id || ''),
     name: trim(c?.name, 60),
+    description: trim(c?.description, 140),
     looks: safeArr(c?.looks)
       .slice(0, 10)
-      .map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 60) })),
+      .map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 60), description: trim(lk?.description, 140) })),
   }));
 
   const sequences = safeArr(story.sequences).slice(0, 20).map((s: any) => ({
@@ -248,6 +250,8 @@ const summarizeStoryForPrompt = (story: any) => {
   return {
     id: String(story.id || ''),
     title: trim(story.title, 120),
+    logline: trim(story.logline, 220),
+    intent: trim(story.intent, 220),
     aspectRatio: String(story.aspectRatio || ''),
     counts: {
       locations: safeArr(story.locations).length,
@@ -832,28 +836,56 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               actions.push({ type: 'CREATE_SEQUENCE', payload: {} });
               notes.push('create sequence');
             }
-            if (['new shot', '新增镜头', '新增分镜', '新增beat', 'add shot', 'add beat'].some((k) => lower.includes(k))) {
-              if (selection?.type === 'shot') {
-                const shotId = String(selection?.id || '');
-                const sequenceId = String(selection?.parentId || '');
-                if (shotId && sequenceId) {
-                  actions.push({ type: 'CREATE_SHOT', payload: { sequenceId, afterShotId: shotId } });
-                  notes.push('create shot (after current)');
-                }
-              } else if (selection?.type === 'sequence') {
-                const sequenceId = String(selection?.id || '');
-                if (sequenceId) {
-                  actions.push({ type: 'CREATE_SHOT', payload: { sequenceId } });
-                  notes.push('create shot (append)');
-                }
+	            if (['new shot', '新增镜头', '新增分镜', '新增beat', 'add shot', 'add beat'].some((k) => lower.includes(k))) {
+	              if (selection?.type === 'shot') {
+	                const shotId = String(selection?.id || '');
+	                const sequenceId = String(selection?.parentId || '');
+	                if (shotId && sequenceId) {
+	                  actions.push({ type: 'CREATE_SHOT', payload: { sequenceId, afterShotId: shotId } });
+	                  notes.push('create shot (after current)');
+	                }
+	              } else if (selection?.type === 'sequence') {
+	                const sequenceId = String(selection?.id || '');
+	                if (sequenceId) {
+	                  actions.push({ type: 'CREATE_SHOT', payload: { sequenceId } });
+	                  notes.push('create shot (append)');
+	                }
+	              }
+	            }
+
+            // Create look (rule fallback)
+            if (['new look', 'add look', 'create look', '新增look', '新增造型', '新增定妆', '新增服装', '新增造型照'].some((k) => lower.includes(k))) {
+              const characters = storyObj ? findMentioned(safeArr((storyObj as any).characters)) : [];
+              const characterId =
+                selection?.type === 'character'
+                  ? String(selection?.id || '')
+                  : characters[0]?.id
+                    ? String(characters[0].id)
+                    : '';
+
+              if (characterId) {
+                const ch = storyObj ? safeArr((storyObj as any).characters).find((c: any) => String(c?.id || '') === characterId) : null;
+                const n = (Array.isArray(ch?.looks) ? ch.looks.length : 0) + 1;
+                const nameMatch =
+                  raw.match(/(?:look|造型|定妆)\s*[:：]\s*([^\n,，;；]+)/i) ||
+                  raw.match(/(?:叫|命名)\s*([^\n,，;；]+)/i) ||
+                  raw.match(/new look\s+(.+)$/i);
+                const name = String((nameMatch?.[1] || `Look ${n}`)).trim();
+                const descMatch = raw.match(/(?:desc|description|描述)\s*[:：]\s*(.+)$/i);
+                const description =
+                  String(descMatch?.[1] || '').trim() ||
+                  `Wardrobe/makeup/hair variation for ${String(ch?.name || 'this character')}. Keep identity consistent with the base avatar.`;
+
+                actions.push({ type: 'CREATE_CHARACTER_LOOK', payload: { characterId, name, description } });
+                notes.push('create character look');
               }
             }
 
-            // Shot structure edits
-            if (selection?.type === 'shot') {
-              const shotId = String(selection?.id || '');
-              const sequenceId = String(selection?.parentId || '');
-              if (shotId && sequenceId) {
+	            // Shot structure edits
+	            if (selection?.type === 'shot') {
+	              const shotId = String(selection?.id || '');
+	              const sequenceId = String(selection?.parentId || '');
+	              if (shotId && sequenceId) {
                 if (lower.includes('night') || lower.includes('夜')) {
                   actions.push({ type: 'UPDATE_SHOT', payload: { shotId, sequenceId, patch: { timeOfDay: 'Night' } } });
                   notes.push('shot time → night');
