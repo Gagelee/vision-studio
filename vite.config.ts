@@ -27,6 +27,11 @@ type GeminiResponseSchema = any;
 const schemaString = (): GeminiResponseSchema => ({ type: 'STRING' });
 const schemaInt = (): GeminiResponseSchema => ({ type: 'INTEGER' });
 const schemaArray = (items: GeminiResponseSchema): GeminiResponseSchema => ({ type: 'ARRAY', items });
+const schemaFreeformObject = (): GeminiResponseSchema => ({
+  type: 'OBJECT',
+  // Gemini requires OBJECT.properties to be non-empty.
+  properties: { _raw: schemaString() },
+});
 const schemaObject = (args: {
   properties: Record<string, GeminiResponseSchema>;
   required?: string[];
@@ -283,7 +288,15 @@ const GEMINI_SCHEMA = {
     properties: {
       reply: schemaString(),
       requestedAgents: schemaArray(schemaString()),
-      focus: schemaObject({ properties: {}, required: [] }),
+      focus: schemaObject({
+        properties: {
+          script_writer: schemaString(),
+          casting_director: schemaString(),
+          editor: schemaString(),
+          environment_director: schemaString(),
+          camera_art: schemaString(),
+        },
+      }),
     },
   }),
   directorSpecialist: schemaObject({
@@ -295,7 +308,7 @@ const GEMINI_SCHEMA = {
         schemaObject({
           required: ['type', 'payload'],
           propertyOrdering: ['type', 'payload'],
-          properties: { type: schemaString(), payload: schemaObject({ properties: {}, required: [] }) },
+          properties: { type: schemaString(), payload: schemaFreeformObject() },
         }),
       ),
     },
@@ -309,7 +322,7 @@ const GEMINI_SCHEMA = {
         schemaObject({
           required: ['type'],
           propertyOrdering: ['type', 'payload'],
-          properties: { type: schemaString(), payload: schemaObject({ properties: {}, required: [] }) },
+          properties: { type: schemaString(), payload: schemaFreeformObject() },
         }),
       ),
     },
@@ -1114,6 +1127,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const workerModel = model;
         const workerTemperature = temperature;
         const workerMaxOutputTokens = maxOutputTokens;
+        const tokenFloor = 4096;
+        const mergeTokenFloor = 8192;
+        const resolvedScaffoldTokens = Math.max(tokenFloor, Number(chosenMaxOutputTokens ?? 0) || 0);
+        const resolvedWorkerTokens = Math.max(tokenFloor, Number(workerMaxOutputTokens ?? 0) || 0);
+        const resolvedMergeTokens = Math.max(mergeTokenFloor, Number(chosenMaxOutputTokens ?? 0) || 0);
 
         const attemptedProviders: string[] = [];
         let lastError: any = null;
@@ -1150,26 +1168,26 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
                   model: chosenModel,
                   temperature: chosenTemperature,
-                  maxOutputTokens: chosenMaxOutputTokens ?? 8192,
+                  maxOutputTokens: resolvedScaffoldTokens,
                   responseSchema: GEMINI_SCHEMA.scaffoldDirectorBrief,
                 });
                 const directorBriefJson = JSON.stringify(directorBrief);
                 const casting = await call('casting_director', buildTeamScaffoldCastingDirectorPrompt({ directorBriefJson }), {
                   model: workerModel,
                   temperature: workerTemperature,
-                  maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                  maxOutputTokens: resolvedWorkerTokens,
                   responseSchema: GEMINI_SCHEMA.scaffoldCasting,
                 });
                 const environmentSpec = await call('environment_director', buildTeamScaffoldEnvironmentDirectorPrompt({ directorBriefJson }), {
                   model: workerModel,
                   temperature: workerTemperature,
-                  maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                  maxOutputTokens: resolvedWorkerTokens,
                   responseSchema: GEMINI_SCHEMA.scaffoldEnvironments,
                 });
                 const scriptSpec = await call('script_writer', buildTeamScaffoldScriptWriterPrompt({ directorBriefJson }), {
                   model: workerModel,
                   temperature: workerTemperature,
-                  maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                  maxOutputTokens: resolvedWorkerTokens,
                   responseSchema: GEMINI_SCHEMA.scaffoldScript,
                 });
                 const editorSpec = await call(
@@ -1179,7 +1197,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     scriptJson: JSON.stringify(scriptSpec),
                     environmentJson: JSON.stringify(environmentSpec),
                   }),
-                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: workerMaxOutputTokens ?? 4096, responseSchema: GEMINI_SCHEMA.scaffoldEditor },
+                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: resolvedWorkerTokens, responseSchema: GEMINI_SCHEMA.scaffoldEditor },
                 );
                 const cameraArtSpec = await call(
                   'camera_art',
@@ -1188,7 +1206,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     editorJson: JSON.stringify(editorSpec),
                     aspectRatio,
                   }),
-                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: workerMaxOutputTokens ?? 4096, responseSchema: GEMINI_SCHEMA.scaffoldCameraArt },
+                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: resolvedWorkerTokens, responseSchema: GEMINI_SCHEMA.scaffoldCameraArt },
                 );
 
                 const spec = await call(
@@ -1200,7 +1218,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     editorJson: JSON.stringify(editorSpec),
                     cameraArtJson: JSON.stringify(cameraArtSpec),
                   }),
-                  { model: chosenModel, temperature: chosenTemperature, maxOutputTokens: chosenMaxOutputTokens ?? 8192, responseSchema: GEMINI_SCHEMA.scaffoldFinal },
+                  { model: chosenModel, temperature: chosenTemperature, maxOutputTokens: resolvedMergeTokens, responseSchema: GEMINI_SCHEMA.scaffoldFinal },
                 );
 
                 return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (Gemini)', p, chosenModel, { teamTrace }));
@@ -1211,7 +1229,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   apiKey: env.GEMINI_API_KEY,
                   model: chosenModel,
                   temperature: chosenTemperature,
-                  maxOutputTokens: chosenMaxOutputTokens ?? 4096,
+                  maxOutputTokens: resolvedMergeTokens,
                   prompt: scaffoldPrompt,
                   env,
                   responseSchema: GEMINI_SCHEMA.scaffoldFinal,

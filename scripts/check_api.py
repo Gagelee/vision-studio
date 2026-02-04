@@ -153,7 +153,7 @@ def main(argv: list[str]) -> int:
         {
             "intent": "API connectivity test",
             "aspectRatio": "16:9",
-            "settings": {"provider": "gemini", "model": "gemini-3-pro-preview", "temperature": 0.4, "maxOutputTokens": 2048},
+            "settings": {"provider": "gemini", "model": "gemini-3-pro-preview", "temperature": 0.4, "maxOutputTokens": 8192},
         },
         args.timeout_s,
     )
@@ -195,7 +195,7 @@ def main(argv: list[str]) -> int:
             "message": "make it warmer",
             "selection": selection,
             "story": story,
-            "settings": {"provider": "gemini", "model": "gemini-3-pro-preview", "temperature": 0.3, "maxOutputTokens": 2048},
+            "settings": {"provider": "gemini", "model": "gemini-3-pro-preview", "temperature": 0.3, "maxOutputTokens": 4096},
         },
         args.timeout_s,
     )

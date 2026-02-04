@@ -107,7 +107,7 @@ const run = async () => {
   const scaffold = await postJson('/api/agent/scaffold', {
     intent: 'API connectivity test',
     aspectRatio: '16:9',
-    settings: { provider: 'gemini', model: 'gemini-3-pro-preview', temperature: 0.4, maxOutputTokens: 2048 },
+    settings: { provider: 'gemini', model: 'gemini-3-pro-preview', temperature: 0.4, maxOutputTokens: 8192 },
   });
   results.push({ name: 'scaffold', ...scaffold, debug: scaffold.json?.debug });
   assert(scaffold.ok, `scaffold HTTP ${scaffold.status}`);
@@ -120,7 +120,7 @@ const run = async () => {
     message: 'make it warmer',
     selection: { type: 'shot', id: 'shot-1', parentId: 'seq-1' },
     story: scaffold.json.story,
-    settings: { provider: 'gemini', model: 'gemini-3-pro-preview', temperature: 0.3, maxOutputTokens: 2048 },
+    settings: { provider: 'gemini', model: 'gemini-3-pro-preview', temperature: 0.3, maxOutputTokens: 4096 },
   });
   results.push({ name: 'direct', ...direct, debug: direct.json?.debug });
   assert(direct.ok, `direct HTTP ${direct.status}`);
