@@ -369,6 +369,51 @@ export const executeAssetJobs = async (args: {
   const isDone = (st: any) => st && st.status === 'done';
   const getMasterOk = (s: Story | null) => Boolean(s && (s.keyVisualUrl || '').trim() && isDone((s as any).masterKvState));
 
+  const pickActiveImageUrl = (args: {
+    entity: any;
+    versionsKey: string;
+    activeIdKey: string;
+    fallbackUrl?: string;
+  }): string => {
+    const versions = Array.isArray(args.entity?.[args.versionsKey]) ? args.entity[args.versionsKey] : [];
+    const activeId = String(args.entity?.[args.activeIdKey] || '').trim();
+    if (activeId) {
+      const hit = versions.find((v: any) => String(v?.id || '') === activeId);
+      const url = String(hit?.imageUrl || '').trim();
+      if (url) return url;
+    }
+    const last = versions[versions.length - 1];
+    const lastUrl = String(last?.imageUrl || '').trim();
+    if (lastUrl) return lastUrl;
+    const fallback = String(args.fallbackUrl || '').trim();
+    if (fallback) return fallback;
+    return '';
+  };
+
+  const getLocationActivePreviewUrl = (loc: any) =>
+    pickActiveImageUrl({
+      entity: loc,
+      versionsKey: 'previewVersions',
+      activeIdKey: 'activePreviewVersionId',
+      fallbackUrl: loc?.previewUrl,
+    });
+
+  const getCharacterActiveAvatarUrl = (ch: any) =>
+    pickActiveImageUrl({
+      entity: ch,
+      versionsKey: 'avatarVersions',
+      activeIdKey: 'activeAvatarVersionId',
+      fallbackUrl: ch?.avatarUrl,
+    });
+
+  const getLookActivePreviewUrl = (lk: any) =>
+    pickActiveImageUrl({
+      entity: lk,
+      versionsKey: 'previewVersions',
+      activeIdKey: 'activePreviewVersionId',
+      fallbackUrl: lk?.previewUrl,
+    });
+
   const getJobKind = (job: AssetJob): AssetJob['kind'] => job.kind;
   const orderedPhases: Array<AssetJob['kind']> = ['masterkv', 'location', 'character', 'look', 'shot'];
   const phaseIndexOf = (kind: AssetJob['kind']) => orderedPhases.indexOf(kind);
@@ -426,7 +471,7 @@ export const executeAssetJobs = async (args: {
     if (job.kind === 'look') {
       const ch = (story.characters || []).find((c) => c.id === job.characterId);
       if (!ch || !isDone((ch as any).assetState)) return 'blocked: character avatar not generated';
-      if (!ch.avatarUrl) return 'blocked: missing character avatarUrl';
+      if (!getCharacterActiveAvatarUrl(ch)) return 'blocked: missing character avatarUrl';
       return null;
     }
 
@@ -434,7 +479,7 @@ export const executeAssetJobs = async (args: {
     const shot = resolveShotFromStory(story, job.sequenceId, job.shot.id) || job.shot;
     const loc = (story.locations || []).find((l) => l.id === shot.locationId);
     if (!loc || !isDone((loc as any).assetState)) return 'blocked: environment preview not generated';
-    if (!loc.previewUrl) return 'blocked: missing environment previewUrl';
+    if (!getLocationActivePreviewUrl(loc)) return 'blocked: missing environment previewUrl';
     const cast = (shot.elements as any)?.[('CASTING' as ElementType)]?.metadata?.characters;
     const castArr = Array.isArray(cast) ? cast : [];
     for (const c of castArr.slice(0, 4)) {
@@ -442,11 +487,12 @@ export const executeAssetJobs = async (args: {
       if (!charId) continue;
       const master = (story.characters || []).find((x) => x.id === charId);
       if (!master || !isDone((master as any).assetState)) return 'blocked: cast character avatar not generated';
+      if (!getCharacterActiveAvatarUrl(master)) return 'blocked: missing cast character avatarUrl';
       const activeLookId = String(c?.activeLookId || '').trim();
       if (activeLookId) {
         const look = master.looks?.find((lk) => lk.id === activeLookId);
         if (!look || !isDone((look as any).assetState)) return 'blocked: cast look not generated';
-        if (!look.previewUrl) return 'blocked: missing cast look previewUrl';
+        if (!getLookActivePreviewUrl(look)) return 'blocked: missing cast look previewUrl';
       }
     }
     return null;
@@ -457,7 +503,8 @@ export const executeAssetJobs = async (args: {
     if (getMasterOk(story) && story.keyVisualUrl) refs.push({ url: story.keyVisualUrl, label: 'master kv' });
 
     const loc = (story.locations || []).find((l) => l.id === shot.locationId);
-    if (loc?.previewUrl && isDone((loc as any).assetState)) refs.push({ url: loc.previewUrl, label: `environment: ${loc.name}` });
+    const locUrl = loc && isDone((loc as any).assetState) ? getLocationActivePreviewUrl(loc) : '';
+    if (locUrl) refs.push({ url: locUrl, label: `environment: ${loc?.name || 'unknown'}` });
 
     const cast = (shot.elements as any)?.[('CASTING' as ElementType)]?.metadata?.characters;
     const castArr = Array.isArray(cast) ? cast : [];
@@ -468,11 +515,13 @@ export const executeAssetJobs = async (args: {
       const master = (story.characters || []).find((x) => x.id === charId);
       if (!master || !isDone((master as any).assetState)) continue;
       const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : null;
-      if (look && isDone((look as any).assetState) && look.previewUrl) {
-        refs.push({ url: look.previewUrl, label: `character: ${master.name}${look?.name ? ` (${look.name})` : ''}` });
+      const lookUrl = look && isDone((look as any).assetState) ? getLookActivePreviewUrl(look) : '';
+      if (lookUrl) {
+        refs.push({ url: lookUrl, label: `character: ${master.name}${look?.name ? ` (${look.name})` : ''}` });
         continue;
       }
-      if (master.avatarUrl) refs.push({ url: master.avatarUrl, label: `character: ${master.name}` });
+      const avatarUrl = getCharacterActiveAvatarUrl(master);
+      if (avatarUrl) refs.push({ url: avatarUrl, label: `character: ${master.name}` });
     }
 
     return refs;
@@ -577,23 +626,24 @@ export const executeAssetJobs = async (args: {
           return { imageUrl: out.imageUrl, debug: out.debug };
         }
 
-        // look
-        const story = args.getStoryForRefs?.() || null;
-        const ch = story ? (story.characters || []).find((c) => c.id === job.characterId) : null;
-        const out = await generateImageFromPrompt({
-          prompt:
-            job.prompt +
-            '\n\nUse the provided reference image(s) to keep the exact same character identity. Only vary styling described for this look.',
-          settings: args.settings,
-          aspectRatio: '1:1',
-          references: [
-            ...(story && getMasterOk(story) && story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : []),
-            ...(ch?.avatarUrl && isDone((ch as any)?.assetState) ? [{ url: ch.avatarUrl, label: `character base: ${ch.name}` }] : []),
-          ],
-          strict: true,
-        });
-        return { imageUrl: out.imageUrl, debug: out.debug };
-      };
+	        // look
+	        const story = args.getStoryForRefs?.() || null;
+	        const ch = story ? (story.characters || []).find((c) => c.id === job.characterId) : null;
+	        const avatarUrl = ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch) : '';
+	        const out = await generateImageFromPrompt({
+	          prompt:
+	            job.prompt +
+	            '\n\nUse the provided reference image(s) to keep the exact same character identity. Only vary styling described for this look.',
+	          settings: args.settings,
+	          aspectRatio: '1:1',
+	          references: [
+	            ...(story && getMasterOk(story) && story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : []),
+	            ...(avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : []),
+	          ],
+	          strict: true,
+	        });
+	        return { imageUrl: out.imageUrl, debug: out.debug };
+	      };
 
       for (let i = 1; i <= maxAttempts; i++) {
         try {
