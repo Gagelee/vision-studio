@@ -1,6 +1,6 @@
 # Shopee Vision Studio - 从交互 Demo 到可用本地项目（规划）
 
-Last Updated: 2026-01-29
+Last Updated: 2026-02-04
 
 ## 1. 项目概述
 
@@ -17,22 +17,25 @@ Last Updated: 2026-01-29
 
 ### 2.1 已有能力（仓库现状）
 - 交互骨架：Sidebar（层级导航）、Project Dashboard、Stage（Storyboard）、Shot Editor、Inspector（Shot 级参数）、Director Console（对话入口）、Master Player（播放容器）。
-- 资产编辑：Environment / Character 的编辑器与基础 CRUD（当前仅在内存中生效）。
-- Shot 版本：Shot 版本列表与切换（模拟生成 Variant），能更新内存状态。
+- 项目管理：Project Library（创建/重命名/删除/复制/最近打开）、本地持久化（localStorage）。
+- 资产编辑：Environment / Character / Look 的编辑器与基础 CRUD；支持 Environment/Casting/KV 的 variants 生成与 active 选定（刷新/切菜单不丢）。
+- 资产流水线：严格生成顺序与阻断（KV → env → character → look → shot），下游只会引用已成功生成的上游资产（active variant）。
+- Shot 版本：Shot 版本列表与切换（真实写入 Story state）。
 - 主题与沉浸：Dark/Light、Cinema Mode（全屏）等展示能力。
+- 可观测性：Debug 面板支持 Event Log + LLM Trace（含 promptId/promptVersion）+ Agent/Prompt Registry。
 
 ### 2.2 关键缺口（从 Demo → 可用产品必须补齐）
 
 | 能力域 | 现状 | 缺口描述（要变“可用”必须有） |
 | --- | --- | --- |
-| 项目管理层级 | 单项目、硬编码初始数据 | Workspace/Project 列表、创建/打开/重命名/删除/导入导出、最近使用 |
-| Start Project | 无入口 | 启动页（无项目空态）、创建向导可达、可从项目库进入 |
-| 持久化 | 无 | 本地存储（IndexedDB / localStorage）、schema 版本、迁移策略 |
+| 项目管理层级 | 已有 Project Library + localStorage | 补齐导入导出、schema 迁移、IndexedDB（可选） |
+| Start Project | 已有创建向导 | 增加“草稿保存/恢复”、支持带模板创建（可选） |
+| 持久化 | localStorage 已打通 | 迁移到 IndexedDB（可选）、schema 版本与迁移策略 |
 | Sequence/Shot CRUD | 仅 UI，未接数据 | 新建 Sequence、增删改 Shot、排序移动、跨 Sequence 移动、级联校验 |
-| 资产管理 | 有 UI 雏形 | 资产引用关系（Shot ↔ Character/Look ↔ Location）、继承/覆盖、锁定策略 |
-| Agent 流水线 | Console 仅模拟回复 | “一句话建片”拆解为结构化步骤：Plan → Preview → Apply；任务进度、可撤销、可追溯 |
-| API 对接 | 无 | API 协议与适配层、失败重试/降级、队列化任务（渲染/生成） |
-| 工作流可控性 | 弱 | 操作日志、变更 diff、Undo/Redo、状态机（draft/locked/rendering/ready） |
+| 资产管理 | 基本可用（引用 + 顺序 + variants） | 继承/覆盖策略更细（env 多对 seq/shot）、批量重试、手动流水线操作台 |
+| Agent 流水线 | Scaffold/Direct 已可跑（含 fallback 二次确认） | Plan → Preview → Apply 的变更 diff、可撤销、可追溯（operation log） |
+| API 对接 | Vite middleware 可跑 | 独立后端（BFF/queue/SSE）、更严格 schema/输出控制、成本/审计 |
+| 工作流可控性 | 部分可观测 | Undo/Redo、操作 diff、Prompt Studio（编辑/多版本/diff/回滚） |
 
 ## 3. 目标体验：一句话建片 + 结构化可控工作流
 
@@ -95,6 +98,7 @@ Last Updated: 2026-01-29
 - 指令分类：Scaffold / Update / Reorder / Batch Edit / Generate
 - 结构化动作类型（示例）：`CREATE_SEQUENCE`, `CREATE_SHOT`, `UPDATE_ELEMENT`, `SET_CAST`, `MOVE_SHOT`, `LOCK_ASPECT_RATIO`
 - 变更预览：影响范围（哪些 shots / elements）、文本 diff、冲突提示
+- Prompt Studio：在 UI 中编辑 prompt、保存多版本、diff/回滚；支持 per-project override，并把 promptVersion 写入 trace/审计
 
 ### 5.3 生成与预览
 - Shot Version：从“随机图”替换为 API 回传资源（url/assetId）
@@ -106,15 +110,15 @@ Last Updated: 2026-01-29
 > 下面以“最小可用闭环”为排序；每项尽量独立交付、可验收。
 
 ### Iteration 1：本地项目与入口（M0）
-- [ ] 新增 Workspace / Project 数据模型（与现有 `Story` 关系：Story == Project 的内容层）
-- [ ] 增加启动页：Project Library + Empty State（Start Project）
-- [ ] 打通 ProjectCreationWizard 入口（从 Library 进入）
-- [ ] 实现本地持久化（至少保存/载入/删除/重命名）
+- [x] 新增 Workspace / Project 数据模型（与现有 `Story` 关系：Story == Project 的内容层）
+- [x] 增加启动页：Project Library + Empty State（Start Project）
+- [x] 打通 ProjectCreationWizard 入口（从 Library 进入）
+- [x] 实现本地持久化（至少保存/载入/删除/重命名）
 - [ ] 增加项目导出/导入（JSON），用于调试与备份
 
 ### Iteration 2：Scaffolding Agent（M1）
-- [ ] 设计 API 协议（请求：intent/ratio/kv；响应：结构化 story + steps）
-- [ ] Agent Plan UI：展示 steps、进度、可取消、失败重试
+- [x] 设计 API 协议（请求：intent/ratio/kv；响应：结构化 story + steps）
+- [x] Agent Plan UI：展示 steps、进度、失败重试
 - [ ] Apply 机制：Plan → Preview → Apply（写入项目状态 + 记录 operation）
 
 ### Iteration 3：工作流可控与 CRUD（M2）
@@ -126,4 +130,11 @@ Last Updated: 2026-01-29
 ### Iteration 4：资产与一致性（M3）
 - [ ] Casting/Looks 数据结构规范化（Shot 内仅存引用：characterId + lookId）
 - [ ] Environment 继承/覆盖规则落地（Inspector 提示“继承自 Location/Story”）
-- [ ] KV Anchor 与 Sync 行为规则化（Story KV → Shot 元素的映射）
+- [x] KV Anchor 与 Sync 行为规则化（Story KV → Shot 元素的映射）
+
+### Iteration 5：Prompt Studio（运营/实验能力）
+- [ ] Prompt Registry（agent/prompt id → 版本）与 trace 注入（已完成基础版）
+- [ ] UI Prompt Editor：按 agent/promptId 编辑、保存草稿与发布版本
+- [ ] 版本 Diff：查看任意两版本差异（文本 diff）
+- [ ] 回滚/切换：一键回滚、设置“当前运行版本”（global / per-project override）
+- [ ] 审计：记录谁在何时发布/回滚（本地先记录在 project/diagnostics）
