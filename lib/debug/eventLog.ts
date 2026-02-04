@@ -9,7 +9,9 @@ export interface DebugEvent {
   data?: any;
 }
 
-const MAX_EVENTS = 300;
+// Multi-agent traces + image generation logs can get large quickly. Keep more history so
+// initialization traces (scaffold) don't disappear after a few rounds of director chat.
+const MAX_EVENTS = 2000;
 
 let events: DebugEvent[] = [];
 const listeners = new Set<() => void>();
@@ -36,4 +38,3 @@ export const addDebugEvent = (e: Omit<DebugEvent, 'id' | 'ts'> & { ts?: number }
   events = [...events, { id, ts, level: e.level, scope: e.scope, message: e.message, data: e.data }].slice(-MAX_EVENTS);
   notify();
 };
-

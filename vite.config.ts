@@ -483,6 +483,39 @@ const withRetries = async <T,>(
   throw lastErr;
 };
 
+const parseLooseJsonObject = (raw: string): any | null => {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const stripped = text
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+  const normalizeQuotes = (s: string) =>
+    s
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/\uFEFF/g, '');
+  const stripJsonComments = (s: string) =>
+    s
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|\s)\/\/.*$/gm, '$1');
+  const stripTrailingCommas = (s: string) => {
+    let out = s;
+    for (let i = 0; i < 8; i++) {
+      const next = out.replace(/,\s*([}\]])/g, '$1');
+      if (next === out) return out;
+      out = next;
+    }
+    return out;
+  };
+  const candidate = stripTrailingCommas(stripJsonComments(normalizeQuotes(stripped))).trim();
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+};
+
 const resolveGeminiBaseUrl = (env?: Record<string, string>) => {
   const raw = String(env?.COMPASS_GATEWAY_URL || env?.GATEWAY_URL || env?.GEMINI_BASE_URL || '').trim();
   if (raw) return raw.replace(/\/$/, '');
@@ -1922,11 +1955,80 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         if (!message) return sendJson(res, 400, { ok: false, error: 'Missing message' });
 
         const now = Date.now();
-	        const mkId = (prefix: string) => `${prefix}-${now}-${Math.random().toString(16).slice(2, 8)}`;
+		        const mkId = (prefix: string) => `${prefix}-${now}-${Math.random().toString(16).slice(2, 8)}`;
 
-	        const rule = () => {
-	          const raw = message;
-	          const lower = message.toLowerCase();
+        const normalizeActionPayload = (payload: any) => {
+          if (!payload || typeof payload !== 'object') return payload;
+          const raw = (payload as any)?._raw;
+          if (typeof raw === 'string' && raw.trim()) {
+            const parsed = parseLooseJsonObject(raw);
+            if (parsed && typeof parsed === 'object') return parsed;
+          }
+          return payload;
+        };
+
+        const normalizeAction = (action: any) => {
+          const type = String(action?.type || '').trim();
+          if (!type) return null;
+          const payloadRaw = normalizeActionPayload(action?.payload);
+
+          // Heuristic: Gemini schema-freeform payload sometimes comes back as {_raw:"{...}"} where the object contains
+          // shorthand fields like {id, description}. Convert these into the app's expected payload shapes.
+          if (type === 'UPDATE_ELEMENT' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const selType = String(selection?.type || '');
+            const selSeqId = selType === 'sequence' ? String(selection?.id || '') : selType === 'shot' ? String(selection?.parentId || '') : '';
+
+            // Shorthand camera update: {id:<shotId>, description:<cameraPrompt>}
+            if (!p.sequenceId && !p.shotId && typeof p.id === 'string' && typeof p.description === 'string') {
+              return {
+                type,
+                payload: {
+                  sequenceId: selSeqId || String(p.sequenceId || ''),
+                  shotId: String(p.id),
+                  elementType: 'CAMERA',
+                  prompt: String(p.description),
+                },
+              };
+            }
+            // Shorthand script update: {id:<shotId>, script:<scriptText>}
+            if (!p.sequenceId && !p.shotId && typeof p.id === 'string' && typeof p.script === 'string') {
+              return {
+                type,
+                payload: {
+                  sequenceId: selSeqId || String(p.sequenceId || ''),
+                  shotId: String(p.id),
+                  elementType: 'SCRIPT',
+                  prompt: String(p.script),
+                },
+              };
+            }
+
+            return { type, payload: p };
+          }
+
+          if (type === 'UPDATE_SHOT' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            if (!p.shotId && typeof p.id === 'string') {
+              const selType = String(selection?.type || '');
+              const selSeqId = selType === 'sequence' ? String(selection?.id || '') : selType === 'shot' ? String(selection?.parentId || '') : '';
+              return { type, payload: { shotId: String(p.id), sequenceId: selSeqId || String(p.sequenceId || ''), patch: { description: p.description } } };
+            }
+            return { type, payload: p };
+          }
+
+          if (payloadRaw && typeof payloadRaw === 'object') return { type, payload: payloadRaw };
+          return { type, ...(payloadRaw !== undefined ? { payload: payloadRaw } : {}) };
+        };
+
+        const normalizeActions = (arr: any) => {
+          const actions = Array.isArray(arr) ? arr : [];
+          return actions.map(normalizeAction).filter(Boolean);
+        };
+
+		        const rule = () => {
+		          const raw = message;
+		          const lower = message.toLowerCase();
             const storyObj = story && typeof story === 'object' ? story : null;
             const safeArr = (v: any) => (Array.isArray(v) ? v : []);
             const findMentioned = (items: any[]) => {
@@ -2183,7 +2285,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
-			          if (p === 'gemini' && geminiApiKey) {
+		          if (p === 'gemini' && geminiApiKey) {
 		              const teamTrace: any[] = [];
 		              const teamMessages: any[] = [];
 		              const traceId = crypto.randomUUID();
@@ -2235,8 +2337,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                }
 		              };
 
-              try {
-                const planner = await call(
+	              try {
+	                const planner = await call(
                   'director.plan',
                   buildTeamDirectPlannerPrompt({
                     selectionJson,
@@ -2250,28 +2352,37 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 const uniqAgents: string[] = Array.from(
                   new Set(requestedAgents.map((x: any) => String(x || '').trim()).filter((x: string) => allowedAgents.has(x))),
                 );
-                const focusObj: Record<string, unknown> =
-                  planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
+	                const focusObj: Record<string, unknown> =
+	                  planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
 
-                const specialistJsonByAgent: Record<string, string> = {};
-                for (const a of uniqAgents.slice(0, 4)) {
-                  const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
-                  const out = await call(
-                    a,
-                    buildTeamDirectSpecialistPrompt({
-                      agent: a as any,
-                      focus,
-                      selectionJson,
-                      storyJson,
-                      directive: message,
-                    }),
-                    GEMINI_SCHEMA.directorSpecialist,
-                  );
-                  specialistJsonByAgent[a] = JSON.stringify(out || {});
-                }
+	                const specialistJsonByAgent: Record<string, string> = {};
+                  const specialistErrors: Array<{ agent: string; error: string }> = [];
+	                for (const a of uniqAgents.slice(0, 4)) {
+	                  const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
+                    try {
+	                    const out = await call(
+	                      a,
+	                      buildTeamDirectSpecialistPrompt({
+	                        agent: a as any,
+	                        focus,
+	                        selectionJson,
+	                        storyJson,
+	                        directive: message,
+	                      }),
+	                      GEMINI_SCHEMA.directorSpecialist,
+	                    );
+                      const suggested = normalizeActions(out?.suggestedActions);
+	                      specialistJsonByAgent[a] = JSON.stringify({ ...(out || {}), suggestedActions: suggested });
+                    } catch (e: any) {
+                      const err = formatFetchError(e);
+                      specialistErrors.push({ agent: a, error: err });
+                      specialistJsonByAgent[a] = JSON.stringify({ notes: '', suggestedActions: [], error: err });
+                      continue;
+                    }
+	                }
 
-                const final = await call(
-                  'director.merge',
+	                const final = await call(
+	                  'director.merge',
                   buildTeamDirectMergePrompt({
                     selectionJson,
                     storyJson,
@@ -2280,28 +2391,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     specialistJsonByAgent,
                     allowedActionsText,
                   }),
-                  GEMINI_SCHEMA.directorFinal,
-                );
+	                  GEMINI_SCHEMA.directorFinal,
+	                );
 
-                const actions = Array.isArray(final?.actions) ? final.actions : [];
-		                return sendJson(res, 200, {
-		                  reply: String(final?.reply || planner?.reply || 'OK'),
-		                  plan: {
-		                    id: mkId('plan'),
-		                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
-                    steps: [
-                      { id: mkId('step'), title: 'Director: plan', status: 'done' },
-                      ...(uniqAgents.map((a: string) => ({ id: mkId('step'), title: `Specialist: ${a}`, status: 'done' })) as any),
-                      { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
-                    ],
-                    actions,
-		                  },
-		                  actions,
-		                  debug: { transport: 'http', provider: p, model, teamTrace, teamMessages, traceId, mode: 'multi-agent' },
-		                });
-		              } catch (e: any) {
-		                lastError = e;
-		                if (!allowSingleFallback) {
+	                const actions = normalizeActions(final?.actions);
+			                return sendJson(res, 200, {
+			                  reply: String(final?.reply || planner?.reply || 'OK'),
+			                  plan: {
+			                    id: mkId('plan'),
+			                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
+	                    steps: [
+	                      { id: mkId('step'), title: 'Director: plan', status: 'done' },
+	                      ...(uniqAgents.map((a: string) => {
+                          const failed = specialistErrors.find((x) => x.agent === a);
+                          return { id: mkId('step'), title: `Specialist: ${a}`, status: failed ? 'error' : 'done' };
+                        }) as any),
+	                      { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
+	                    ],
+	                    actions,
+			                  },
+			                  actions,
+			                  debug: { transport: 'http', provider: p, model, teamTrace, teamMessages, traceId, mode: 'multi-agent', specialistErrors },
+			                });
+			              } catch (e: any) {
+			                lastError = e;
+			                if (!allowSingleFallback) {
 		                  return sendJson(res, 502, {
 	                    ok: false,
 	                    errorCode: 'MULTI_AGENT_FAILED',
@@ -2318,7 +2432,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                // Single-call fallback
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('direct', 'director.actions');
-	                const output = await callGeminiJson({
+		                const output = await callGeminiJson({
 	                  apiKey: geminiApiKey,
 	                  model,
 	                  temperature,
@@ -2354,19 +2468,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                  responsePreview: JSON.stringify(output).slice(0, 1600),
 		                  multiAgentError: e?.message || String(e),
 		                });
-		                const actions = Array.isArray(output?.actions) ? output.actions : [];
-		                return sendJson(res, 200, {
-		                  reply: String(output?.reply || 'OK'),
-                  plan: {
+			                const actions = normalizeActions(output?.actions);
+			                return sendJson(res, 200, {
+			                  reply: String(output?.reply || 'OK'),
+	                  plan: {
                     id: mkId('plan'),
                     summary: 'Generated structured actions (Gemini, single-call fallback).',
                     steps: [
                       { id: mkId('step'), title: 'Parse directive', status: 'done' },
                       { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
                     ],
-                    actions,
-		                  },
-		                  actions,
+	                    actions,
+			                  },
+			                  actions,
 		                  debug: {
 		                    transport: 'http',
 		                    provider: p,
