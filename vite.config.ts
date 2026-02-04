@@ -415,6 +415,62 @@ const sendJson = (res: any, status: number, payload: JsonValue) => {
   res.end(JSON.stringify(payload));
 };
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const formatFetchError = (e: any) => {
+  const name = e?.name ? String(e.name) : '';
+  const code = e?.cause?.code || e?.code ? String(e?.cause?.code || e?.code) : '';
+  const msg = e?.message ? String(e.message) : String(e);
+  return [name, code, msg].filter(Boolean).join(': ');
+};
+
+const isRetryableNetworkError = (e: any) => {
+  const name = String(e?.name || '');
+  const msg = String(e?.message || e || '');
+  const code = String(e?.cause?.code || e?.code || '');
+
+  if (e?.retryable === true) return true;
+  if (name === 'AbortError') return true;
+
+  // undici / node fetch common codes
+  if (['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED'].includes(code)) return true;
+  if (code.startsWith('UND_ERR_')) return true;
+
+  const m = msg.toLowerCase();
+  if (m.includes('fetch failed')) return true;
+  if (m.includes('socket hang up')) return true;
+  if (m.includes('connect timeout')) return true;
+  if (m.includes('timed out')) return true;
+  if (m.includes('network') && m.includes('error')) return true;
+
+  return false;
+};
+
+const withRetries = async <T,>(
+  fn: () => Promise<T>,
+  opts: { label: string; maxAttempts: number; baseDelayMs?: number; maxDelayMs?: number },
+): Promise<T> => {
+  const base = Math.max(50, Number(opts.baseDelayMs ?? 350));
+  const max = Math.max(base, Number(opts.maxDelayMs ?? 4000));
+  let lastErr: any = null;
+
+  for (let attempt = 1; attempt <= Math.max(1, opts.maxAttempts); attempt++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      lastErr = e;
+      const retryable = isRetryableNetworkError(e);
+      if (!retryable || attempt >= opts.maxAttempts) break;
+      const exp = Math.min(max, Math.round(base * Math.pow(1.8, attempt - 1)));
+      const jitter = Math.floor(Math.random() * 200);
+      const wait = exp + jitter;
+      console.warn(`[vision] retry ${attempt}/${opts.maxAttempts} (${opts.label}): ${formatFetchError(e)} (wait ${wait}ms)`);
+      await sleep(wait);
+    }
+  }
+  throw lastErr;
+};
+
 const callGeminiJson = async (args: {
   apiKey: string;
   model: string;
@@ -524,27 +580,42 @@ const callGeminiJson = async (args: {
     }
   };
 
-  const geminiInit: any = {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: args.prompt }] }],
-      generationConfig: {
-        temperature: args.temperature,
-        maxOutputTokens: args.maxOutputTokens ?? 2048,
-        responseMimeType: 'application/json',
-        ...(args.responseSchema ? { responseSchema: args.responseSchema } : {}),
-      },
-    }),
-  };
   const geminiDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
-  if (geminiDispatcher) geminiInit.dispatcher = geminiDispatcher;
-  const res = await fetch(url, geminiInit);
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Gemini HTTP ${res.status}${text ? `: ${text}` : ''}`);
-  }
+  const res = await withRetries(
+    async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90_000);
+      try {
+        const geminiInit: any = {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: args.prompt }] }],
+            generationConfig: {
+              temperature: args.temperature,
+              maxOutputTokens: args.maxOutputTokens ?? 2048,
+              responseMimeType: 'application/json',
+              ...(args.responseSchema ? { responseSchema: args.responseSchema } : {}),
+            },
+          }),
+        };
+        if (geminiDispatcher) geminiInit.dispatcher = geminiDispatcher;
+        const res = await fetch(url, geminiInit);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          const err: any = new Error(`Gemini HTTP ${res.status}${text ? `: ${text}` : ''}`);
+          err.status = res.status;
+          err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
+          throw err;
+        }
+        return res;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    { label: `gemini.json:${args.model}`, maxAttempts: 3 },
+  );
 
   const data = (await res.json()) as any;
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -561,31 +632,46 @@ const callOpenAICompatibleJson = async (args: {
   env?: Record<string, string>;
 }): Promise<any> => {
   const url = `${args.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
-  const llmInit: any = {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${args.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: args.model,
-      temperature: args.temperature,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: 'You must respond with a single valid JSON object. No markdown.' },
-        { role: 'user', content: args.prompt },
-      ],
-    }),
-  };
   const llmDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
-  if (llmDispatcher) llmInit.dispatcher = llmDispatcher;
-  const res = await fetch(url, llmInit);
+  const data = await withRetries(
+    async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90_000);
+      try {
+        const llmInit: any = {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${args.apiKey}`,
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            model: args.model,
+            temperature: args.temperature,
+            response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: 'You must respond with a single valid JSON object. No markdown.' },
+              { role: 'user', content: args.prompt },
+            ],
+          }),
+        };
+        if (llmDispatcher) llmInit.dispatcher = llmDispatcher;
+        const res = await fetch(url, llmInit);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          const err: any = new Error(`LLM HTTP ${res.status}${text ? `: ${text}` : ''}`);
+          err.status = res.status;
+          err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
+          throw err;
+        }
+        return (await res.json()) as any;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    { label: `llm.json:${args.baseUrl}`, maxAttempts: 3 },
+  );
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`LLM HTTP ${res.status}${text ? `: ${text}` : ''}`);
-  }
-  const data = (await res.json()) as any;
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== 'string') throw new Error('LLM: missing content');
   return JSON.parse(content);
@@ -714,15 +800,29 @@ const callGeminiImage = async (args: {
     }),
   };
   const imgDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
-  if (imgDispatcher) imgInit.dispatcher = imgDispatcher;
-  const res = await fetch(url, imgInit);
+  const data = await withRetries(
+    async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90_000);
+      try {
+        const init: any = { ...imgInit, signal: controller.signal };
+        if (imgDispatcher) init.dispatcher = imgDispatcher;
+        const res = await fetch(url, init);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          const err: any = new Error(`Gemini Image HTTP ${res.status}${text ? `: ${text}` : ''}`);
+          err.status = res.status;
+          err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
+          throw err;
+        }
+        return (await res.json()) as any;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    { label: `gemini.image:${args.model}`, maxAttempts: 3 },
+  );
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Gemini Image HTTP ${res.status}${text ? `: ${text}` : ''}`);
-  }
-
-  const data = (await res.json()) as any;
   const parts = (data?.candidates?.[0]?.content?.parts || []) as any[];
   const inline = parts.find((p) => p?.inlineData?.data || p?.inline_data?.data);
   const inlineData = inline?.inlineData || inline?.inline_data;
@@ -817,33 +917,37 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }
                 };
 
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 15_000);
                 try {
                   const tryFetch = async (input: string) => {
-                    const resp = await fetch(input, { signal: controller.signal });
-                    if (!resp.ok) return null;
-                    const ct = String(resp.headers.get('content-type') || '');
-                    if (!ct.startsWith('image/')) return null;
-                    const buf = Buffer.from(await resp.arrayBuffer());
-                    return { mimeType: ct.split(';')[0] || 'image/png', bytes: buf, bytesLen: buf.length };
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 15_000);
+                    try {
+                      const resp = await fetch(input, { signal: controller.signal });
+                      if (!resp.ok) return null;
+                      const ct = String(resp.headers.get('content-type') || '');
+                      if (!ct.startsWith('image/')) return null;
+                      const buf = Buffer.from(await resp.arrayBuffer());
+                      return { mimeType: ct.split(';')[0] || 'image/png', bytes: buf, bytesLen: buf.length };
+                    } finally {
+                      clearTimeout(timeout);
+                    }
                   };
 
-                  const first = await tryFetch(u);
+                  const first = await withRetries(async () => await tryFetch(u), { label: 'ref-image-fetch', maxAttempts: 2, baseDelayMs: 200, maxDelayMs: 900 });
                   if (!first) return null;
                   // If the image is too large, retry a smaller Unsplash variant when possible.
                   if (first.bytesLen > 12 * 1024 * 1024) {
                     const smallerUrl = shrinkIfUnsplash(u);
                     if (smallerUrl !== u) {
-                      const second = await tryFetch(smallerUrl);
+                      const second = await withRetries(async () => await tryFetch(smallerUrl), { label: 'ref-image-fetch-small', maxAttempts: 2, baseDelayMs: 200, maxDelayMs: 900 });
                       if (second && second.bytesLen <= 12 * 1024 * 1024) return { mimeType: second.mimeType, bytes: second.bytes };
                     }
                     return null;
                   }
 
                   return { mimeType: first.mimeType, bytes: first.bytes };
-                } finally {
-                  clearTimeout(timeout);
+                } catch {
+                  return null;
                 }
               }
 
@@ -936,7 +1040,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               provider,
               model,
               promptPreview,
-              error: e?.message || String(e),
+              error: formatFetchError(e),
             },
           });
         }
@@ -1202,7 +1306,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    model: String(opts?.model || chosenModel),
 	                    ms: Date.now() - started,
 	                    ok: false,
-	                    error: e?.message || String(e),
+	                    error: formatFetchError(e),
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });
@@ -1345,7 +1449,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    model: String(opts?.model || chosenModel),
 	                    ms: Date.now() - started,
 	                    ok: false,
-	                    error: e?.message || String(e),
+	                    error: formatFetchError(e),
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });
@@ -1478,7 +1582,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    model: String(opts?.model || chosenModel),
 	                    ms: Date.now() - started,
 	                    ok: false,
-	                    error: e?.message || String(e),
+	                    error: formatFetchError(e),
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });
@@ -1897,7 +2001,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    model,
 	                    ms: Date.now() - started,
 	                    ok: false,
-	                    error: e?.message || String(e),
+	                    error: formatFetchError(e),
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });
@@ -2057,7 +2161,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    model,
 	                    ms: Date.now() - started,
 	                    ok: false,
-	                    error: e?.message || String(e),
+	                    error: formatFetchError(e),
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });
@@ -2213,7 +2317,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    model,
 	                    ms: Date.now() - started,
 	                    ok: false,
-	                    error: e?.message || String(e),
+	                    error: formatFetchError(e),
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });
