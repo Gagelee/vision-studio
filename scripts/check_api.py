@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -135,6 +136,14 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Print full JSON error bodies for failed requests.",
     )
+    ap.add_argument(
+        "--test-compass",
+        action="store_true",
+        help="Also test Compass gateway directly (generateContent). Reads COMPASS_API_KEY/COMPASS_GATEWAY_URL by default.",
+    )
+    ap.add_argument("--compass-key", default="", help="Compass API key (or set COMPASS_API_KEY env var).")
+    ap.add_argument("--compass-url", default="", help="Compass gateway base URL, e.g. https://.../compass-api/v1 (or set COMPASS_GATEWAY_URL env var).")
+    ap.add_argument("--compass-model", default="", help="Compass model name for direct test (default: MODEL_NAME env or gemini-3-flash-preview).")
     ap.add_argument("--include-image", action="store_true", help="Also test /api/asset/image/generate and fetch generated asset")
     ap.add_argument("--timeout-s", type=float, default=60.0, help="Timeout in seconds (default 60)")
     args = ap.parse_args(argv)
@@ -159,6 +168,93 @@ def main(argv: list[str]) -> int:
             bits.append(f"firstFail={first_fail}")
         bits.append(hint)
         return " | ".join([b for b in bits if b])
+
+    # Compass gateway direct test (optional). This verifies network + auth to Compass without involving the local dev server.
+    compass_key = (args.compass_key or os.environ.get("COMPASS_API_KEY") or "").strip()
+    compass_url = (
+        args.compass_url
+        or os.environ.get("COMPASS_GATEWAY_URL")
+        or os.environ.get("GATEWAY_URL")
+        or ""
+    ).strip()
+    compass_model = (args.compass_model or os.environ.get("MODEL_NAME") or "gemini-3-flash-preview").strip()
+
+    if args.test_compass or (compass_key and compass_url):
+        _assert(bool(compass_key and compass_url), "compass: missing COMPASS_API_KEY or COMPASS_GATEWAY_URL (or pass --compass-key/--compass-url)")
+        gateway = _strip_trailing_slash(compass_url)
+        url = f"{gateway}/models/{urllib.parse.quote(compass_model)}:generateContent"
+
+        # Use a separate opener so localhost "no proxy" settings don't affect remote calls.
+        compass_opener = urllib.request.build_opener()
+        req = urllib.request.Request(
+            url=url,
+            method="POST",
+            data=json.dumps(
+                {
+                    "contents": [{"role": "user", "parts": [{"text": "Return exactly: OK"}]}],
+                    "generationConfig": {"temperature": 0, "maxOutputTokens": 32},
+                }
+            ).encode("utf-8"),
+            headers={
+                "content-type": "application/json",
+                # Google genai SDK uses an API key; many gateways accept it via this header.
+                "x-goog-api-key": compass_key,
+            },
+        )
+        started = time.time()
+        try:
+            with compass_opener.open(req, timeout=args.timeout_s) as resp:
+                raw = resp.read() or b""
+                text = raw.decode("utf-8", errors="replace")
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    parsed = None
+                results.append(
+                    {
+                        "name": "compass.generateContent",
+                        "url": url,
+                        "ms": int((time.time() - started) * 1000),
+                        "status": resp.status,
+                        "ok": 200 <= resp.status < 300,
+                        "textPreview": text[:280],
+                        "debug": {"model": compass_model},
+                    }
+                )
+                _assert(200 <= resp.status < 300, f"compass.generateContent HTTP {resp.status}")
+                _assert(isinstance(parsed, dict), f"compass.generateContent: expected JSON (got {text[:120]})")
+        except urllib.error.HTTPError as e:
+            raw = e.read() or b""
+            text = raw.decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            results.append(
+                {
+                    "name": "compass.generateContent",
+                    "url": url,
+                    "ms": int((time.time() - started) * 1000),
+                    "status": e.code,
+                    "ok": False,
+                    "textPreview": text[:280],
+                    "debug": {"model": compass_model, "error": parsed or text[:200]},
+                }
+            )
+            raise RuntimeError(f"compass.generateContent HTTP {e.code}")
+        except urllib.error.URLError as e:
+            results.append(
+                {
+                    "name": "compass.generateContent",
+                    "url": url,
+                    "ms": int((time.time() - started) * 1000),
+                    "status": 0,
+                    "ok": False,
+                    "textPreview": f"{e.reason}",
+                    "debug": {"model": compass_model},
+                }
+            )
+            raise RuntimeError(f"compass.generateContent URLError: {e.reason}")
 
     # Avoid accidental proxying for localhost when users set HTTP(S)_PROXY for Gemini.
     # (Python urllib honors env proxies by default; without NO_PROXY this can break localhost calls.)
