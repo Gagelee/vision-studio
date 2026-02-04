@@ -28,6 +28,33 @@ def _pretty(obj) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 
+def _maybe_load_dotenv(path: str) -> None:
+    """
+    Minimal .env parser (KEY=VALUE), supports quotes and ignores comments.
+    Only fills missing os.environ keys (does not override).
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                key = k.strip()
+                if not key or key in os.environ:
+                    continue
+                val = v.strip()
+                if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                    val = val[1:-1]
+                os.environ[key] = val
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
 def _request_json(opener: urllib.request.OpenerDirector, method: str, url: str, body_obj, timeout_s: float):
     data = json.dumps(body_obj).encode("utf-8") if body_obj is not None else None
     req = urllib.request.Request(
@@ -136,6 +163,8 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Print full JSON error bodies for failed requests.",
     )
+    ap.add_argument("--env-file", default="", help="Optional .env file to load (default: auto-load repo .env.local if present).")
+    ap.add_argument("--model", default="", help="Gemini model for scaffold/direct (default: MODEL_NAME env or gemini-3-flash-preview).")
     ap.add_argument(
         "--test-compass",
         action="store_true",
@@ -145,8 +174,16 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--compass-url", default="", help="Compass gateway base URL, e.g. https://.../compass-api/v1 (or set COMPASS_GATEWAY_URL env var).")
     ap.add_argument("--compass-model", default="", help="Compass model name for direct test (default: MODEL_NAME env or gemini-3-flash-preview).")
     ap.add_argument("--include-image", action="store_true", help="Also test /api/asset/image/generate and fetch generated asset")
-    ap.add_argument("--timeout-s", type=float, default=60.0, help="Timeout in seconds (default 60)")
+    ap.add_argument("--timeout-s", type=float, default=180.0, help="Timeout in seconds (default 180)")
     args = ap.parse_args(argv)
+
+    # Auto-load repo .env.local so scripts behave like dev server config.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(script_dir, ".."))
+    env_path = args.env_file.strip() or os.path.join(repo_root, ".env.local")
+    _maybe_load_dotenv(env_path)
+
+    model = (args.model or os.environ.get("MODEL_NAME") or "gemini-3-flash-preview").strip()
 
     base = _strip_trailing_slash(args.base)
     results = []
@@ -278,7 +315,7 @@ def main(argv: list[str]) -> int:
             "intent": "API connectivity test",
             "aspectRatio": "16:9",
             "allowSingleFallback": bool(args.allow_single_fallback),
-            "settings": {"provider": "gemini", "model": "gemini-3-pro-preview", "temperature": 0.4, "maxOutputTokens": 8192},
+            "settings": {"provider": "gemini", "model": model, "temperature": 0.4, "maxOutputTokens": 8192},
         },
         args.timeout_s,
     )
@@ -334,7 +371,7 @@ def main(argv: list[str]) -> int:
             "selection": selection,
             "story": story,
             "allowSingleFallback": bool(args.allow_single_fallback),
-            "settings": {"provider": "gemini", "model": "gemini-3-pro-preview", "temperature": 0.3, "maxOutputTokens": 4096},
+            "settings": {"provider": "gemini", "model": model, "temperature": 0.3, "maxOutputTokens": 4096},
         },
         args.timeout_s,
     )

@@ -88,11 +88,16 @@ const postJson = async <T>(url: string, body: unknown, timeoutMs: number): Promi
   try {
     addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'POST', data: { url, body } });
     const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }).catch((e) => {
+        if (e && typeof e === 'object' && (e as any).name === 'AbortError') {
+          throw new Error(`Timeout after ${timeoutMs}ms`);
+        }
+        throw e;
+      });
     if (!res.ok) {
       const { text, json } = await readErrorBody(res);
       addDebugEvent({ level: 'error', scope: 'agent.scaffold', message: 'HTTP error', data: { url, status: res.status, text, json } });
@@ -143,7 +148,7 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
             }
           : undefined,
       },
-      60_000
+      180_000
     );
 
     if (!isUsefulScaffold((res as any)?.story) || !(res as any)?.plan) {
