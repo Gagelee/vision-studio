@@ -34,7 +34,10 @@ export const buildAssetJobs = (story: Story, scope: AssetScope = 'all'): AssetJo
   const styleGuide = String((story as any)?.styleGuide || '').trim();
 
   if (wantMasterKV) {
-    jobs.push({ kind: 'masterkv', prompt: buildMasterKeyVisualPrompt({ intent: story.intent, logline: story.logline }) });
+    jobs.push({
+      kind: 'masterkv',
+      prompt: buildMasterKeyVisualPrompt({ intent: story.intent, logline: story.logline, styleGuide } as any),
+    });
   }
 
   if (wantLocations) {

@@ -110,7 +110,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
 
       const refs = story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'current master kv' }] : [];
       const out = await generateImageFromPrompt({
-        prompt: buildMasterKeyVisualPrompt({ intent: story.intent, logline: story.logline }),
+        prompt: buildMasterKeyVisualPrompt({ intent: story.intent, logline: story.logline, styleGuide: (story as any).styleGuide } as any),
         settings: imageSettings!,
         aspectRatio: story.aspectRatio,
         references: refs,

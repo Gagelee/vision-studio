@@ -11,9 +11,11 @@ const styleBlock = (styleGuide?: string) => {
 export const buildMasterKeyVisualPrompt = (args: { intent?: string; logline?: string }) => {
   const intent = String(args.intent || '').trim();
   const logline = String(args.logline || '').trim();
+  const styleGuide = String((args as any)?.styleGuide || '').trim();
   return (
     `Master Key Visual (KV) for a film project. ${baseRules()}\n` +
     `High-level goal: a single iconic, consistent visual constitution that all assets should follow.\n` +
+    (styleGuide ? styleBlock(styleGuide) : '') +
     `Style requirements: cohesive palette, consistent lens language, cinematic lighting. Avoid drastic style shifts.\n` +
     (intent ? `Intent: ${intent}\n` : '') +
     (logline ? `Logline: ${logline}\n` : '')
