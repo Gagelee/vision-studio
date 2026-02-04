@@ -1967,6 +1967,32 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           return payload;
         };
 
+        const extractLookFieldsFromText = (text: string) => {
+          const s = String(text || '').trim();
+          if (!s) return { characterId: '', name: '', description: '' };
+
+          const pickFirst = (re: RegExp) => {
+            const m = s.match(re);
+            return m?.[1] ? String(m[1]).trim() : '';
+          };
+
+          const characterId =
+            pickFirst(/\breference\s*:\s*(char-[a-zA-Z0-9-]+)/i) ||
+            pickFirst(/\bparentId\s*[:=]\s*(char-[a-zA-Z0-9-]+)/i) ||
+            pickFirst(/\bchar-[a-zA-Z0-9-]+/i); // fallback (may capture without group)
+
+          const name = pickFirst(/\bname\s*:\s*([^\n\r]+)/i);
+
+          // Prefer explicit description field; otherwise take tail after "description:"
+          const description = pickFirst(/\bdescription\s*:\s*([\s\S]+)$/i) || pickFirst(/\bdesc\s*:\s*([\s\S]+)$/i);
+
+          return {
+            characterId: characterId.startsWith('char-') ? characterId : '',
+            name,
+            description: description.trim(),
+          };
+        };
+
         const normalizeAction = (action: any) => {
           const type = String(action?.type || '').trim();
           if (!type) return null;
@@ -2005,6 +2031,61 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             }
 
             return { type, payload: p };
+          }
+
+          if (type === 'CREATE_CHARACTER_LOOK') {
+            const selType = String(selection?.type || '');
+            const selectedCharacterId = selType === 'character' ? String(selection?.id || '') : '';
+
+            if (typeof payloadRaw === 'string' && payloadRaw.trim()) {
+              const f = extractLookFieldsFromText(payloadRaw);
+              const characterId = f.characterId || selectedCharacterId;
+              if (characterId && f.name && f.description) return { type, payload: { characterId, name: f.name, description: f.description } };
+            }
+
+            if (payloadRaw && typeof payloadRaw === 'object') {
+              const p: any = payloadRaw;
+              // If merge returned payload as {_raw: "..."} keep parsing.
+              if (typeof p._raw === 'string' && p._raw.trim()) {
+                const f = extractLookFieldsFromText(String(p._raw));
+                const characterId = f.characterId || selectedCharacterId;
+                if (characterId && f.name && f.description) return { type, payload: { characterId, name: f.name, description: f.description } };
+              }
+              const characterId = String(p.characterId || p.parentId || selectedCharacterId || '').trim();
+              const name = String(p.name || '').trim();
+              const description = String(p.description || '').trim();
+              if (characterId && name && description) return { type, payload: { characterId, name, description } };
+            }
+          }
+
+          if (type === 'UPDATE_CHARACTER_LOOK') {
+            const selType = String(selection?.type || '');
+            const selectedCharacterId = selType === 'character' ? String(selection?.id || '') : '';
+            if (payloadRaw && typeof payloadRaw === 'object') {
+              const p: any = payloadRaw;
+              if (typeof p._raw === 'string' && p._raw.trim()) {
+                // Support simple "reference: char-... lookId: ... name: ... description: ..."
+                const rawText = String(p._raw);
+                const pickFirst = (re: RegExp) => {
+                  const m = rawText.match(re);
+                  return m?.[1] ? String(m[1]).trim() : '';
+                };
+                const characterId =
+                  pickFirst(/\breference\s*:\s*(char-[a-zA-Z0-9-]+)/i) ||
+                  pickFirst(/\bcharacterId\s*[:=]\s*(char-[a-zA-Z0-9-]+)/i) ||
+                  selectedCharacterId;
+                const lookId = pickFirst(/\blookId\s*:\s*([a-zA-Z0-9-]+)/i);
+                const name = pickFirst(/\bname\s*:\s*([^\n\r]+)/i);
+                const description = pickFirst(/\bdescription\s*:\s*([\s\S]+)$/i);
+                if (characterId && lookId) {
+                  const patch: any = {};
+                  if (name) patch.name = name;
+                  if (description) patch.description = description;
+                  return { type, payload: { characterId, lookId, patch } };
+                }
+              }
+              return { type, payload: p };
+            }
           }
 
           if (type === 'UPDATE_SHOT' && payloadRaw && typeof payloadRaw === 'object') {
