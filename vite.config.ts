@@ -477,6 +477,11 @@ const resolveGeminiBaseUrl = (env?: Record<string, string>) => {
   return 'https://generativelanguage.googleapis.com/v1beta';
 };
 
+const buildGeminiGenerateContentUrl = (args: { env?: Record<string, string>; model: string }) => {
+  const baseUrl = resolveGeminiBaseUrl(args.env);
+  return `${baseUrl}/models/${encodeURIComponent(args.model)}:generateContent`;
+};
+
 const callGeminiJson = async (args: {
   apiKey: string;
   model: string;
@@ -486,8 +491,7 @@ const callGeminiJson = async (args: {
   env?: Record<string, string>;
   responseSchema?: any;
 }): Promise<any> => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
-  const url = `${baseUrl}/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
 
   const parseJsonLenient = (raw: string) => {
     const text = String(raw || '').trim();
@@ -595,7 +599,7 @@ const callGeminiJson = async (args: {
       try {
         const geminiInit: any = {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': args.apiKey },
           signal: controller.signal,
           body: JSON.stringify({
             contents: [{ role: 'user', parts: [{ text: args.prompt }] }],
@@ -775,8 +779,7 @@ const callGeminiImage = async (args: {
   references?: Array<{ mimeType: string; bytes: Buffer; label?: string }>;
   env?: Record<string, string>;
 }): Promise<{ mimeType: string; bytes: Buffer }> => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
-  const url = `${baseUrl}/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
 
   const generationConfig: any = {
     temperature: args.temperature,
@@ -801,7 +804,7 @@ const callGeminiImage = async (args: {
 
   const imgInit: any = {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': args.apiKey },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: inputParts }],
       generationConfig,
