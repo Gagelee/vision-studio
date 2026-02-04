@@ -30,6 +30,123 @@ const joinUrl = (baseUrl: string | undefined, pathname: string) => {
   return base ? `${base}${pathname}` : pathname;
 };
 
+const parseSseEvent = (raw: string): { event: string; data: string } | null => {
+  const lines = raw.split('\n');
+  let event = 'message';
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('event:')) event = line.slice('event:'.length).trim() || 'message';
+    if (line.startsWith('data:')) dataLines.push(line.slice('data:'.length).trimStart());
+  }
+  if (!event && dataLines.length === 0) return null;
+  return { event, data: dataLines.join('\n') };
+};
+
+export const scaffoldProjectStream = async (
+  req: ScaffoldProjectRequest,
+  opts?: {
+    onEvent?: (ev: { event: string; data: any }) => void;
+  },
+): Promise<ScaffoldProjectResponse> => {
+  if (req.settings.provider === 'mock') {
+    return createLocalMockProject(req.intent, req.aspectRatio, req.keyVisualUrl);
+  }
+
+  const endpoint = joinUrl(req.settings.baseUrl, '/api/agent/scaffold/stream');
+  const controller = new AbortController();
+  const timeoutMs = 10 * 60_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        intent: req.intent,
+        aspectRatio: req.aspectRatio,
+        keyVisualUrl: req.keyVisualUrl,
+        allowSingleFallback: Boolean(req.allowSingleFallback),
+        settings: {
+          provider: req.settings.provider,
+          model: req.settings.model,
+          temperature: req.settings.temperature,
+          maxOutputTokens: req.settings.maxOutputTokens,
+        },
+        plannerSettings: req.plannerSettings
+          ? {
+              provider: req.plannerSettings.provider,
+              model: req.plannerSettings.model,
+              temperature: req.plannerSettings.temperature,
+              maxOutputTokens: req.plannerSettings.maxOutputTokens,
+            }
+          : undefined,
+      }),
+      signal: controller.signal,
+    }).catch((e) => {
+      if (e && typeof e === 'object' && (e as any).name === 'AbortError') {
+        throw new Error(`Timeout after ${timeoutMs}ms`);
+      }
+      throw e;
+    });
+
+    if (!res.ok) {
+      const { text, json } = await readErrorBody(res);
+      throw new AgentApiError({
+        message: `HTTP ${res.status}${text ? `: ${text}` : ''}`,
+        status: res.status,
+        url: endpoint,
+        bodyText: text,
+        bodyJson: json,
+      });
+    }
+
+    if (!res.body) throw new Error('Missing response body');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      while (true) {
+        const idx = buf.indexOf('\n\n');
+        if (idx < 0) break;
+        const raw = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const parsed = parseSseEvent(raw);
+        if (!parsed) continue;
+        let data: any = parsed.data;
+        try {
+          data = parsed.data ? JSON.parse(parsed.data) : null;
+        } catch {
+          // keep raw string
+        }
+        opts?.onEvent?.({ event: parsed.event, data });
+        if (parsed.event === 'done' && data) {
+          return data as ScaffoldProjectResponse;
+        }
+        if (parsed.event === 'error' && data) {
+          // Server-streamed errors are sent as JSON payloads.
+          const status = Number((data as any)?.status || 502);
+          throw new AgentApiError({
+            message: `HTTP ${status}: ${String((data as any)?.message || 'Scaffold failed')}`,
+            status,
+            url: endpoint,
+            bodyText: JSON.stringify(data),
+            bodyJson: data,
+          });
+        }
+      }
+    }
+
+    throw new Error('Stream ended without done');
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 const isUsefulScaffold = (story: Story | undefined | null) => {
   if (!story) return false;
   const seqs = Array.isArray(story.sequences) ? story.sequences : [];

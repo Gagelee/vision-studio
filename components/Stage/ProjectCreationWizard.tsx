@@ -2,7 +2,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
-import { createLocalMockProject, scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
+import { createLocalMockProject, scaffoldProjectStream, scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
 import { isAgentApiError } from '../../lib/ai/agent/apiError';
 import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
 
@@ -26,6 +26,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
   const [assetDone, setAssetDone] = useState(0);
   const [assetErrors, setAssetErrors] = useState(0);
   const [assetCurrent, setAssetCurrent] = useState<string>('');
+  const [scaffoldCurrent, setScaffoldCurrent] = useState<string>('');
   const lastScaffoldRef = useRef<Awaited<ReturnType<typeof scaffoldProjectWithSettings>> | null>(null);
   const lastScaffoldArgsRef = useRef<{ intent: string; ratio: AspectRatio } | null>(null);
   const storyRef = useRef<Story | null>(null);
@@ -55,6 +56,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     setAssetDone(0);
     setAssetErrors(0);
     setAssetCurrent('');
+    setScaffoldCurrent('');
     storyRef.current = null;
     lastScaffoldRef.current = null;
     lastScaffoldArgsRef.current = null;
@@ -134,16 +136,47 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     setAssetDone(0);
     setAssetErrors(0);
     setAssetCurrent('');
+    setScaffoldCurrent('');
     storyRef.current = null;
 
     lastScaffoldArgsRef.current = { intent: intent.trim(), ratio };
     try {
-      const res = await scaffoldProjectWithSettings({
-        intent: intent.trim(),
-        aspectRatio: ratio,
-        aiSettings,
-        allowSingleFallback: Boolean(opts?.allowSingleFallback),
-      });
+      // Prefer streaming for better transparency (multi-agent is long-running and prone to idle timeouts).
+      const res =
+        aiSettings.scaffoldWorker.provider !== 'mock'
+          ? await scaffoldProjectStream(
+              {
+                intent: intent.trim(),
+                aspectRatio: ratio,
+                settings: aiSettings.scaffoldWorker,
+                plannerSettings: aiSettings.scaffoldPlanner,
+                allowSingleFallback: Boolean(opts?.allowSingleFallback),
+              },
+              {
+                onEvent: (ev) => {
+                  if (ev.event === 'progress') {
+                    const agent = String(ev.data?.agent || '');
+                    const provider = String(ev.data?.provider || '');
+                    const model = String(ev.data?.model || '');
+                    setScaffoldCurrent([agent, provider && model ? `${provider}/${model}` : ''].filter(Boolean).join(' • '));
+                  }
+                  if (ev.event === 'trace') {
+                    const agent = String(ev.data?.agent || '');
+                    const ok = ev.data?.ok === true ? 'ok' : ev.data?.ok === false ? 'fail' : '';
+                    setScaffoldCurrent([agent, ok].filter(Boolean).join(' • '));
+                  }
+                  if (ev.event === 'hello') {
+                    setScaffoldCurrent('Starting multi-agent scaffold…');
+                  }
+                },
+              },
+            )
+          : await scaffoldProjectWithSettings({
+              intent: intent.trim(),
+              aspectRatio: ratio,
+              aiSettings,
+              allowSingleFallback: Boolean(opts?.allowSingleFallback),
+            });
       lastScaffoldRef.current = res;
       storyRef.current = res.story;
       setPlan(res.plan);
@@ -311,6 +344,11 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
 	                              {assetCurrent}{assetErrors ? ` (errors: ${assetErrors})` : ''}
 	                            </div>
 	                          )}
+                            {phase === 'scaffold' && scaffoldCurrent && (
+                              <div className="text-[11px] text-white/30 font-mono break-words">
+                                {scaffoldCurrent}
+                              </div>
+                            )}
                           <div className="text-[10px] text-white/20 font-mono">
                             Image: {aiSettings.image.provider}/{aiSettings.image.model}
                             {aiSettings.image.provider === 'mock' ? ' (mock — assets will NOT be generated)' : ''}

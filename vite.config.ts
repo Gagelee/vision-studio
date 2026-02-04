@@ -1074,33 +1074,97 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         });
       });
 
-    middlewares.use('/api/agent/scaffold', async (req, res, next) => {
-        if (req.method !== 'POST') return next();
-        const body = await readJsonBody(req);
+    const writeSseHeaders = (res: any) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+      res.setHeader('cache-control', 'no-cache, no-transform');
+      res.setHeader('connection', 'keep-alive');
+      res.setHeader('x-accel-buffering', 'no');
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    };
 
-        const intent = String(body?.intent || '').trim();
-        const aspectRatio = String(body?.aspectRatio || '16:9');
-        const keyVisualUrl = body?.keyVisualUrl ? String(body.keyVisualUrl) : undefined;
-        const allowSingleFallback = Boolean(body?.allowSingleFallback);
-        const settings = body?.settings || {};
-        const plannerSettings = body?.plannerSettings || {};
-        const provider = String(settings?.provider || 'gemini');
-        // Gemini 1.5 models were shut down in 2025; default to a supported 2.5 model.
-        const model = String(settings?.model || 'gemini-3-pro-preview');
-        const temperature = Number(settings?.temperature ?? 0.6);
-        const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
-        const plannerModel = String(plannerSettings?.model || '');
-        const plannerTemperature = Number(plannerSettings?.temperature ?? temperature);
-        const plannerMaxOutputTokens = plannerSettings?.maxOutputTokens ? Number(plannerSettings.maxOutputTokens) : maxOutputTokens;
+    const sseSend = (res: any, event: string, data: any) => {
+      const payload = typeof data === 'string' ? data : JSON.stringify(data);
+      res.write(`event: ${event}\n`);
+      for (const line of String(payload).split('\n')) {
+        res.write(`data: ${line}\n`);
+      }
+      res.write('\n');
+    };
 
-        if (!intent) return sendJson(res, 400, { ok: false, error: 'Missing intent' });
+    const handleScaffold = async (req: any, res: any, opts: { stream: boolean }) => {
+      if (req.method !== 'POST') return false;
+      const body = await readJsonBody(req);
+
+	      const intent = String(body?.intent || '').trim();
+	      const aspectRatio = String(body?.aspectRatio || '16:9');
+	      const keyVisualUrl = body?.keyVisualUrl ? String(body.keyVisualUrl) : undefined;
+	      const allowSingleFallback = Boolean(body?.allowSingleFallback);
+	      const allowMockFallback = Boolean(body?.allowMockFallback);
+	      const settings = body?.settings || {};
+	      const plannerSettings = body?.plannerSettings || {};
+      const provider = String(settings?.provider || 'gemini');
+      // Gemini 1.5 models were shut down in 2025; default to a supported model.
+      const model = String(settings?.model || 'gemini-3-pro-preview');
+      const temperature = Number(settings?.temperature ?? 0.6);
+      const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
+      const plannerModel = String(plannerSettings?.model || '');
+      const plannerTemperature = Number(plannerSettings?.temperature ?? temperature);
+      const plannerMaxOutputTokens = plannerSettings?.maxOutputTokens ? Number(plannerSettings.maxOutputTokens) : maxOutputTokens;
+
+      if (!intent) {
+        if (opts.stream) {
+          writeSseHeaders(res);
+          sseSend(res, 'error', { ok: false, error: 'Missing intent' });
+          res.end();
+          return true;
+        }
+        sendJson(res, 400, { ok: false, error: 'Missing intent' });
+        return true;
+      }
+
+      if (opts.stream) {
+        writeSseHeaders(res);
+      }
+
+      let closed = false;
+      req.on('close', () => {
+        closed = true;
+      });
+
+	      const emit = (event: string, data: any) => {
+	        if (!opts.stream) return;
+	        if (closed) return;
+	        sseSend(res, event, data);
+	      };
+
+	      const finish = (status: number, payload: any) => {
+	        if (opts.stream) {
+	          if (status >= 400) emit('error', { status, ...(payload || {}) });
+	          else emit('done', payload);
+	          res.end();
+	          return true;
+	        }
+	        sendJson(res, status, payload);
+	        return true;
+	      };
+
+	      const heartbeat = opts.stream
+	        ? setInterval(() => {
+	            if (closed) return;
+	            sseSend(res, 'ping', { ts: Date.now() });
+	          }, 10_000)
+        : null;
+
+      try {
+        emit('hello', { intent, aspectRatio, provider, model, ts: Date.now() });
 
         const now = Date.now();
         const mkId = (prefix: string) => `${prefix}-${now}-${Math.random().toString(16).slice(2, 8)}`;
 
-	        const mock = () => {
-	          const projectId = mkId('proj');
-	          return {
+        const mock = () => {
+          const projectId = mkId('proj');
+          return {
             ok: true,
             story: {
               id: projectId,
@@ -1115,9 +1179,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               lastOpenedAt: now,
               locations: [],
               characters: [],
-              sequences: [
-                { id: mkId('seq'), title: 'Sequence 1', context: 'Auto-generated scaffold.', shots: [] },
-              ],
+              sequences: [{ id: mkId('seq'), title: 'Sequence 1', context: 'Auto-generated scaffold.', shots: [] }],
             },
             plan: {
               id: mkId('plan'),
@@ -1130,33 +1192,33 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               ],
               actions: [{ type: 'SCAFFOLD_PROJECT' }],
             },
-	            debug: { transport: 'mock', provider, model },
-	          };
-	        };
+            debug: { transport: 'mock', provider, model },
+          };
+        };
 
-	        const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
+        const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
 
-	        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string, debugExtra?: any) => {
-	          // Minimal mapping into the app's Story schema. IDs generated server-side for stability.
-	          const projectId = mkId('proj');
-	          const locations = Array.isArray(spec?.locations) ? spec.locations : [];
-	          const characters = Array.isArray(spec?.characters) ? spec.characters : [];
-	          const sequences = Array.isArray(spec?.sequences) ? spec.sequences : [];
+        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string, debugExtra?: any) => {
+          // Minimal mapping into the app's Story schema. IDs generated server-side for stability.
+          const projectId = mkId('proj');
+          const locations = Array.isArray(spec?.locations) ? spec.locations : [];
+          const characters = Array.isArray(spec?.characters) ? spec.characters : [];
+          const sequences = Array.isArray(spec?.sequences) ? spec.sequences : [];
 
-	          const locByName = new Map<string, any>();
-	          const mappedLocations = locations.map((l: any) => {
-	            const id = mkId('loc');
-	            const item = {
-	              id,
-	              name: String(l?.name || 'Environment'),
-	              description: String(l?.description || ''),
-	              visualStyle: String(l?.visualStyle || ''),
-	              previewUrl: 'https://images.unsplash.com/photo-1555680202-c86f0e12f086?q=80&w=2070&auto=format&fit=crop',
-	              status: 'draft',
-	            };
-	            locByName.set(item.name.toLowerCase(), item);
-	            return item;
-	          });
+          const locByName = new Map<string, any>();
+          const mappedLocations = locations.map((l: any) => {
+            const id = mkId('loc');
+            const item = {
+              id,
+              name: String(l?.name || 'Environment'),
+              description: String(l?.description || ''),
+              visualStyle: String(l?.visualStyle || ''),
+              previewUrl: 'https://images.unsplash.com/photo-1555680202-c86f0e12f086?q=80&w=2070&auto=format&fit=crop',
+              status: 'draft',
+            };
+            locByName.set(item.name.toLowerCase(), item);
+            return item;
+          });
 
 	          const charByName = new Map<string, any>();
 	          const mappedCharacters = characters.map((c: any) => {
@@ -1284,53 +1346,58 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         const attemptedProviders: string[] = [];
         let lastError: any = null;
-        for (const p of getProviderCandidates(provider, env)) {
-          attemptedProviders.push(p);
-          try {
+	        for (const p of getProviderCandidates(provider, env)) {
+	          attemptedProviders.push(p);
+	          try {
 	            if (p === 'gemini') {
 	              const teamTrace: any[] = [];
 	              const traceId = crypto.randomUUID();
-	              const call = async (
-	                agent: string,
-	                prompt: string,
-	                opts?: { model?: string; temperature?: number; maxOutputTokens?: number; responseSchema?: any },
-	              ) => {
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('scaffold', agent);
-	                try {
-	                  const out = await callGeminiJson({
-                    apiKey: geminiApiKey,
-                    model: String(opts?.model || chosenModel),
+		              const call = async (
+		                agent: string,
+		                prompt: string,
+		                opts?: { model?: string; temperature?: number; maxOutputTokens?: number; responseSchema?: any },
+		              ) => {
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('scaffold', agent);
+		                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+		                try {
+		                  const out = await callGeminiJson({
+	                    apiKey: geminiApiKey,
+	                    model: String(opts?.model || chosenModel),
                     temperature: Number(opts?.temperature ?? chosenTemperature),
                     maxOutputTokens: Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192),
                     prompt,
                     env,
                     responseSchema: opts?.responseSchema,
                   });
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
-	                    model: String(opts?.model || chosenModel),
-	                    ms: Date.now() - started,
-	                    ok: true,
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  return out;
-	                } catch (e: any) {
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
-	                    model: String(opts?.model || chosenModel),
-	                    ms: Date.now() - started,
-	                    ok: false,
-	                    error: formatFetchError(e),
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  throw e;
-	                }
-	              };
+		                  const trace = {
+		                    agent,
+		                    provider: p,
+		                    model: String(opts?.model || chosenModel),
+		                    ms: Date.now() - started,
+		                    ok: true,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  };
+		                  teamTrace.push(trace);
+		                  emit('trace', trace);
+		                  return out;
+		                } catch (e: any) {
+		                  const trace = {
+		                    agent,
+		                    provider: p,
+		                    model: String(opts?.model || chosenModel),
+		                    ms: Date.now() - started,
+		                    ok: false,
+		                    error: formatFetchError(e),
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  };
+		                  teamTrace.push(trace);
+		                  emit('trace', trace);
+		                  throw e;
+		                }
+		              };
 
               try {
                 const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
@@ -1389,91 +1456,98 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   { model: chosenModel, temperature: chosenTemperature, maxOutputTokens: resolvedMergeTokens, responseSchema: GEMINI_SCHEMA.scaffoldFinal },
                 );
 
-	                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (Gemini)', p, chosenModel, { teamTrace, traceId }));
-	              } catch (e: any) {
-	                // Fall back to a single-call scaffold for this provider if multi-agent fails.
-	                lastError = e;
-	                if (!allowSingleFallback) {
-	                  return sendJson(res, 502, {
-	                    ok: false,
-	                    errorCode: 'MULTI_AGENT_FAILED',
-	                    message: 'Multi-agent scaffold failed',
-	                    provider: p,
+		                return finish(200, buildFromSpec(spec, 'Multi-Agent (Gemini)', p, chosenModel, { teamTrace, traceId }));
+		              } catch (e: any) {
+		                // Fall back to a single-call scaffold for this provider if multi-agent fails.
+		                lastError = e;
+		                if (!allowSingleFallback) {
+		                  return finish(502, {
+		                    ok: false,
+		                    errorCode: 'MULTI_AGENT_FAILED',
+		                    message: 'Multi-agent scaffold failed',
+		                    provider: p,
 	                    model: chosenModel,
 	                    traceId,
 	                    teamTrace,
 	                    multiAgentError: e?.message || String(e),
-	                    attemptedProviders,
-	                    mode: 'multi-agent',
-	                  });
-	                }
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
-	                const spec = await callGeminiJson({
-	                  apiKey: geminiApiKey,
-	                  model: chosenModel,
-	                  temperature: chosenTemperature,
+		                    attemptedProviders,
+		                    mode: 'multi-agent',
+		                  });
+		                }
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
+		                const spec = await callGeminiJson({
+		                  apiKey: geminiApiKey,
+		                  model: chosenModel,
+		                  temperature: chosenTemperature,
                   maxOutputTokens: resolvedMergeTokens,
                   prompt: scaffoldPrompt,
-	                  env,
-	                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
-	                });
-	                teamTrace.push({
-	                  agent: 'scaffold.single',
-	                  provider: p,
-	                  model: chosenModel,
-	                  ms: Date.now() - started,
-	                  ok: true,
-	                  promptId: meta?.id,
-	                  promptVersion: meta?.version,
-	                });
-	                return sendJson(
-	                  res,
-	                  200,
-	                  buildFromSpec(spec, 'Single-call (Gemini)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
-	                );
-	              }
+		                  env,
+		                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
+		                });
+		                const trace = {
+		                  agent: 'scaffold.single',
+		                  provider: p,
+		                  model: chosenModel,
+		                  ms: Date.now() - started,
+		                  ok: true,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                };
+		                teamTrace.push(trace);
+		                emit('trace', trace);
+		                return finish(
+		                  200,
+		                  buildFromSpec(spec, 'Single-call (Gemini)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
+		                );
+		              }
 	            }
 
-	            if (p === 'openai') {
-	              const teamTrace: any[] = [];
-	              const traceId = crypto.randomUUID();
-	              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('scaffold', agent);
-	                try {
-	                  const out = await callOpenAICompatibleJson({
-                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-                    apiKey: env.OPENAI_API_KEY,
-                    model: String(opts?.model || chosenModel),
+		            if (p === 'openai') {
+		              const teamTrace: any[] = [];
+		              const traceId = crypto.randomUUID();
+		              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('scaffold', agent);
+		                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+		                try {
+		                  const out = await callOpenAICompatibleJson({
+	                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+	                    apiKey: env.OPENAI_API_KEY,
+	                    model: String(opts?.model || chosenModel),
                     temperature: Number(opts?.temperature ?? chosenTemperature),
-	                    prompt,
-	                    env,
-	                  });
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
-	                    model: String(opts?.model || chosenModel),
-	                    ms: Date.now() - started,
-	                    ok: true,
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  return out;
-	                } catch (e: any) {
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
-	                    model: String(opts?.model || chosenModel),
-	                    ms: Date.now() - started,
-	                    ok: false,
-	                    error: formatFetchError(e),
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  throw e;
-	                }
-	              };
+		                    prompt,
+		                    env,
+		                  });
+		                  const trace = {
+		                    agent,
+		                    provider: p,
+		                    model: String(opts?.model || chosenModel),
+		                    ms: Date.now() - started,
+		                    ok: true,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  };
+		                  teamTrace.push(trace);
+		                  emit('trace', trace);
+		                  return out;
+		                } catch (e: any) {
+		                  const trace = {
+		                    agent,
+		                    provider: p,
+		                    model: String(opts?.model || chosenModel),
+		                    ms: Date.now() - started,
+		                    ok: false,
+		                    error: formatFetchError(e),
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  };
+		                  teamTrace.push(trace);
+		                  emit('trace', trace);
+		                  throw e;
+		                }
+		              };
 
               try {
                 const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
@@ -1524,89 +1598,96 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   { model: chosenModel, temperature: chosenTemperature },
                 );
 
-	                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (OpenAI)', p, chosenModel, { teamTrace, traceId }));
-	              } catch (e: any) {
-	                lastError = e;
-	                if (!allowSingleFallback) {
-	                  return sendJson(res, 502, {
-	                    ok: false,
-	                    errorCode: 'MULTI_AGENT_FAILED',
-	                    message: 'Multi-agent scaffold failed',
+		                return finish(200, buildFromSpec(spec, 'Multi-Agent (OpenAI)', p, chosenModel, { teamTrace, traceId }));
+		              } catch (e: any) {
+		                lastError = e;
+		                if (!allowSingleFallback) {
+		                  return finish(502, {
+		                    ok: false,
+		                    errorCode: 'MULTI_AGENT_FAILED',
+		                    message: 'Multi-agent scaffold failed',
 	                    provider: p,
 	                    model: chosenModel,
 	                    traceId,
 	                    teamTrace,
 	                    multiAgentError: e?.message || String(e),
-	                    attemptedProviders,
-	                    mode: 'multi-agent',
-	                  });
-	                }
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
-	                const spec = await callOpenAICompatibleJson({
-	                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-	                  apiKey: env.OPENAI_API_KEY,
-                  model: chosenModel,
-                  temperature: chosenTemperature,
-	                  prompt: scaffoldPrompt,
-	                  env,
-	                });
-	                teamTrace.push({
-	                  agent: 'scaffold.single',
-	                  provider: p,
+		                    attemptedProviders,
+		                    mode: 'multi-agent',
+		                  });
+		                }
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
+		                const spec = await callOpenAICompatibleJson({
+		                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+		                  apiKey: env.OPENAI_API_KEY,
 	                  model: chosenModel,
-	                  ms: Date.now() - started,
-	                  ok: true,
-	                  promptId: meta?.id,
-	                  promptVersion: meta?.version,
-	                });
-	                return sendJson(
-	                  res,
-	                  200,
-	                  buildFromSpec(spec, 'Single-call (OpenAI)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
-	                );
-	              }
-	            }
+                  temperature: chosenTemperature,
+		                  prompt: scaffoldPrompt,
+		                  env,
+		                });
+		                const trace = {
+		                  agent: 'scaffold.single',
+		                  provider: p,
+		                  model: chosenModel,
+		                  ms: Date.now() - started,
+		                  ok: true,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                };
+		                teamTrace.push(trace);
+		                emit('trace', trace);
+		                return finish(
+		                  200,
+		                  buildFromSpec(spec, 'Single-call (OpenAI)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
+		                );
+		              }
+		            }
 
-	            if (p === 'deepseek') {
-	              const teamTrace: any[] = [];
-	              const traceId = crypto.randomUUID();
-	              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('scaffold', agent);
-	                try {
-	                  const out = await callOpenAICompatibleJson({
-                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-                    apiKey: env.DEEPSEEK_API_KEY,
-                    model: String(opts?.model || chosenModel),
+		            if (p === 'deepseek') {
+		              const teamTrace: any[] = [];
+		              const traceId = crypto.randomUUID();
+		              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('scaffold', agent);
+		                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+		                try {
+		                  const out = await callOpenAICompatibleJson({
+	                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+	                    apiKey: env.DEEPSEEK_API_KEY,
+	                    model: String(opts?.model || chosenModel),
                     temperature: Number(opts?.temperature ?? chosenTemperature),
-	                    prompt,
-	                    env,
-	                  });
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
-	                    model: String(opts?.model || chosenModel),
-	                    ms: Date.now() - started,
-	                    ok: true,
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  return out;
-	                } catch (e: any) {
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
-	                    model: String(opts?.model || chosenModel),
-	                    ms: Date.now() - started,
-	                    ok: false,
-	                    error: formatFetchError(e),
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  throw e;
-	                }
-	              };
+		                    prompt,
+		                    env,
+		                  });
+		                  const trace = {
+		                    agent,
+		                    provider: p,
+		                    model: String(opts?.model || chosenModel),
+		                    ms: Date.now() - started,
+		                    ok: true,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  };
+		                  teamTrace.push(trace);
+		                  emit('trace', trace);
+		                  return out;
+		                } catch (e: any) {
+		                  const trace = {
+		                    agent,
+		                    provider: p,
+		                    model: String(opts?.model || chosenModel),
+		                    ms: Date.now() - started,
+		                    ok: false,
+		                    error: formatFetchError(e),
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  };
+		                  teamTrace.push(trace);
+		                  emit('trace', trace);
+		                  throw e;
+		                }
+		              };
 
               try {
                 const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
@@ -1657,65 +1738,94 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   { model: chosenModel, temperature: chosenTemperature },
                 );
 
-	                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (DeepSeek)', p, chosenModel, { teamTrace, traceId }));
-	              } catch (e: any) {
-	                lastError = e;
-	                if (!allowSingleFallback) {
-	                  return sendJson(res, 502, {
-	                    ok: false,
-	                    errorCode: 'MULTI_AGENT_FAILED',
-	                    message: 'Multi-agent scaffold failed',
+		                return finish(200, buildFromSpec(spec, 'Multi-Agent (DeepSeek)', p, chosenModel, { teamTrace, traceId }));
+		              } catch (e: any) {
+		                lastError = e;
+		                if (!allowSingleFallback) {
+		                  return finish(502, {
+		                    ok: false,
+		                    errorCode: 'MULTI_AGENT_FAILED',
+		                    message: 'Multi-agent scaffold failed',
 	                    provider: p,
 	                    model: chosenModel,
 	                    traceId,
 	                    teamTrace,
 	                    multiAgentError: e?.message || String(e),
-	                    attemptedProviders,
-	                    mode: 'multi-agent',
-	                  });
-	                }
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
-	                const spec = await callOpenAICompatibleJson({
-	                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-	                  apiKey: env.DEEPSEEK_API_KEY,
-                  model: chosenModel,
-                  temperature: chosenTemperature,
-	                  prompt: scaffoldPrompt,
-	                  env,
-	                });
-	                teamTrace.push({
-	                  agent: 'scaffold.single',
-	                  provider: p,
+		                    attemptedProviders,
+		                    mode: 'multi-agent',
+		                  });
+		                }
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
+		                const spec = await callOpenAICompatibleJson({
+		                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+		                  apiKey: env.DEEPSEEK_API_KEY,
 	                  model: chosenModel,
-	                  ms: Date.now() - started,
-	                  ok: true,
-	                  promptId: meta?.id,
-	                  promptVersion: meta?.version,
-	                });
-	                return sendJson(
-	                  res,
-	                  200,
-	                  buildFromSpec(spec, 'Single-call (DeepSeek)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
-	                );
-	              }
-	            }
+                  temperature: chosenTemperature,
+		                  prompt: scaffoldPrompt,
+		                  env,
+		                });
+		                const trace = {
+		                  agent: 'scaffold.single',
+		                  provider: p,
+		                  model: chosenModel,
+		                  ms: Date.now() - started,
+		                  ok: true,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                };
+		                teamTrace.push(trace);
+		                emit('trace', trace);
+		                return finish(
+		                  200,
+		                  buildFromSpec(spec, 'Single-call (DeepSeek)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
+		                );
+		              }
+		            }
           } catch (e: any) {
             lastError = e;
-          }
-        }
+	          }
+	        }
 
-        return sendJson(res, 200, {
-          ...mock(),
-          debug: {
-            transport: 'mock',
-            provider,
-            model,
-            attemptedProviders,
-            error: lastError?.message || String(lastError || 'No provider keys configured'),
-          },
-        });
-      });
+	        const fallback = {
+	          ...mock(),
+	          debug: {
+	            transport: 'mock',
+	            provider,
+	            model,
+	            attemptedProviders,
+	            error: lastError?.message || String(lastError || 'No provider keys configured'),
+	          },
+	        };
+
+	        if (allowMockFallback) {
+	          return finish(200, fallback as any);
+	        }
+
+	        return finish(502, {
+	          ok: false,
+	          errorCode: 'ALL_PROVIDERS_FAILED',
+	          message: 'Scaffold failed (all providers)',
+	          provider,
+	          model,
+	          attemptedProviders,
+	          lastError: lastError ? formatFetchError(lastError) : undefined,
+	        });
+	      } finally {
+	        if (heartbeat) clearInterval(heartbeat as any);
+	      }
+    };
+
+    middlewares.use('/api/agent/scaffold/stream', async (req, res, next) => {
+      const handled = await handleScaffold(req, res, { stream: true });
+      if (!handled) return next();
+    });
+
+    middlewares.use('/api/agent/scaffold', async (req, res, next) => {
+      const handled = await handleScaffold(req, res, { stream: false });
+      if (!handled) return next();
+    });
 
     middlewares.use('/api/agent/direct', async (req, res, next) => {
         if (req.method !== 'POST') return next();
