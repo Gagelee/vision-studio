@@ -16,6 +16,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 
 
 def _strip_trailing_slash(url: str) -> str:
@@ -26,7 +27,7 @@ def _pretty(obj) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 
-def _request_json(method: str, url: str, body_obj, timeout_s: float):
+def _request_json(opener: urllib.request.OpenerDirector, method: str, url: str, body_obj, timeout_s: float):
     data = json.dumps(body_obj).encode("utf-8") if body_obj is not None else None
     req = urllib.request.Request(
         url=url,
@@ -36,7 +37,7 @@ def _request_json(method: str, url: str, body_obj, timeout_s: float):
     )
     started = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        with opener.open(req, timeout=timeout_s) as resp:
             raw = resp.read() or b""
             text = raw.decode("utf-8", errors="replace")
             try:
@@ -66,13 +67,22 @@ def _request_json(method: str, url: str, body_obj, timeout_s: float):
             "json": parsed,
             "textPreview": text[:280],
         }
+    except urllib.error.URLError as e:
+        return {
+            "url": url,
+            "ms": int((time.time() - started) * 1000),
+            "status": 0,
+            "ok": False,
+            "json": None,
+            "textPreview": f"{e.reason}",
+        }
 
 
-def _head(url: str, timeout_s: float):
+def _head(opener: urllib.request.OpenerDirector, url: str, timeout_s: float):
     req = urllib.request.Request(url=url, method="HEAD")
     started = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        with opener.open(req, timeout=timeout_s) as resp:
             return {
                 "url": url,
                 "ms": int((time.time() - started) * 1000),
@@ -90,6 +100,16 @@ def _head(url: str, timeout_s: float):
             "contentType": e.headers.get("content-type", "") if e.headers else "",
             "contentLength": e.headers.get("content-length", "") if e.headers else "",
         }
+    except urllib.error.URLError as e:
+        return {
+            "url": url,
+            "ms": int((time.time() - started) * 1000),
+            "status": 0,
+            "ok": False,
+            "contentType": "",
+            "contentLength": "",
+            "error": f"{e.reason}",
+        }
 
 
 def _assert(cond: bool, msg: str):
@@ -106,14 +126,28 @@ def main(argv: list[str]) -> int:
         help='Fail if any endpoint falls back (debug.transport != "http")',
     )
     ap.add_argument("--include-image", action="store_true", help="Also test /api/asset/image/generate and fetch generated asset")
-    ap.add_argument("--timeout-s", type=float, default=15.0, help="Timeout in seconds (default 15)")
+    ap.add_argument("--timeout-s", type=float, default=60.0, help="Timeout in seconds (default 60)")
     args = ap.parse_args(argv)
 
     base = _strip_trailing_slash(args.base)
     results = []
 
+    # Avoid accidental proxying for localhost when users set HTTP(S)_PROXY for Gemini.
+    # (Python urllib honors env proxies by default; without NO_PROXY this can break localhost calls.)
+    try:
+        base_host = urllib.parse.urlparse(base).hostname or ""
+    except Exception:
+        base_host = ""
+
+    is_localhost = base_host in ("localhost", "0.0.0.0", "127.0.0.1") or base_host.startswith("127.")
+    if is_localhost:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    else:
+        opener = urllib.request.build_opener()
+
     # Scaffold
     scaffold = _request_json(
+        opener,
         "POST",
         f"{base}/api/agent/scaffold",
         {
@@ -154,6 +188,7 @@ def main(argv: list[str]) -> int:
 
     # Director
     direct = _request_json(
+        opener,
         "POST",
         f"{base}/api/agent/direct",
         {
@@ -179,6 +214,7 @@ def main(argv: list[str]) -> int:
     # Image (optional)
     if args.include_image:
         img = _request_json(
+            opener,
             "POST",
             f"{base}/api/asset/image/generate",
             {
@@ -204,7 +240,7 @@ def main(argv: list[str]) -> int:
                 f"image.generate: expected local /__generated__/ URL (got {image_url})",
             )
         if image_url.startswith("/__generated__/"):
-            fetched = _head(f"{base}{image_url}", args.timeout_s)
+            fetched = _head(opener, f"{base}{image_url}", args.timeout_s)
             results.append({"name": "image.fetch", **fetched})
             _assert(fetched["ok"], f"image.fetch HTTP {fetched['status']}")
             _assert(str(fetched.get("contentType", "")).startswith("image/"), f"image.fetch: content-type={fetched.get('contentType')}")
