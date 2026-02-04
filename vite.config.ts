@@ -2012,6 +2012,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               .replace(/[.。]\s*$/g, '')
               .trim();
           }
+          if (!name) {
+            // Common merge format: "<desc> ## Look Name ## char-..."
+            const m = s.match(/##\s*([^#\n\r]+?)\s*##/);
+            if (m?.[1]) name = String(m[1]).trim();
+          }
+          if (!name) {
+            // Sometimes the look name is emitted as a markdown heading.
+            const m = s.match(/^\s*#{1,6}\s*([^\n\r#]+?)\s*#*\s*$/m);
+            if (m?.[1]) name = String(m[1]).trim();
+          }
 
           // Prefer explicit description field
           let description = pickFirst(/\bdescription\s*[:=]\s*([\s\S]+)$/i) || pickFirst(/\bdesc\s*[:=]\s*([\s\S]+)$/i);
@@ -2024,6 +2034,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               // Alternate pattern: "... name: X - <description>"
               const mDash = s.match(/\bname\s*[:=]\s*[^\n\r-]+-\s*([\s\S]+)$/i);
               if (mDash?.[1]) description = String(mDash[1]).trim();
+            }
+          }
+          if (!description) {
+            // If we have a "## Name ##" marker, treat everything before it as description.
+            const m = s.match(/##\s*([^#\n\r]+?)\s*##/);
+            if (m && typeof (m as any).index === 'number') {
+              const idx = (m as any).index as number;
+              if (idx > 0) description = s.slice(0, idx).trim();
             }
           }
           description = String(description || '').trim();
@@ -2042,6 +2060,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
           // Map common non-canonical action names from specialists into the app's action set.
           if (type === 'ADD_LOOK') type = 'CREATE_CHARACTER_LOOK';
+          if (type === 'CREATE_LOOK') type = 'CREATE_CHARACTER_LOOK';
           if (type === 'CREATE_ELEMENT' && payloadRaw && typeof payloadRaw === 'object') {
             const p: any = payloadRaw;
             const elementType = String(p?.elementType || '').toUpperCase();
