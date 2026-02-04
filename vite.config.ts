@@ -383,9 +383,17 @@ const ensureGeneratedDir = () => {
 
 const safeGeneratedAssetPath = (urlPathname: string) => {
   const decoded = decodeURIComponent(String(urlPathname || ''));
-  const rel = decoded.replace(/^\/+/, '');
+  // Accept either a full pathname (`/__generated__/file.png`) or a relative-ish path.
+  let rel = decoded.split('?')[0].split('#')[0].replace(/^\/+/, '');
   if (!rel) return null;
-  if (rel.includes('..') || rel.includes('\\')) return null;
+
+  // Map `/__generated__/file.png` -> `.vision-assets/file.png`
+  if (rel === '__generated__') return null;
+  if (rel.startsWith('__generated__/')) rel = rel.slice('__generated__/'.length);
+
+  // Hardening: only allow a single filename (no subdirs).
+  if (!rel) return null;
+  if (rel.includes('..') || rel.includes('\\') || rel.includes('/')) return null;
   return path.join(GENERATED_ASSETS_DIR, rel);
 };
 
