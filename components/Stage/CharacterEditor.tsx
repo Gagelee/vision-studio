@@ -168,14 +168,11 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     setGenerationError(null);
     setGeneratingLookIds((m) => ({ ...m, [look.id]: true }));
     try {
-      const refs = [
-        ...(keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : []),
-        ...(draft.avatarUrl ? [{ url: draft.avatarUrl, label: 'character base avatar' }] : []),
-      ];
+      const refs = [...(draft.avatarUrl ? [{ url: draft.avatarUrl, label: 'character base avatar' }] : [])];
       const out = await generateImageFromPrompt({
         prompt:
           buildCharacterLookPrompt(draft, look) +
-          `\n\nKeep the exact same character identity as the reference avatar. Only change wardrobe/makeup/style described for this look.`,
+          `\n\nKeep the exact same character identity as the reference avatar (same person, same face). Only change wardrobe/makeup/style described for this look.`,
         settings: imageSettings,
         aspectRatio: '1:1',
         references: refs,

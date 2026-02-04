@@ -196,6 +196,7 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `{\n` +
     `  "title": string,\n` +
     `  "logline": string,\n` +
+    `  "styleGuide": string,\n` +
     `  "locations": Array<{ "name": string, "description": string, "visualStyle": string }>,\n` +
     `  "characters": Array<{ "name": string, "description": string, "looks": Array<{ "name": string, "description": string }> }>,\n` +
     `  "sequences": Array<{ "title": string, "context": string, "shots": Array<{\n` +
@@ -209,6 +210,7 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `Rules:\n` +
     `- Ensure sequences/shots align across editor + camera&art (same counts and order).\n` +
     `- Ensure characters/locations match names used in shots.\n` +
+    `- "styleGuide" must be a concise, production-ready style bible derived from DirectorBrief.styleBible (rendering style, palette, lighting, camera language, constraints).\n` +
     `DirectorBrief: ${brief}\n` +
     `Casting: ${casting}\n` +
     `Environments: ${env}\n` +
@@ -318,4 +320,3 @@ export const buildTeamDirectMergePrompt = (args: {
     `Specialists:\n${specialists}\n`
   );
 };
-

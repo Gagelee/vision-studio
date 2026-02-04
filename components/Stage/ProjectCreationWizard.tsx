@@ -74,19 +74,19 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
       total = jobs.length;
       setAssetTotal(jobs.length);
 
-      if (jobs.length > 0) {
-        await executeAssetJobs({
-          jobs,
-          settings: aiSettings.image,
-          aspectRatio: res.story.aspectRatio,
-          concurrency: 2,
-          getStoryForRefs: () => storyRef.current,
-          maxAttempts: 3,
-          stopAfterMasterKvFailure: true,
-          onEvent: (ev) => {
-            const currentStory = storyRef.current || res.story;
-            if (ev.type === 'start') {
-              storyRef.current = applyAssetStart(currentStory, ev.job);
+	      if (jobs.length > 0) {
+	        await executeAssetJobs({
+	          jobs,
+	          settings: aiSettings.image,
+	          aspectRatio: res.story.aspectRatio,
+	          concurrency: 2,
+	          getStoryForRefs: () => storyRef.current,
+	          maxAttempts: 3,
+	          stopAfterMasterKvFailure: false,
+	          onEvent: (ev) => {
+	            const currentStory = storyRef.current || res.story;
+	            if (ev.type === 'start') {
+	              storyRef.current = applyAssetStart(currentStory, ev.job);
               setAssetCurrent(getJobLabel(ev.job, storyRef.current));
               return;
             }

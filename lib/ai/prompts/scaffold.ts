@@ -15,9 +15,10 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `6) Camera & Art (camera/lighting + FINAL video generation prompt)\n` +
     `\n` +
     `Return ONLY a single valid JSON object (no markdown, no commentary).\n` +
-    `Required top-level keys: "title","logline","locations","characters","sequences". You MAY add extra keys.\n` +
+    `Required top-level keys: "title","logline","styleGuide","locations","characters","sequences".\n` +
     `\n` +
     `Schema:\n` +
+    `- styleGuide: string (concise, production-ready style bible; include genre/tone/rendering style/palette/lighting/camera language; 6-12 bullet-like sentences)\n` +
     `- locations: array of {name, description, visualStyle}\n` +
     `- characters: array of {name, description, looks:[{name, description}]}\n` +
     `- sequences: array of {title, context, shots:[...]} (2-4 sequences; 2-4 shots each)\n` +

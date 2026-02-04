@@ -80,9 +80,7 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
         prompt: buildLocationPreviewPrompt(draft),
         settings: imageSettings,
         aspectRatio: aspectRatio || '16:9',
-        references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
         strict: true,
-        requireAllReferences: Boolean(keyVisualUrl),
       });
       const now = Date.now();
       const seeded = seedPreviewVersions(draft);

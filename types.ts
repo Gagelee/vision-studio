@@ -143,6 +143,8 @@ export interface Story {
   id: string;
   title: string;
   logline: string;
+  // Textual style bible used to guide all asset generation (preferred over using KV image as a reference).
+  styleGuide?: string;
   intent?: string;
   keyVisualUrl?: string;
   keyVisualVersions?: AssetImageVersion[];

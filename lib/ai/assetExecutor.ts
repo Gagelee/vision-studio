@@ -31,6 +31,7 @@ export const buildAssetJobs = (story: Story, scope: AssetScope = 'all'): AssetJo
   const wantLocations = scope === 'all' || scope === 'locations';
   const wantCharacters = scope === 'all' || scope === 'characters';
   const wantLooks = scope === 'all' || scope === 'looks';
+  const styleGuide = String((story as any)?.styleGuide || '').trim();
 
   if (wantMasterKV) {
     jobs.push({ kind: 'masterkv', prompt: buildMasterKeyVisualPrompt({ intent: story.intent, logline: story.logline }) });
@@ -38,16 +39,16 @@ export const buildAssetJobs = (story: Story, scope: AssetScope = 'all'): AssetJo
 
   if (wantLocations) {
     for (const loc of story.locations || []) {
-      jobs.push({ kind: 'location', locationId: loc.id, prompt: buildLocationPreviewPrompt(loc) });
+      jobs.push({ kind: 'location', locationId: loc.id, prompt: buildLocationPreviewPrompt(loc, styleGuide) });
     }
   }
 
   if (wantCharacters || wantLooks) {
     for (const ch of story.characters || []) {
-      if (wantCharacters) jobs.push({ kind: 'character', characterId: ch.id, prompt: buildCharacterAvatarPrompt(ch) });
+      if (wantCharacters) jobs.push({ kind: 'character', characterId: ch.id, prompt: buildCharacterAvatarPrompt(ch, styleGuide) });
       if (wantLooks) {
         for (const lk of ch.looks || []) {
-          jobs.push({ kind: 'look', characterId: ch.id, lookId: lk.id, prompt: buildCharacterLookPrompt(ch, lk) });
+          jobs.push({ kind: 'look', characterId: ch.id, lookId: lk.id, prompt: buildCharacterLookPrompt(ch, lk, styleGuide) });
         }
       }
     }
@@ -483,10 +484,6 @@ export const executeAssetJobs = async (args: {
   const checkBlocked = (job: AssetJob, story: Story | null): string | null => {
     if (!story) return null;
     if (job.kind === 'masterkv') return null;
-    const kvUrl = getStoryActiveKvUrl(story);
-    if (!kvUrl) return 'blocked: master KV missing';
-    if (isLikelyPlaceholderImageUrl(kvUrl)) return 'blocked: master KV is placeholder (generate a real KV first)';
-    if (!getMasterOk(story)) return 'blocked: master KV not ready (running/failed)';
 
     if (job.kind === 'location') return null;
     if (job.kind === 'character') return null;
@@ -523,8 +520,6 @@ export const executeAssetJobs = async (args: {
 
   const buildShotReferences = (story: Story, shot: Shot): ImageReference[] => {
     const refs: ImageReference[] = [];
-    const kvUrl = getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
-    if (kvUrl) refs.push({ url: kvUrl, label: 'master kv' });
 
     const loc = (story.locations || []).find((l) => l.id === shot.locationId);
     const locUrl = loc && isDone((loc as any).assetState) ? getLocationActivePreviewUrl(loc) : '';
@@ -553,10 +548,11 @@ export const executeAssetJobs = async (args: {
 
   const buildShotPromptWithContext = (story: Story | null, shot: Shot) => {
     const lines: string[] = [];
+    const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
     lines.push(
       'Generate a cinematic storyboard keyframe (still image).',
-      'Match the Master KV art direction: consistent palette, lighting language, lens feel, and overall rendering style.',
-      'Follow the reference images strictly for identity + environment consistency. Do not drift into a different art style.',
+      styleGuide ? `StyleGuide (must follow):\n${styleGuide}` : 'Maintain a cohesive style across the entire project (palette, lighting language, lens feel, rendering style).',
+      'Follow the reference images strictly for identity + environment consistency (same characters, same faces, same outfits per look; same environment). Do not drift into a different art style.',
       'No text, no subtitles, no watermarks, no logos.',
       '',
       buildShotImagePrompt(shot),
@@ -628,31 +624,21 @@ export const executeAssetJobs = async (args: {
         }
 
         if (job.kind === 'location') {
-          const story = args.getStoryForRefs?.() || null;
-          const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
-          const refs = kvUrl ? [{ url: kvUrl, label: 'master kv' }] : [];
           const out = await generateImageFromPrompt({
             prompt: job.prompt,
             settings: args.settings,
             aspectRatio: args.aspectRatio,
-            references: refs,
             strict: true,
-            requireAllReferences: refs.length > 0,
           });
           return { imageUrl: out.imageUrl, debug: out.debug };
         }
 
         if (job.kind === 'character') {
-          const story = args.getStoryForRefs?.() || null;
-          const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
-          const refs = kvUrl ? [{ url: kvUrl, label: 'master kv' }] : [];
           const out = await generateImageFromPrompt({
             prompt: job.prompt,
             settings: args.settings,
             aspectRatio: '1:1',
-            references: refs,
             strict: true,
-            requireAllReferences: refs.length > 0,
           });
           return { imageUrl: out.imageUrl, debug: out.debug };
         }
@@ -661,15 +647,11 @@ export const executeAssetJobs = async (args: {
 	        const story = args.getStoryForRefs?.() || null;
 	        const ch = story ? (story.characters || []).find((c) => c.id === job.characterId) : null;
 	        const avatarUrl = ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch) : '';
-	        const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
-	        const refs = [
-	          ...(kvUrl ? [{ url: kvUrl, label: 'master kv' }] : []),
-	          ...(avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : []),
-	        ];
+	        const refs = avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : [];
 	        const out = await generateImageFromPrompt({
 	          prompt:
 	            job.prompt +
-	            '\n\nUse the provided reference image(s) to keep the exact same character identity. Only vary styling described for this look.',
+	            '\n\nUse the provided reference image(s) to keep the exact same character identity (same person, same face). Only vary styling described for this look.',
 	          settings: args.settings,
 	          aspectRatio: '1:1',
 	          references: refs,
@@ -715,6 +697,9 @@ export const executeAssetJobs = async (args: {
       blockRemainingPhases(kind, 'blocked: master KV failed; downstream phases not allowed');
       break;
     }
+
+    // Master KV is optional as a *reference* (style should come from Story.styleGuide), so KV failures should not block other phases.
+    if (kind === 'masterkv') continue;
 
     if (!isPhaseComplete(kind, s, phase)) {
       blockRemainingPhases(kind, `blocked: previous phase (${kind}) not fully successful`);

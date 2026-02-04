@@ -4,7 +4,7 @@ import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Stor
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
 import { buildShotImagePrompt } from '../../lib/ai/prompts';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp } from 'lucide-react';
-import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, getStoryActiveKvUrl } from '../../lib/ai/assetRefs';
+import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ShotEditorProps {
@@ -71,11 +71,6 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 
       const isDone = (st: any) => st && st.status === 'done';
 
-      const kvUrl = story ? getStoryActiveKvUrl(story) : '';
-      if (!story || !isDone((story as any).masterKvState) || !kvUrl) {
-        throw new Error('Blocked: Master KV not generated yet. Please generate Master KV first.');
-      }
-
       const loc = story?.locations?.find((l) => l.id === shot.locationId);
       const locUrl = loc ? getLocationActivePreviewUrl(loc) : '';
       if (!loc || !isDone((loc as any).assetState) || !locUrl) {
@@ -83,7 +78,6 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       }
 
       const references: ImageReference[] = [];
-      references.push({ url: kvUrl, label: 'master kv' });
       references.push({ url: locUrl, label: `environment: ${loc.name}` });
 
       const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
@@ -109,11 +103,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         }
       }
 
+      const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
       const lines: string[] = [];
       lines.push(
         'Generate a cinematic storyboard keyframe (still image).',
-        'Match the Master KV art direction: consistent palette, lighting language, lens feel, and overall rendering style.',
-        'Follow reference images strictly for identity + environment consistency. Do not drift into a different art style.',
+        styleGuide
+          ? `StyleGuide (must follow):\n${styleGuide}`
+          : 'Maintain a cohesive style across the entire project (palette, lighting language, lens feel, rendering style).',
+        'Follow reference images strictly for identity + environment consistency (same characters, same faces, same outfits per look; same environment). Do not drift into a different art style.',
         'No text, no subtitles, no watermarks, no logos.',
         '',
         buildShotImagePrompt(shot),

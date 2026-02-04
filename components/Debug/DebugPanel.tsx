@@ -47,6 +47,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
       traceId?: string;
       multiAgentError?: string;
       teamTrace: any[];
+      teamMessages?: any[];
     }> = [];
 
     for (const e of events) {
@@ -56,6 +57,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
       const dbg = json?.debug || null;
       const tt = Array.isArray(dbg?.teamTrace) ? dbg.teamTrace : null;
       if (!tt || tt.length === 0) continue;
+      const msgs = Array.isArray(dbg?.teamMessages) ? dbg.teamMessages : null;
       sessions.push({
         ts: e.ts,
         scope: e.scope,
@@ -66,6 +68,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
         traceId: dbg?.traceId ? String(dbg.traceId) : undefined,
         multiAgentError: dbg?.multiAgentError ? String(dbg.multiAgentError) : undefined,
         teamTrace: tt,
+        teamMessages: msgs || undefined,
       });
     }
 
@@ -413,8 +416,8 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
                           </button>
                         </div>
 
-                        <div className="p-4 overflow-x-auto">
-                          <table className="w-full text-left text-[12px]">
+                    <div className="p-4 overflow-x-auto">
+                      <table className="w-full text-left text-[12px]">
                             <thead>
                               <tr className="text-zinc-500">
                                 <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Agent</th>
@@ -437,11 +440,50 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
                                 </tr>
                               ))}
                             </tbody>
-                          </table>
+                      </table>
+                    </div>
+
+                    {Array.isArray(s.teamMessages) && s.teamMessages.length > 0 && (
+                      <div className="px-4 pb-5">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Discussion</div>
+                        <div className="space-y-3">
+                          {s.teamMessages.map((m: any, idx: number) => (
+                            <div key={`${idx}-${String(m.agent || '')}`} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                              <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-3">
+                                <div className="min-w-0 flex items-center gap-2">
+                                  <span className="text-[11px] font-mono text-zinc-800 dark:text-zinc-200">{String(m.agent || '')}</span>
+                                  <span className="text-[10px] font-mono text-zinc-500">{String(m.promptId || '')}</span>
+                                  <span className="text-[10px] font-mono text-zinc-500">{String(m.promptVersion || '')}</span>
+                                </div>
+                                <div className="shrink-0 text-[10px] font-mono">
+                                  <span className={m.ok ? 'text-emerald-400' : 'text-rose-400'}>{m.ok ? 'ok' : 'fail'}</span>
+                                  {typeof m.ms === 'number' && <span className="text-zinc-500">{` • ${m.ms}ms`}</span>}
+                                </div>
+                              </div>
+                              <div className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                <div>
+                                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Prompt</div>
+                                  <pre className="text-[11px] font-mono whitespace-pre-wrap break-words text-zinc-700 dark:text-zinc-200 bg-zinc-50 dark:bg-zinc-900/30 border border-zinc-200 dark:border-zinc-800 rounded-xl p-3 max-h-48 overflow-auto custom-scrollbar">
+                                    {String(m.promptPreview || '')}
+                                  </pre>
+                                </div>
+                                <div>
+                                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">
+                                    {m.ok ? 'Response' : 'Error'}
+                                  </div>
+                                  <pre className="text-[11px] font-mono whitespace-pre-wrap break-words text-zinc-700 dark:text-zinc-200 bg-zinc-50 dark:bg-zinc-900/30 border border-zinc-200 dark:border-zinc-800 rounded-xl p-3 max-h-48 overflow-auto custom-scrollbar">
+                                    {m.ok ? String(m.responsePreview || '') : String(m.error || '')}
+                                  </pre>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    ))
-                  )}
+                    )}
+                  </div>
+                ))
+              )}
                 </>
               )}
 
