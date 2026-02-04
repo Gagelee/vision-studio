@@ -23,6 +23,299 @@ type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string
 
 const GENERATED_ASSETS_DIR = path.resolve(process.cwd(), '.vision-assets');
 
+type GeminiResponseSchema = any;
+const schemaString = (): GeminiResponseSchema => ({ type: 'STRING' });
+const schemaInt = (): GeminiResponseSchema => ({ type: 'INTEGER' });
+const schemaArray = (items: GeminiResponseSchema): GeminiResponseSchema => ({ type: 'ARRAY', items });
+const schemaObject = (args: {
+  properties: Record<string, GeminiResponseSchema>;
+  required?: string[];
+  propertyOrdering?: string[];
+}): GeminiResponseSchema => ({
+  type: 'OBJECT',
+  properties: args.properties,
+  ...(args.required ? { required: args.required } : {}),
+  ...(args.propertyOrdering ? { propertyOrdering: args.propertyOrdering } : {}),
+});
+
+const GEMINI_SCHEMA = {
+  scaffoldDirectorBrief: schemaObject({
+    required: ['title', 'logline', 'styleBible', 'characters', 'locations', 'sequenceOutline'],
+    propertyOrdering: ['title', 'logline', 'styleBible', 'characters', 'locations', 'sequenceOutline'],
+    properties: {
+      title: schemaString(),
+      logline: schemaString(),
+      styleBible: schemaObject({
+        required: ['genre', 'tone', 'visualKeywords', 'cameraLanguage', 'constraints'],
+        propertyOrdering: ['genre', 'tone', 'visualKeywords', 'cameraLanguage', 'constraints'],
+        properties: {
+          genre: schemaString(),
+          tone: schemaString(),
+          visualKeywords: schemaArray(schemaString()),
+          cameraLanguage: schemaString(),
+          constraints: schemaArray(schemaString()),
+        },
+      }),
+      characters: schemaArray(
+        schemaObject({
+          required: ['name', 'role', 'oneLine'],
+          propertyOrdering: ['name', 'role', 'oneLine'],
+          properties: { name: schemaString(), role: schemaString(), oneLine: schemaString() },
+        }),
+      ),
+      locations: schemaArray(
+        schemaObject({
+          required: ['name', 'purpose'],
+          propertyOrdering: ['name', 'purpose'],
+          properties: { name: schemaString(), purpose: schemaString() },
+        }),
+      ),
+      sequenceOutline: schemaArray(
+        schemaObject({
+          required: ['title', 'goal'],
+          propertyOrdering: ['title', 'goal'],
+          properties: { title: schemaString(), goal: schemaString() },
+        }),
+      ),
+    },
+  }),
+  scaffoldCasting: schemaObject({
+    required: ['characters'],
+    propertyOrdering: ['characters'],
+    properties: {
+      characters: schemaArray(
+        schemaObject({
+          required: ['name', 'description', 'identityAnchors', 'looks'],
+          propertyOrdering: ['name', 'description', 'identityAnchors', 'looks'],
+          properties: {
+            name: schemaString(),
+            description: schemaString(),
+            identityAnchors: schemaArray(schemaString()),
+            looks: schemaArray(
+              schemaObject({
+                required: ['name', 'description'],
+                propertyOrdering: ['name', 'description'],
+                properties: { name: schemaString(), description: schemaString() },
+              }),
+            ),
+          },
+        }),
+      ),
+    },
+  }),
+  scaffoldEnvironments: schemaObject({
+    required: ['locations'],
+    propertyOrdering: ['locations'],
+    properties: {
+      locations: schemaArray(
+        schemaObject({
+          required: ['name', 'description', 'visualStyle'],
+          propertyOrdering: ['name', 'description', 'visualStyle'],
+          properties: { name: schemaString(), description: schemaString(), visualStyle: schemaString() },
+        }),
+      ),
+    },
+  }),
+  scaffoldScript: schemaObject({
+    required: ['sequences'],
+    propertyOrdering: ['sequences'],
+    properties: {
+      sequences: schemaArray(
+        schemaObject({
+          required: ['title', 'shots'],
+          propertyOrdering: ['title', 'shots'],
+          properties: {
+            title: schemaString(),
+            shots: schemaArray(
+              schemaObject({
+                required: ['beat', 'script', 'castNames'],
+                propertyOrdering: ['beat', 'script', 'castNames'],
+                properties: { beat: schemaString(), script: schemaString(), castNames: schemaArray(schemaString()) },
+              }),
+            ),
+          },
+        }),
+      ),
+    },
+  }),
+  scaffoldEditor: schemaObject({
+    required: ['sequences'],
+    propertyOrdering: ['sequences'],
+    properties: {
+      sequences: schemaArray(
+        schemaObject({
+          required: ['title', 'context', 'shots'],
+          propertyOrdering: ['title', 'context', 'shots'],
+          properties: {
+            title: schemaString(),
+            context: schemaString(),
+            shots: schemaArray(
+              schemaObject({
+                required: ['description', 'timeOfDay', 'duration', 'locationName', 'castNames', 'script'],
+                propertyOrdering: ['description', 'timeOfDay', 'duration', 'locationName', 'castNames', 'script'],
+                properties: {
+                  description: schemaString(),
+                  timeOfDay: schemaString(),
+                  duration: schemaInt(),
+                  locationName: schemaString(),
+                  castNames: schemaArray(schemaString()),
+                  script: schemaString(),
+                },
+              }),
+            ),
+          },
+        }),
+      ),
+    },
+  }),
+  scaffoldCameraArt: schemaObject({
+    required: ['sequences'],
+    propertyOrdering: ['sequences'],
+    properties: {
+      sequences: schemaArray(
+        schemaObject({
+          required: ['title', 'shots'],
+          propertyOrdering: ['title', 'shots'],
+          properties: {
+            title: schemaString(),
+            shots: schemaArray(
+              schemaObject({
+                required: ['camera', 'lighting', 'audio', 'videoPrompt'],
+                propertyOrdering: ['camera', 'lighting', 'audio', 'videoPrompt'],
+                properties: {
+                  camera: schemaString(),
+                  lighting: schemaString(),
+                  audio: schemaString(),
+                  videoPrompt: schemaString(),
+                },
+              }),
+            ),
+          },
+        }),
+      ),
+    },
+  }),
+  scaffoldFinal: schemaObject({
+    required: ['title', 'logline', 'locations', 'characters', 'sequences'],
+    propertyOrdering: ['title', 'logline', 'locations', 'characters', 'sequences'],
+    properties: {
+      title: schemaString(),
+      logline: schemaString(),
+      locations: schemaArray(
+        schemaObject({
+          required: ['name', 'description', 'visualStyle'],
+          propertyOrdering: ['name', 'description', 'visualStyle'],
+          properties: { name: schemaString(), description: schemaString(), visualStyle: schemaString() },
+        }),
+      ),
+      characters: schemaArray(
+        schemaObject({
+          required: ['name', 'description', 'looks'],
+          propertyOrdering: ['name', 'description', 'looks'],
+          properties: {
+            name: schemaString(),
+            description: schemaString(),
+            looks: schemaArray(
+              schemaObject({
+                required: ['name', 'description'],
+                propertyOrdering: ['name', 'description'],
+                properties: { name: schemaString(), description: schemaString() },
+              }),
+            ),
+          },
+        }),
+      ),
+      sequences: schemaArray(
+        schemaObject({
+          required: ['title', 'context', 'shots'],
+          propertyOrdering: ['title', 'context', 'shots'],
+          properties: {
+            title: schemaString(),
+            context: schemaString(),
+            shots: schemaArray(
+              schemaObject({
+                required: [
+                  'description',
+                  'timeOfDay',
+                  'duration',
+                  'camera',
+                  'lighting',
+                  'audio',
+                  'locationName',
+                  'castNames',
+                  'script',
+                  'videoPrompt',
+                ],
+                propertyOrdering: [
+                  'description',
+                  'timeOfDay',
+                  'duration',
+                  'locationName',
+                  'castNames',
+                  'script',
+                  'camera',
+                  'lighting',
+                  'audio',
+                  'videoPrompt',
+                ],
+                properties: {
+                  description: schemaString(),
+                  timeOfDay: schemaString(),
+                  duration: schemaInt(),
+                  camera: schemaString(),
+                  lighting: schemaString(),
+                  audio: schemaString(),
+                  locationName: schemaString(),
+                  castNames: schemaArray(schemaString()),
+                  script: schemaString(),
+                  videoPrompt: schemaString(),
+                },
+              }),
+            ),
+          },
+        }),
+      ),
+    },
+  }),
+  directorPlan: schemaObject({
+    required: ['reply', 'requestedAgents', 'focus'],
+    propertyOrdering: ['reply', 'requestedAgents', 'focus'],
+    properties: {
+      reply: schemaString(),
+      requestedAgents: schemaArray(schemaString()),
+      focus: schemaObject({ properties: {}, required: [] }),
+    },
+  }),
+  directorSpecialist: schemaObject({
+    required: ['notes', 'suggestedActions'],
+    propertyOrdering: ['notes', 'suggestedActions'],
+    properties: {
+      notes: schemaString(),
+      suggestedActions: schemaArray(
+        schemaObject({
+          required: ['type', 'payload'],
+          propertyOrdering: ['type', 'payload'],
+          properties: { type: schemaString(), payload: schemaObject({ properties: {}, required: [] }) },
+        }),
+      ),
+    },
+  }),
+  directorFinal: schemaObject({
+    required: ['reply', 'actions'],
+    propertyOrdering: ['reply', 'actions'],
+    properties: {
+      reply: schemaString(),
+      actions: schemaArray(
+        schemaObject({
+          required: ['type'],
+          propertyOrdering: ['type', 'payload'],
+          properties: { type: schemaString(), payload: schemaObject({ properties: {}, required: [] }) },
+        }),
+      ),
+    },
+  }),
+} as const;
+
 const getProxyDispatcher = (targetUrl: string, env: Record<string, string>) => {
   const proxyUrl =
     env.HTTPS_PROXY ||
@@ -115,6 +408,7 @@ const callGeminiJson = async (args: {
   maxOutputTokens?: number;
   prompt: string;
   env?: Record<string, string>;
+  responseSchema?: any;
 }): Promise<any> => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
 
@@ -225,6 +519,7 @@ const callGeminiJson = async (args: {
         temperature: args.temperature,
         maxOutputTokens: args.maxOutputTokens ?? 2048,
         responseMimeType: 'application/json',
+        ...(args.responseSchema ? { responseSchema: args.responseSchema } : {}),
       },
     }),
   };
@@ -827,7 +1122,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           try {
             if (p === 'gemini') {
               const teamTrace: any[] = [];
-              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number; maxOutputTokens?: number }) => {
+              const call = async (
+                agent: string,
+                prompt: string,
+                opts?: { model?: string; temperature?: number; maxOutputTokens?: number; responseSchema?: any },
+              ) => {
                 const started = Date.now();
                 try {
                   const out = await callGeminiJson({
@@ -837,6 +1136,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     maxOutputTokens: Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192),
                     prompt,
                     env,
+                    responseSchema: opts?.responseSchema,
                   });
                   teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: true });
                   return out;
@@ -851,22 +1151,26 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   model: chosenModel,
                   temperature: chosenTemperature,
                   maxOutputTokens: chosenMaxOutputTokens ?? 8192,
+                  responseSchema: GEMINI_SCHEMA.scaffoldDirectorBrief,
                 });
                 const directorBriefJson = JSON.stringify(directorBrief);
                 const casting = await call('casting_director', buildTeamScaffoldCastingDirectorPrompt({ directorBriefJson }), {
                   model: workerModel,
                   temperature: workerTemperature,
                   maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                  responseSchema: GEMINI_SCHEMA.scaffoldCasting,
                 });
                 const environmentSpec = await call('environment_director', buildTeamScaffoldEnvironmentDirectorPrompt({ directorBriefJson }), {
                   model: workerModel,
                   temperature: workerTemperature,
                   maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                  responseSchema: GEMINI_SCHEMA.scaffoldEnvironments,
                 });
                 const scriptSpec = await call('script_writer', buildTeamScaffoldScriptWriterPrompt({ directorBriefJson }), {
                   model: workerModel,
                   temperature: workerTemperature,
                   maxOutputTokens: workerMaxOutputTokens ?? 4096,
+                  responseSchema: GEMINI_SCHEMA.scaffoldScript,
                 });
                 const editorSpec = await call(
                   'editor',
@@ -875,7 +1179,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     scriptJson: JSON.stringify(scriptSpec),
                     environmentJson: JSON.stringify(environmentSpec),
                   }),
-                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: workerMaxOutputTokens ?? 4096 },
+                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: workerMaxOutputTokens ?? 4096, responseSchema: GEMINI_SCHEMA.scaffoldEditor },
                 );
                 const cameraArtSpec = await call(
                   'camera_art',
@@ -884,7 +1188,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     editorJson: JSON.stringify(editorSpec),
                     aspectRatio,
                   }),
-                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: workerMaxOutputTokens ?? 4096 },
+                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: workerMaxOutputTokens ?? 4096, responseSchema: GEMINI_SCHEMA.scaffoldCameraArt },
                 );
 
                 const spec = await call(
@@ -896,7 +1200,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     editorJson: JSON.stringify(editorSpec),
                     cameraArtJson: JSON.stringify(cameraArtSpec),
                   }),
-                  { model: chosenModel, temperature: chosenTemperature, maxOutputTokens: chosenMaxOutputTokens ?? 8192 },
+                  { model: chosenModel, temperature: chosenTemperature, maxOutputTokens: chosenMaxOutputTokens ?? 8192, responseSchema: GEMINI_SCHEMA.scaffoldFinal },
                 );
 
                 return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (Gemini)', p, chosenModel, { teamTrace }));
@@ -910,6 +1214,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   maxOutputTokens: chosenMaxOutputTokens ?? 4096,
                   prompt: scaffoldPrompt,
                   env,
+                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
                 });
                 return sendJson(res, 200, buildFromSpec(spec, 'Single-call (Gemini)', p, chosenModel, { teamTrace, multiAgentError: e?.message || String(e) }));
               }
@@ -1379,10 +1684,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             try {
 	          if (p === 'gemini' && env.GEMINI_API_KEY) {
               const teamTrace: any[] = [];
-              const call = async (agent: string, prompt: string) => {
+              const call = async (agent: string, prompt: string, responseSchema?: any) => {
                 const started = Date.now();
                 try {
-                  const out = await callGeminiJson({ apiKey: env.GEMINI_API_KEY, model, temperature, prompt, env });
+                  const out = await callGeminiJson({ apiKey: env.GEMINI_API_KEY, model, temperature, prompt, env, responseSchema });
                   teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: true });
                   return out;
                 } catch (e: any) {
@@ -1399,6 +1704,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     storyJson,
                     directive: message,
                   }),
+                  GEMINI_SCHEMA.directorPlan,
                 );
                 const requestedAgents = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
                 const allowedAgents = new Set(['script_writer', 'casting_director', 'editor', 'environment_director', 'camera_art']);
@@ -1420,6 +1726,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       storyJson,
                       directive: message,
                     }),
+                    GEMINI_SCHEMA.directorSpecialist,
                   );
                   specialistJsonByAgent[a] = JSON.stringify(out || {});
                 }
@@ -1434,6 +1741,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     specialistJsonByAgent,
                     allowedActionsText,
                   }),
+                  GEMINI_SCHEMA.directorFinal,
                 );
 
                 const actions = Array.isArray(final?.actions) ? final.actions : [];
