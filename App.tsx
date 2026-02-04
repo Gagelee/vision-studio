@@ -1413,7 +1413,7 @@ export default function App() {
       <ImageLightbox />
 
       {pendingDirectorMultiAgentFailure && pendingDirectorMultiAgentFailure.projectId === activeStory.id && !isPlayingMaster && (
-        <div className="fixed inset-0 z-[3490] bg-black/60 backdrop-blur-sm p-6 flex items-center justify-center">
+        <div className="fixed inset-0 z-[4500] bg-black/60 backdrop-blur-sm p-6 flex items-center justify-center">
           <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden">
             <div className="h-14 px-5 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60">
               <div className="flex items-center gap-2">
@@ -1479,7 +1479,7 @@ export default function App() {
       )}
 
       {pendingDirectorFallback && pendingDirectorFallback.projectId === activeStory.id && !isPlayingMaster && (
-        <div className="fixed inset-0 z-[3500] bg-black/60 backdrop-blur-sm p-6 flex items-center justify-center">
+        <div className="fixed inset-0 z-[4500] bg-black/60 backdrop-blur-sm p-6 flex items-center justify-center">
           <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden">
             <div className="h-14 px-5 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60">
               <div className="flex items-center gap-2">

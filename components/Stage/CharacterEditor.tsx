@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState } from 'react';
-import { AlertCircle, Edit3, Film, Image as ImageIcon, Lock, Plus, Save, Shirt, Sparkles, Trash2, Unlock, User, Wand2 } from 'lucide-react';
+import { AlertCircle, Edit3, Film, Image as ImageIcon, Lock, Plus, Save, Shirt, Sparkles, Trash2, Unlock, User, Wand2, ZoomIn } from 'lucide-react';
 import { Character, CharacterLook, ModelRuntimeSettings, Sequence, Shot } from '../../types';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt } from '../../lib/ai/prompts';
@@ -330,31 +330,35 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                           <div className="text-[10px] text-zinc-500 font-mono">{displayAvatarVersions.length}</div>
                         </div>
                         <div className="flex gap-3 overflow-x-auto no-scrollbar">
-                          {displayAvatarVersions.slice().reverse().map((v: any) => {
-                            const isActive = String(v.id) === String(activeAvatarVersionId);
-                            return (
-                              <button
-                                key={String(v.id)}
-                                onClick={() => handleSelectAvatarVariant(String(v.id))}
-                                className={`relative w-20 aspect-square rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
-                                  isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
-                                }`}
-                                title={isActive ? 'Active' : 'Set active'}
-                              >
-	                                <img
-	                                  src={String(v.imageUrl)}
-	                                  className="w-full h-full object-cover cursor-zoom-in"
+	                          {displayAvatarVersions.slice().reverse().map((v: any) => {
+	                            const isActive = String(v.id) === String(activeAvatarVersionId);
+	                            return (
+	                              <button
+	                                key={String(v.id)}
+	                                onClick={() => handleSelectAvatarVariant(String(v.id))}
+	                                className={`relative w-20 aspect-square rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
+	                                  isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
+	                                }`}
+	                                title={isActive ? 'Active' : 'Set active'}
+	                              >
+		                                <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+	                                <button
+	                                  type="button"
+	                                  className="absolute top-1 right-1 p-1 rounded-md bg-black/60 text-white hover:bg-black/80 border border-white/10"
+	                                  title="View large"
 	                                  onClick={(e) => {
 	                                    e.stopPropagation();
 	                                    openLightbox({ url: String(v.imageUrl), title: `Avatar variant: ${draft.name}` });
 	                                  }}
-	                                />
+	                                >
+	                                  <ZoomIn className="w-3.5 h-3.5" />
+	                                </button>
 	                              </button>
-	                            );
-	                          })}
-                        </div>
-                      </div>
-                    )}
+		                            );
+		                          })}
+	                        </div>
+	                      </div>
+	                    )}
                     {generationError && (
                       <div className="mt-4 text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
                         Generate failed: {generationError}
@@ -428,32 +432,36 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                               </div>
                               <p className="text-xs text-zinc-400 leading-relaxed line-clamp-3">{look.description}</p>
 
-                              {displayLookVersions.length > 1 && (
-                                <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
-                                  {displayLookVersions.slice().reverse().map((v: any) => {
-                                    const isActive = String(v.id) === String(activeLookVersionId);
-                                    return (
-                                      <button
-                                        key={String(v.id)}
-                                        onClick={() => handleSelectLookVariant(look.id, String(v.id))}
-                                        className={`relative w-16 aspect-square rounded-lg overflow-hidden border-2 shrink-0 transition-all ${
-                                          isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
-                                        }`}
-                                        title={isActive ? 'Active' : 'Set active'}
-                                      >
-                                        <img
-                                          src={String(v.imageUrl)}
-                                          className="w-full h-full object-cover cursor-zoom-in"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            openLightbox({ url: String(v.imageUrl), title: `Look variant: ${draft.name} / ${look.name}` });
-                                          }}
-                                        />
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
+	                              {displayLookVersions.length > 1 && (
+	                                <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
+	                                  {displayLookVersions.slice().reverse().map((v: any) => {
+	                                    const isActive = String(v.id) === String(activeLookVersionId);
+	                                    return (
+	                                      <button
+	                                        key={String(v.id)}
+	                                        onClick={() => handleSelectLookVariant(look.id, String(v.id))}
+	                                        className={`relative w-16 aspect-square rounded-lg overflow-hidden border-2 shrink-0 transition-all ${
+	                                          isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
+	                                        }`}
+	                                        title={isActive ? 'Active' : 'Set active'}
+	                                      >
+	                                        <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+	                                        <button
+	                                          type="button"
+	                                          className="absolute top-1 right-1 p-1 rounded-md bg-black/60 text-white hover:bg-black/80 border border-white/10"
+	                                          title="View large"
+	                                          onClick={(e) => {
+	                                            e.stopPropagation();
+	                                            openLightbox({ url: String(v.imageUrl), title: `Look variant: ${draft.name} / ${look.name}` });
+	                                          }}
+	                                        >
+	                                          <ZoomIn className="w-3.5 h-3.5" />
+	                                        </button>
+	                                      </button>
+	                                    );
+	                                  })}
+	                                </div>
+	                              )}
                             </div>
                           </div>
                         );

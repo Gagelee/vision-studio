@@ -807,7 +807,9 @@ const callGeminiImage = async (args: {
   const refs = Array.isArray(args.references) ? args.references.slice(0, 6) : [];
   if (refs.length) {
     inputParts.push({
-      text: 'Use the following reference images strictly for style, identity, and scene consistency.',
+      text:
+        'Use the following reference images strictly for identity (characters) and set continuity (environments). ' +
+        'Do NOT change rendering style to match the reference photos; follow the STYLE/StyleGuide specified in the text prompt.',
     });
     for (const r of refs) {
       if (r.label) inputParts.push({ text: `Reference (${String(r.label).slice(0, 80)}):` });

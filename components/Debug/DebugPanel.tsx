@@ -170,8 +170,8 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
   };
 
   return (
-    <div className="fixed inset-0 z-[4000] bg-black/60 backdrop-blur-sm p-6 flex items-center justify-center">
-      <div className="w-full max-w-6xl rounded-[32px] border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-[4000] bg-black/60 backdrop-blur-sm p-6 flex items-start justify-center overflow-y-auto">
+      <div className="w-full max-w-6xl rounded-[32px] border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden flex flex-col max-h-[calc(100vh-3rem)]">
         <div className="h-16 px-6 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60 backdrop-blur-xl">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-zinc-900 text-white dark:bg-white dark:text-black flex items-center justify-center">
@@ -240,7 +240,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
           </div>
         </div>
 
-        <div className="p-6 grid grid-cols-1 xl:grid-cols-3 gap-6 max-h-[80vh] overflow-hidden">
+        <div className="p-6 grid grid-cols-1 xl:grid-cols-3 gap-6 flex-1 overflow-hidden min-h-0">
           {/* Left: quick state */}
           <div className="xl:col-span-1 space-y-6 overflow-y-auto custom-scrollbar pr-1">
             {copyStatus !== 'idle' && (

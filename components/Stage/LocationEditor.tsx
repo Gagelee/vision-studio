@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Location, ModelRuntimeSettings, Sequence, Shot } from '../../types';
-import { MapPin, Image as ImageIcon, Wand2, Save, Film, AlertCircle, Lock, Unlock, Sparkles } from 'lucide-react';
+import { MapPin, Image as ImageIcon, Wand2, Save, Film, AlertCircle, Lock, Unlock, Sparkles, ZoomIn } from 'lucide-react';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildLocationPreviewPrompt } from '../../lib/ai/prompts';
 import { openLightbox } from '../../lib/ui/lightboxStore';
@@ -214,31 +214,35 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
                             <div className="text-[10px] text-zinc-500 font-mono">{displayPreviewVersions.length}</div>
                         </div>
                         <div className="flex gap-3 overflow-x-auto no-scrollbar">
-                            {displayPreviewVersions.slice().reverse().map((v: any) => {
-                                const isActive = String(v.id) === String(activePreviewVersionId);
-                                return (
-                                    <button
-                                        key={String(v.id)}
-                                        onClick={() => handleSelectPreviewVariant(String(v.id))}
-                                        className={`relative w-28 aspect-video rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
-                                            isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
-                                        }`}
-                                        title={isActive ? 'Active' : 'Set active'}
-                                    >
-	                                        <img
-	                                          src={String(v.imageUrl)}
-	                                          className="w-full h-full object-cover cursor-zoom-in"
+	                            {displayPreviewVersions.slice().reverse().map((v: any) => {
+	                                const isActive = String(v.id) === String(activePreviewVersionId);
+	                                return (
+	                                    <button
+	                                        key={String(v.id)}
+	                                        onClick={() => handleSelectPreviewVariant(String(v.id))}
+	                                        className={`relative w-28 aspect-video rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
+	                                            isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
+	                                        }`}
+	                                        title={isActive ? 'Active' : 'Set active'}
+	                                    >
+		                                        <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+	                                        <button
+	                                          type="button"
+	                                          className="absolute top-1 right-1 p-1 rounded-md bg-black/60 text-white hover:bg-black/80 border border-white/10"
+	                                          title="View large"
 	                                          onClick={(e) => {
 	                                            e.stopPropagation();
 	                                            openLightbox({ url: String(v.imageUrl), title: `Environment variant: ${draft.name}` });
 	                                          }}
-	                                        />
+	                                        >
+	                                          <ZoomIn className="w-3.5 h-3.5" />
+	                                        </button>
 	                                    </button>
 	                                );
 	                            })}
 	                        </div>
-	                    </div>
-	                )}
+		                    </div>
+		                )}
 
                 {generationError && (
                     <div className="text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
