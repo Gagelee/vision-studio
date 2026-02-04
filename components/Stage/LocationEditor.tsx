@@ -4,6 +4,7 @@ import { Location, ModelRuntimeSettings, Sequence, Shot } from '../../types';
 import { MapPin, Image as ImageIcon, Wand2, Save, Film, AlertCircle, Lock, Unlock, Sparkles } from 'lucide-react';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildLocationPreviewPrompt } from '../../lib/ai/prompts';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface LocationEditorProps {
   location: Location;
@@ -32,7 +33,8 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
     const url = String(l.previewUrl || '').trim();
     if (!url) return { versions: [], activeId: '' };
     const id = 'pv-1';
-    return { versions: [{ id, imageUrl: url, createdAt: Date.now(), type: 'base' }], activeId: id };
+    const isDone = (l as any)?.assetState?.status === 'done';
+    return { versions: [{ id, imageUrl: url, createdAt: Date.now(), type: isDone ? 'base' : 'placeholder' }], activeId: id };
   };
 
   const normalizeDraft = (l: Location): Location => {
@@ -80,18 +82,20 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
         aspectRatio: aspectRatio || '16:9',
         references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
         strict: true,
+        requireAllReferences: Boolean(keyVisualUrl),
       });
       const now = Date.now();
       const seeded = seedPreviewVersions(draft);
       const baseVersions =
         Array.isArray((draft as any).previewVersions) && (draft as any).previewVersions.length ? (draft as any).previewVersions : seeded.versions;
+      const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
       const newId = `pv-${now}-${Math.random().toString(16).slice(2, 8)}`;
       const next: Location = {
         ...draft,
         previewUrl: out.imageUrl,
         previewVersions: [
-          ...baseVersions,
-          { id: newId, imageUrl: out.imageUrl, createdAt: now, type: baseVersions.length ? 'variation' : 'base' },
+          ...cleanedBase,
+          { id: newId, imageUrl: out.imageUrl, createdAt: now, type: cleanedBase.length ? 'variation' : 'base' },
         ] as any,
         activePreviewVersionId: newId as any,
         assetState: {
@@ -112,7 +116,9 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
   };
 
   const previewVersions = (draft as any).previewVersions || seedPreviewVersions(draft).versions;
-  const activePreviewVersionId = (draft as any).activePreviewVersionId || previewVersions[previewVersions.length - 1]?.id || '';
+  const nonPlaceholderPreviewVersions = (previewVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
+  const displayPreviewVersions = nonPlaceholderPreviewVersions.length ? nonPlaceholderPreviewVersions : previewVersions;
+  const activePreviewVersionId = (draft as any).activePreviewVersionId || displayPreviewVersions[displayPreviewVersions.length - 1]?.id || '';
 
   const handleSelectPreviewVariant = (versionId: string) => {
     const v = (previewVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
@@ -185,11 +191,12 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
          <div className="flex-1 p-8 bg-black/20 overflow-y-auto custom-scrollbar">
              <div className="flex flex-col gap-6 max-w-5xl mx-auto">
                 {/* Master Reference */}
-                <div className="relative aspect-video bg-zinc-900 rounded-xl overflow-hidden shadow-2xl border border-zinc-800 group">
-                    <img 
-                        src={draft.previewUrl} 
-                        className="w-full h-full object-cover" 
-                    />
+	                <div className="relative aspect-video bg-zinc-900 rounded-xl overflow-hidden shadow-2xl border border-zinc-800 group">
+	                    <img 
+	                        src={draft.previewUrl} 
+	                        className="w-full h-full object-cover cursor-zoom-in" 
+	                        onClick={() => draft.previewUrl && openLightbox({ url: draft.previewUrl, title: `Environment: ${draft.name}` })}
+	                    />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60"></div>
                     
                     <div className="absolute bottom-6 left-6 right-6">
@@ -200,14 +207,14 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
                     </div>
                 </div>
 
-                {previewVersions.length > 1 && (
+                {displayPreviewVersions.length > 1 && (
                     <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4">
                         <div className="flex items-center justify-between mb-3">
                             <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Variants</div>
-                            <div className="text-[10px] text-zinc-500 font-mono">{previewVersions.length}</div>
+                            <div className="text-[10px] text-zinc-500 font-mono">{displayPreviewVersions.length}</div>
                         </div>
                         <div className="flex gap-3 overflow-x-auto no-scrollbar">
-                            {previewVersions.slice().reverse().map((v: any) => {
+                            {displayPreviewVersions.slice().reverse().map((v: any) => {
                                 const isActive = String(v.id) === String(activePreviewVersionId);
                                 return (
                                     <button
@@ -218,13 +225,20 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
                                         }`}
                                         title={isActive ? 'Active' : 'Set active'}
                                     >
-                                        <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )}
+	                                        <img
+	                                          src={String(v.imageUrl)}
+	                                          className="w-full h-full object-cover cursor-zoom-in"
+	                                          onClick={(e) => {
+	                                            e.stopPropagation();
+	                                            openLightbox({ url: String(v.imageUrl), title: `Environment variant: ${draft.name}` });
+	                                          }}
+	                                        />
+	                                    </button>
+	                                );
+	                            })}
+	                        </div>
+	                    </div>
+	                )}
 
                 {generationError && (
                     <div className="text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
@@ -246,7 +260,14 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
                                 onClick={() => onSelectShot && onSelectShot(shot.id, seqId)}
                                 className="group relative aspect-video bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 hover:border-indigo-500 cursor-pointer transition-all"
                             >
-                                <img src={shot.thumbnailUrl} className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity" />
+	                                <img
+	                                  src={shot.thumbnailUrl}
+	                                  className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity cursor-zoom-in"
+	                                  onClick={(e) => {
+	                                    e.stopPropagation();
+	                                    openLightbox({ url: shot.thumbnailUrl, title: `Shot #${shot.sequence}` });
+	                                  }}
+	                                />
                                 <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/50 text-[10px] text-white backdrop-blur">
                                     #{shot.sequence}
                                 </div>

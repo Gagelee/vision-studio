@@ -32,6 +32,7 @@ export const generateImageFromPrompt = async (req: {
   aspectRatio?: string;
   references?: ImageReference[];
   strict?: boolean;
+  requireAllReferences?: boolean;
 }): Promise<GenerateShotImageResponse> => {
   try {
     const endpoint = joinUrl(req.settings.baseUrl, '/api/asset/image/generate');
@@ -43,7 +44,8 @@ export const generateImageFromPrompt = async (req: {
         endpoint,
         settings: { provider: req.settings.provider, model: req.settings.model, temperature: req.settings.temperature },
         promptPreview: String(req.prompt || '').slice(0, 120),
-        references: Array.isArray(req.references) ? req.references.length : 0,
+        references: Array.isArray(req.references) ? req.references.map((r) => ({ url: r.url, label: r.label })) : [],
+        requireAllReferences: Boolean(req.requireAllReferences),
       },
     });
     const controller = new AbortController();
@@ -55,6 +57,7 @@ export const generateImageFromPrompt = async (req: {
         prompt: String(req.prompt || ''),
         aspectRatio: req.aspectRatio,
         references: Array.isArray(req.references) ? req.references : [],
+        requireAllReferences: Boolean(req.requireAllReferences),
         settings: {
           provider: req.settings.provider,
           model: req.settings.model,

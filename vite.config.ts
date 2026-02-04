@@ -692,12 +692,18 @@ const callGeminiImage = async (args: {
     generationConfig.imageConfig = { aspectRatio: String(args.aspectRatio) };
   }
 
-  const inputParts: any[] = [{ text: args.prompt }];
+  const inputParts: any[] = [];
   const refs = Array.isArray(args.references) ? args.references.slice(0, 6) : [];
-  for (const r of refs) {
-    if (r.label) inputParts.push({ text: `Reference (${String(r.label).slice(0, 80)}):` });
-    inputParts.push({ inlineData: { mimeType: r.mimeType, data: r.bytes.toString('base64') } });
+  if (refs.length) {
+    inputParts.push({
+      text: 'Use the following reference images strictly for style, identity, and scene consistency.',
+    });
+    for (const r of refs) {
+      if (r.label) inputParts.push({ text: `Reference (${String(r.label).slice(0, 80)}):` });
+      inputParts.push({ inlineData: { mimeType: r.mimeType, data: r.bytes.toString('base64') } });
+    }
   }
+  inputParts.push({ text: args.prompt });
 
   const imgInit: any = {
     method: 'POST',
@@ -753,17 +759,18 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       }
     });
 
-    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
-      if (req.method !== 'POST') return next();
-        const body = await readJsonBody(req);
+	    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
+	      if (req.method !== 'POST') return next();
+	        const body = await readJsonBody(req);
 
-        const prompt = String(body?.prompt || '').trim();
-        const aspectRatio = body?.aspectRatio ? String(body.aspectRatio) : undefined;
-        const referencesRaw = Array.isArray(body?.references) ? body.references : [];
-        const settings = body?.settings || {};
-        const provider = String(settings?.provider || 'gemini');
-        const model = String(settings?.model || 'nano-banana-pro');
-        const temperature = Number(settings?.temperature ?? 0.6);
+	        const prompt = String(body?.prompt || '').trim();
+	        const aspectRatio = body?.aspectRatio ? String(body.aspectRatio) : undefined;
+	        const referencesRaw = Array.isArray(body?.references) ? body.references : [];
+	        const requireAllReferences = Boolean(body?.requireAllReferences);
+	        const settings = body?.settings || {};
+	        const provider = String(settings?.provider || 'gemini');
+	        const model = String(settings?.model || 'nano-banana-pro');
+	        const temperature = Number(settings?.temperature ?? 0.6);
 
         if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
 
@@ -843,35 +850,51 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               return null;
             };
 
-            const references = (
-              Array.isArray(referencesRaw) ? referencesRaw : []
-            )
-              .slice(0, 6)
-              .map((r: any) => ({ url: String(r?.url || '').trim(), label: r?.label ? String(r.label) : undefined }))
-              .filter((r: any) => r.url);
+	            const references = (
+	              Array.isArray(referencesRaw) ? referencesRaw : []
+	            )
+	              .slice(0, 6)
+	              .map((r: any) => ({ url: String(r?.url || '').trim(), label: r?.label ? String(r.label) : undefined }))
+	              .filter((r: any) => r.url);
 
-            const loadedRefs: Array<{ mimeType: string; bytes: Buffer; label?: string }> = [];
-            for (const r of references) {
-              try {
-                const loaded = await loadReference(r.url);
-                if (!loaded) continue;
-                // Keep refs reasonably small to avoid request bloat.
-                if (loaded.bytes.length > 12 * 1024 * 1024) continue;
-                loadedRefs.push({ ...loaded, label: r.label });
-              } catch {
-                // Ignore bad refs; still allow generation.
-              }
-            }
+	            const loadedRefs: Array<{ mimeType: string; bytes: Buffer; label?: string }> = [];
+	            const missingRefs: Array<{ url: string; label?: string }> = [];
+	            for (const r of references) {
+	              try {
+	                const loaded = await loadReference(r.url);
+	                if (!loaded) {
+	                  missingRefs.push({ url: r.url, label: r.label });
+	                  continue;
+	                }
+	                // Keep refs reasonably small to avoid request bloat.
+	                if (loaded.bytes.length > 12 * 1024 * 1024) {
+	                  missingRefs.push({ url: r.url, label: r.label });
+	                  continue;
+	                }
+	                loadedRefs.push({ ...loaded, label: r.label });
+	              } catch {
+	                missingRefs.push({ url: r.url, label: r.label });
+	              }
+	            }
 
-            const out = await callGeminiImage({
-              apiKey: env.GEMINI_API_KEY,
-              model: usedModel,
-              temperature,
-              prompt,
-              aspectRatio,
-              references: loadedRefs,
-              env,
-            });
+	            if (requireAllReferences && references.length > 0 && loadedRefs.length < references.length) {
+	              const list = missingRefs
+	                .slice(0, 6)
+	                .map((r) => (r.label ? `${r.label}` : r.url))
+	                .filter(Boolean)
+	                .join(', ');
+	              throw new Error(`Missing required reference image(s): ${list || 'unknown'}`);
+	            }
+
+	            const out = await callGeminiImage({
+	              apiKey: env.GEMINI_API_KEY,
+	              model: usedModel,
+	              temperature,
+	              prompt,
+	              aspectRatio,
+	              references: loadedRefs,
+	              env,
+	            });
 
             const ext =
               out.mimeType === 'image/png'
@@ -890,18 +913,20 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
             return sendJson(res, 200, {
               imageUrl: `/__generated__/${filename}`,
-              debug: {
-                transport: 'http',
-                provider,
-                model: usedModel,
-                mimeType: out.mimeType,
-                bytes: out.bytes.length,
-                promptPreview,
-                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
-              },
-            });
-          }
-        } catch (e: any) {
+	              debug: {
+	                transport: 'http',
+	                provider,
+	                model: usedModel,
+	                mimeType: out.mimeType,
+	                bytes: out.bytes.length,
+	                promptPreview,
+	                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
+	                requireAllReferences,
+	                missingReferences: missingRefs,
+	              },
+	            });
+	          }
+	        } catch (e: any) {
           return sendJson(res, 200, {
             imageUrl:
               `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
@@ -934,6 +959,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const intent = String(body?.intent || '').trim();
         const aspectRatio = String(body?.aspectRatio || '16:9');
         const keyVisualUrl = body?.keyVisualUrl ? String(body.keyVisualUrl) : undefined;
+        const allowSingleFallback = Boolean(body?.allowSingleFallback);
         const settings = body?.settings || {};
         const plannerSettings = body?.plannerSettings || {};
         const provider = String(settings?.provider || 'gemini');
@@ -1062,7 +1088,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    id: 'v1',
 	                    imageUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=2025&auto=format&fit=crop',
 	                    createdAt: now,
-	                    type: 'base',
+	                    type: 'placeholder',
 	                  },
 	                ],
 	                elements: {
@@ -1245,6 +1271,20 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              } catch (e: any) {
 	                // Fall back to a single-call scaffold for this provider if multi-agent fails.
 	                lastError = e;
+	                if (!allowSingleFallback) {
+	                  return sendJson(res, 502, {
+	                    ok: false,
+	                    errorCode: 'MULTI_AGENT_FAILED',
+	                    message: 'Multi-agent scaffold failed',
+	                    provider: p,
+	                    model: chosenModel,
+	                    traceId,
+	                    teamTrace,
+	                    multiAgentError: e?.message || String(e),
+	                    attemptedProviders,
+	                    mode: 'multi-agent',
+	                  });
+	                }
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
 	                const spec = await callGeminiJson({
@@ -1365,6 +1405,20 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (OpenAI)', p, chosenModel, { teamTrace, traceId }));
 	              } catch (e: any) {
 	                lastError = e;
+	                if (!allowSingleFallback) {
+	                  return sendJson(res, 502, {
+	                    ok: false,
+	                    errorCode: 'MULTI_AGENT_FAILED',
+	                    message: 'Multi-agent scaffold failed',
+	                    provider: p,
+	                    model: chosenModel,
+	                    traceId,
+	                    teamTrace,
+	                    multiAgentError: e?.message || String(e),
+	                    attemptedProviders,
+	                    mode: 'multi-agent',
+	                  });
+	                }
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
 	                const spec = await callOpenAICompatibleJson({
@@ -1484,6 +1538,20 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (DeepSeek)', p, chosenModel, { teamTrace, traceId }));
 	              } catch (e: any) {
 	                lastError = e;
+	                if (!allowSingleFallback) {
+	                  return sendJson(res, 502, {
+	                    ok: false,
+	                    errorCode: 'MULTI_AGENT_FAILED',
+	                    message: 'Multi-agent scaffold failed',
+	                    provider: p,
+	                    model: chosenModel,
+	                    traceId,
+	                    teamTrace,
+	                    multiAgentError: e?.message || String(e),
+	                    attemptedProviders,
+	                    mode: 'multi-agent',
+	                  });
+	                }
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
 	                const spec = await callOpenAICompatibleJson({
@@ -1535,6 +1603,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const selection = body?.selection || {};
         const story = body?.story || null;
         const settings = body?.settings || {};
+        const allowSingleFallback = Boolean(body?.allowSingleFallback);
         const provider = String(settings?.provider || 'gemini');
         const model = String(settings?.model || 'gemini-3-pro-preview');
         const temperature = Number(settings?.temperature ?? 0.6);
@@ -1902,6 +1971,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                });
 	              } catch (e: any) {
 	                lastError = e;
+	                if (!allowSingleFallback) {
+	                  return sendJson(res, 502, {
+	                    ok: false,
+	                    errorCode: 'MULTI_AGENT_FAILED',
+	                    message: 'Multi-agent director failed',
+	                    provider: p,
+	                    model,
+	                    traceId,
+	                    teamTrace,
+	                    multiAgentError: e?.message || String(e),
+	                    mode: 'multi-agent',
+	                  });
+	                }
 	                // Single-call fallback
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('direct', 'director.actions');
@@ -2045,6 +2127,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                });
 	              } catch (e: any) {
 	                lastError = e;
+	                if (!allowSingleFallback) {
+	                  return sendJson(res, 502, {
+	                    ok: false,
+	                    errorCode: 'MULTI_AGENT_FAILED',
+	                    message: 'Multi-agent director failed',
+	                    provider: p,
+	                    model,
+	                    traceId,
+	                    teamTrace,
+	                    multiAgentError: e?.message || String(e),
+	                    mode: 'multi-agent',
+	                  });
+	                }
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('direct', 'director.actions');
 	                const output = await callOpenAICompatibleJson({
@@ -2188,6 +2283,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                });
 	              } catch (e: any) {
 	                lastError = e;
+	                if (!allowSingleFallback) {
+	                  return sendJson(res, 502, {
+	                    ok: false,
+	                    errorCode: 'MULTI_AGENT_FAILED',
+	                    message: 'Multi-agent director failed',
+	                    provider: p,
+	                    model,
+	                    traceId,
+	                    teamTrace,
+	                    multiAgentError: e?.message || String(e),
+	                    mode: 'multi-agent',
+	                  });
+	                }
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('direct', 'director.actions');
 	                const output = await callOpenAICompatibleJson({

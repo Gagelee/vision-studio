@@ -2,6 +2,7 @@
 import React from 'react';
 import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2 } from 'lucide-react';
 import { Shot, ElementType, AspectRatio } from '../../types';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ShotCardProps {
   shot: Shot;
@@ -56,11 +57,15 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
       {/* Visual Preview Container */}
       <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-100 dark:bg-zinc-950 relative overflow-hidden transition-all duration-500 ease-in-out`}>
         {/* Actual Image */}
-        <img 
-          src={shot.thumbnailUrl} 
-          alt="Shot storyboard" 
-          className={`w-full h-full object-cover transition-all duration-700 ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
-        />
+	        <img 
+	          src={shot.thumbnailUrl} 
+	          alt="Shot storyboard" 
+	          className={`w-full h-full object-cover transition-all duration-700 cursor-zoom-in ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
+	          onClick={(e) => {
+	            e.stopPropagation();
+	            openLightbox({ url: shot.thumbnailUrl, title: `Shot #${shot.sequence}` });
+	          }}
+	        />
 
         {/* AI "Scanner" Effect Overlay */}
         {isProcessing && (

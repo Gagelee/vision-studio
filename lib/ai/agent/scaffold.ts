@@ -1,6 +1,7 @@
 import { IMAGES, INITIAL_STORY } from '../../../constants';
 import { AgentPlan, AiSettings, AspectRatio, ModelRuntimeSettings, Story } from '../../../types';
 import { addDebugEvent } from '../../debug/eventLog';
+import { AgentApiError, isAgentApiError, readErrorBody } from './apiError';
 
 export interface ScaffoldProjectRequest {
   intent: string;
@@ -8,6 +9,7 @@ export interface ScaffoldProjectRequest {
   keyVisualUrl?: string;
   settings: ModelRuntimeSettings;
   plannerSettings?: ModelRuntimeSettings;
+  allowSingleFallback?: boolean;
 }
 
 export interface ScaffoldProjectResponse {
@@ -37,7 +39,7 @@ const isUsefulScaffold = (story: Story | undefined | null) => {
   return hasAnyShots || locs.length > 0 || chars.length > 0;
 };
 
-const createMockProject = (intent: string, aspectRatio: AspectRatio, keyVisualUrl?: string): ScaffoldProjectResponse => {
+export const createLocalMockProject = (intent: string, aspectRatio: AspectRatio, keyVisualUrl?: string): ScaffoldProjectResponse => {
   const now = Date.now();
   const id = `proj-${now}`;
   const title = intent.trim().split(/\s+/).slice(0, 4).join(' ') || 'New Masterpiece';
@@ -92,9 +94,15 @@ const postJson = async <T>(url: string, body: unknown, timeoutMs: number): Promi
       signal: controller.signal,
     });
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      addDebugEvent({ level: 'error', scope: 'agent.scaffold', message: 'HTTP error', data: { url, status: res.status, text } });
-      throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ''}`);
+      const { text, json } = await readErrorBody(res);
+      addDebugEvent({ level: 'error', scope: 'agent.scaffold', message: 'HTTP error', data: { url, status: res.status, text, json } });
+      throw new AgentApiError({
+        message: `HTTP ${res.status}${text ? `: ${text}` : ''}`,
+        status: res.status,
+        url,
+        bodyText: text,
+        bodyJson: json,
+      });
     }
     const json = (await res.json()) as T;
     addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'Response', data: { url, json } });
@@ -107,7 +115,7 @@ const postJson = async <T>(url: string, body: unknown, timeoutMs: number): Promi
 export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<ScaffoldProjectResponse> => {
   // "mock" always works; HTTP transport is optional and can be enabled later without changing UI flow.
   if (req.settings.provider === 'mock') {
-    return createMockProject(req.intent, req.aspectRatio, req.keyVisualUrl);
+    return createLocalMockProject(req.intent, req.aspectRatio, req.keyVisualUrl);
   }
 
   const endpoint = joinUrl(req.settings.baseUrl, '/api/agent/scaffold');
@@ -119,6 +127,7 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
         intent: req.intent,
         aspectRatio: req.aspectRatio,
         keyVisualUrl: req.keyVisualUrl,
+        allowSingleFallback: Boolean(req.allowSingleFallback),
         settings: {
           provider: req.settings.provider,
           model: req.settings.model,
@@ -136,27 +145,17 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
       },
       60_000
     );
-    // Some transports may return "ok" wrappers or empty scaffolds; ensure the UI always receives something usable.
+
     if (!isUsefulScaffold((res as any)?.story) || !(res as any)?.plan) {
       addDebugEvent({
         level: 'warn',
         scope: 'agent.scaffold',
-        message: 'Empty/invalid scaffold response; falling back to local mock',
+        message: 'Empty/invalid scaffold response',
         data: { endpoint, provider: req.settings.provider, model: req.settings.model, res },
       });
-      const fallback = createMockProject(req.intent, req.aspectRatio, req.keyVisualUrl);
-      return {
-        ...fallback,
-        debug: {
-          transport: 'mock',
-          provider: 'mock',
-          model: 'mock',
-          endpoint,
-          error: `Empty/invalid scaffold response from ${req.settings.provider}/${req.settings.model}; fell back to local mock.`,
-          upstream: { provider: req.settings.provider, model: req.settings.model, transport: (res as any)?.debug?.transport || 'http' },
-        },
-      };
+      throw new Error(`Empty/invalid scaffold response from ${req.settings.provider}/${req.settings.model}`);
     }
+
     return {
       ...res,
       debug: {
@@ -168,18 +167,8 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
       },
     };
   } catch (e) {
-    const fallback = createMockProject(req.intent, req.aspectRatio, req.keyVisualUrl);
-    return {
-      ...fallback,
-      debug: {
-        transport: 'mock',
-        provider: 'mock',
-        model: 'mock',
-        endpoint,
-        error: `HTTP scaffold failed for ${req.settings.provider}/${req.settings.model}: ${e instanceof Error ? e.message : String(e)}`,
-        upstream: { provider: req.settings.provider, model: req.settings.model },
-      },
-    };
+    if (isAgentApiError(e)) throw e;
+    throw new Error(`HTTP scaffold failed for ${req.settings.provider}/${req.settings.model}: ${e instanceof Error ? e.message : String(e)}`);
   }
 };
 
@@ -188,6 +177,7 @@ export const scaffoldProjectWithSettings = async (args: {
   aspectRatio: AspectRatio;
   keyVisualUrl?: string;
   aiSettings: AiSettings;
+  allowSingleFallback?: boolean;
 }): Promise<ScaffoldProjectResponse> => {
   return scaffoldProject({
     intent: args.intent,
@@ -195,5 +185,6 @@ export const scaffoldProjectWithSettings = async (args: {
     keyVisualUrl: args.keyVisualUrl,
     settings: args.aiSettings.scaffoldWorker,
     plannerSettings: args.aiSettings.scaffoldPlanner,
+    allowSingleFallback: args.allowSingleFallback,
   });
 };

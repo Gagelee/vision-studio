@@ -1,6 +1,7 @@
 import React from 'react';
 import { Plus, FolderOpen, Trash2, Copy, Pencil, Settings, Sun, Moon, Bug } from 'lucide-react';
 import { Story } from '../../types';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ProjectLibraryProps {
   projects: Story[];
@@ -129,8 +130,12 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
                       <img
                         src={p.keyVisualUrl}
                         alt={p.title}
-                        className="w-full h-full object-cover transition-transform duration-[8s] ease-out group-hover:scale-110"
+                        className="w-full h-full object-cover transition-transform duration-[8s] ease-out group-hover:scale-110 cursor-zoom-in"
                         loading="lazy"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (p.keyVisualUrl) openLightbox({ url: p.keyVisualUrl, title: p.title });
+                        }}
                       />
                       <div className="absolute bottom-5 left-6 right-6 z-20">
                         <div className="flex items-center justify-between gap-4">

@@ -4,6 +4,7 @@ import { Camera, Sun, Users, Music, X, Save, BookText, MapPin, Clock, Film, Anch
 import { Shot, Sequence, Location, ElementType, Character, DialogueLine, DirectorElement, SelectionState, CharacterLook } from '../../types';
 import { ElementControl } from './ElementControl';
 import { Collapsible } from './Collapsible';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 // --- Sub-component for Casting Control ---
 interface CastingControlProps {
@@ -68,7 +69,16 @@ const CastingControl: React.FC<CastingControlProps> = ({ element, availableChara
                         <div key={char.id} className="group bg-zinc-50 dark:bg-zinc-950 p-3 rounded-xl border border-zinc-100 dark:border-zinc-800/50">
                             <div className="flex items-center gap-3 mb-3">
                                 <div className="relative cursor-pointer shrink-0">
-                                    <img src={activeLook?.previewUrl || char.avatarUrl} alt={char.name} className="w-14 h-14 rounded-xl object-cover ring-2 ring-white dark:ring-zinc-800 shadow-sm"/>
+                                    <img
+                                      src={activeLook?.previewUrl || char.avatarUrl}
+                                      alt={char.name}
+                                      className="w-14 h-14 rounded-xl object-cover ring-2 ring-white dark:ring-zinc-800 shadow-sm cursor-zoom-in"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const url = activeLook?.previewUrl || char.avatarUrl;
+                                        if (url) openLightbox({ url, title: `Character: ${char.name}` });
+                                      }}
+                                    />
                                     {isAdding && (
                                         <div className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm hover:scale-110 transition-transform" onClick={(e) => { e.stopPropagation(); toggleCharacter(char); }}>
                                             <MinusCircle className="w-2.5 h-2.5" />
@@ -132,7 +142,14 @@ const CastingControl: React.FC<CastingControlProps> = ({ element, availableChara
                                 onClick={() => toggleCharacter(char)}
                                 className="flex items-center gap-3 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer transition-colors group"
                              >
-                                <img src={char.avatarUrl} className="w-10 h-10 rounded-xl object-cover opacity-70 group-hover:opacity-100" />
+                                <img
+                                  src={char.avatarUrl}
+                                  className="w-10 h-10 rounded-xl object-cover opacity-70 group-hover:opacity-100 cursor-zoom-in"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (char.avatarUrl) openLightbox({ url: char.avatarUrl, title: `Character: ${char.name}` });
+                                  }}
+                                />
                                 <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-200">{char.name}</span>
                                 <Plus className="w-3 h-3 ml-auto text-zinc-400 group-hover:text-indigo-500" />
                              </div>
@@ -230,7 +247,12 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     </div>
                     <div className="flex gap-3">
                         <div className="w-20 h-20 rounded-lg overflow-hidden shrink-0 border border-zinc-200 dark:border-zinc-700 shadow-sm relative group bg-zinc-900">
-                            <img src={keyVisualUrl} className="w-full h-full object-cover" alt="Master KV" />
+                            <img
+                              src={keyVisualUrl}
+                              className="w-full h-full object-cover cursor-zoom-in"
+                              alt="Master KV"
+                              onClick={() => keyVisualUrl && openLightbox({ url: keyVisualUrl, title: 'Master KV' })}
+                            />
                             <div className="absolute inset-0 bg-black/10 group-hover:bg-transparent transition-colors" />
                             <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-black/60 to-transparent"></div>
                         </div>

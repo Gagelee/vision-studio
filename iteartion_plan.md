@@ -7,6 +7,8 @@
 - “后端”目前在 `vite.config.ts` 的中间件里：`/api/agent/*`、`/api/asset/image/generate`、`/__generated__/*`。
 - 资产落盘到本地 `.vision-assets/` 并以 `/__generated__/...` 提供访问（适合本地，不适合线上）。
 - 已实现：严格的资产生产顺序（KV → env → character → look → shot），失败会阻断下游；Environment/Casting/KV 均支持 variants + active 选定。
+- Multi-agent 不再“静默降级到 single-call”：multi-agent 失败会返回 `HTTP 502` + `errorCode=MULTI_AGENT_FAILED`；前端提供 Retry / 显式 single-call fallback 的二次确认。
+- 图片资产支持点击放大（Lightbox）。
 - 可观测性增强：已加入 Agent registry + prompt version 标记 + LLM trace 基础（在 Debug 面板可视化）。
 - Prompt 仍统一存放在 `lib/ai/prompts/*`，当前 registry/版本信息维护在 `lib/ai/promptMeta.ts`。
 

@@ -1,5 +1,6 @@
 import type { AiSettings, AspectRatio, ElementType, Shot, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from './image/generate';
+import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, getStoryActiveKvUrl } from './assetRefs';
 import {
   buildMasterKeyVisualPrompt,
   buildCharacterAvatarPrompt,
@@ -211,6 +212,18 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
 export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string): Story => {
   const now = Date.now();
   const rand = () => Math.random().toString(16).slice(2, 8);
+  const isLikelyPlaceholderUrl = (u: string) => {
+    const s = String(u || '').trim();
+    if (!s) return false;
+    if (s.startsWith('/__generated__/')) return false;
+    if (s.startsWith('data:image/')) return false;
+    try {
+      const parsed = new URL(s);
+      return /images\.unsplash\.com$/i.test(parsed.hostname);
+    } catch {
+      return false;
+    }
+  };
 
   if (job.kind === 'masterkv') {
     const existing = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
@@ -221,7 +234,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
               id: `kv-seed-${now}-${rand()}`,
               imageUrl: String(story.keyVisualUrl),
               createdAt: (story as any).masterKvState?.lastAttemptAt || now,
-              type: 'base',
+              type: isLikelyPlaceholderUrl(String(story.keyVisualUrl)) ? 'placeholder' : 'base',
             },
           ]
         : [];
@@ -249,7 +262,14 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
                 const existing = Array.isArray((l as any).previewVersions) ? (l as any).previewVersions : [];
                 const seededBase =
                   !existing.length && l.previewUrl && String(l.previewUrl) !== String(imageUrl)
-                    ? [{ id: `pv-seed-${now}-${rand()}`, imageUrl: String(l.previewUrl), createdAt: (l as any).assetState?.lastAttemptAt || now, type: 'base' }]
+                    ? [
+                        {
+                          id: `pv-seed-${now}-${rand()}`,
+                          imageUrl: String(l.previewUrl),
+                          createdAt: (l as any).assetState?.lastAttemptAt || now,
+                          type: isLikelyPlaceholderUrl(String(l.previewUrl)) ? 'placeholder' : 'base',
+                        },
+                      ]
                     : [];
                 const base = existing.length ? existing : seededBase;
                 const id = `pv-${now}-${rand()}`;
@@ -277,7 +297,14 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
                 const existing = Array.isArray((c as any).avatarVersions) ? (c as any).avatarVersions : [];
                 const seededBase =
                   !existing.length && c.avatarUrl && String(c.avatarUrl) !== String(imageUrl)
-                    ? [{ id: `av-seed-${now}-${rand()}`, imageUrl: String(c.avatarUrl), createdAt: (c as any).assetState?.lastAttemptAt || now, type: 'base' }]
+                    ? [
+                        {
+                          id: `av-seed-${now}-${rand()}`,
+                          imageUrl: String(c.avatarUrl),
+                          createdAt: (c as any).assetState?.lastAttemptAt || now,
+                          type: isLikelyPlaceholderUrl(String(c.avatarUrl)) ? 'placeholder' : 'base',
+                        },
+                      ]
                     : [];
                 const base = existing.length ? existing : seededBase;
                 const id = `av-${now}-${rand()}`;
@@ -309,7 +336,14 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
                     const existing = Array.isArray((lk as any).previewVersions) ? (lk as any).previewVersions : [];
                     const seededBase =
                       !existing.length && lk.previewUrl && String(lk.previewUrl) !== String(imageUrl)
-                        ? [{ id: `lv-seed-${now}-${rand()}`, imageUrl: String(lk.previewUrl), createdAt: (lk as any).assetState?.lastAttemptAt || now, type: 'base' }]
+                        ? [
+                            {
+                              id: `lv-seed-${now}-${rand()}`,
+                              imageUrl: String(lk.previewUrl),
+                              createdAt: (lk as any).assetState?.lastAttemptAt || now,
+                              type: isLikelyPlaceholderUrl(String(lk.previewUrl)) ? 'placeholder' : 'base',
+                            },
+                          ]
                         : [];
                     const base = existing.length ? existing : seededBase;
                     const id = `lv-${now}-${rand()}`;
@@ -387,60 +421,8 @@ export const executeAssetJobs = async (args: {
     return shot || null;
   };
 
-  const pickActiveImageUrl = (args: {
-    entity: any;
-    versionsKey: string;
-    activeIdKey: string;
-    fallbackUrl?: string;
-  }): string => {
-    const versions = Array.isArray(args.entity?.[args.versionsKey]) ? args.entity[args.versionsKey] : [];
-    const activeId = String(args.entity?.[args.activeIdKey] || '').trim();
-    if (activeId) {
-      const hit = versions.find((v: any) => String(v?.id || '') === activeId);
-      const url = String(hit?.imageUrl || '').trim();
-      if (url) return url;
-    }
-    const last = versions[versions.length - 1];
-    const lastUrl = String(last?.imageUrl || '').trim();
-    if (lastUrl) return lastUrl;
-    const fallback = String(args.fallbackUrl || '').trim();
-    if (fallback) return fallback;
-    return '';
-  };
-
   const isDone = (st: any) => st && st.status === 'done';
-  const getStoryActiveKvUrl = (s: any) =>
-    pickActiveImageUrl({
-      entity: s,
-      versionsKey: 'keyVisualVersions',
-      activeIdKey: 'activeKeyVisualVersionId',
-      fallbackUrl: s?.keyVisualUrl,
-    });
   const getMasterOk = (s: Story | null) => Boolean(s && getStoryActiveKvUrl(s) && isDone((s as any).masterKvState));
-
-  const getLocationActivePreviewUrl = (loc: any) =>
-    pickActiveImageUrl({
-      entity: loc,
-      versionsKey: 'previewVersions',
-      activeIdKey: 'activePreviewVersionId',
-      fallbackUrl: loc?.previewUrl,
-    });
-
-  const getCharacterActiveAvatarUrl = (ch: any) =>
-    pickActiveImageUrl({
-      entity: ch,
-      versionsKey: 'avatarVersions',
-      activeIdKey: 'activeAvatarVersionId',
-      fallbackUrl: ch?.avatarUrl,
-    });
-
-  const getLookActivePreviewUrl = (lk: any) =>
-    pickActiveImageUrl({
-      entity: lk,
-      versionsKey: 'previewVersions',
-      activeIdKey: 'activePreviewVersionId',
-      fallbackUrl: lk?.previewUrl,
-    });
 
   const getJobKind = (job: AssetJob): AssetJob['kind'] => job.kind;
   const orderedPhases: Array<AssetJob['kind']> = ['masterkv', 'location', 'character', 'look', 'shot'];
@@ -627,52 +609,59 @@ export const executeAssetJobs = async (args: {
             aspectRatio: args.aspectRatio,
             references,
             strict: true,
+            requireAllReferences: references.length > 0,
           });
           return { imageUrl: out.imageUrl, debug: out.debug };
         }
 
-	        if (job.kind === 'location') {
-	          const story = args.getStoryForRefs?.() || null;
-	          const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
-	          const out = await generateImageFromPrompt({
-	            prompt: job.prompt,
-	            settings: args.settings,
-	            aspectRatio: args.aspectRatio,
-	            references: kvUrl ? [{ url: kvUrl, label: 'master kv' }] : [],
-	            strict: true,
-	          });
-	          return { imageUrl: out.imageUrl, debug: out.debug };
-	        }
+        if (job.kind === 'location') {
+          const story = args.getStoryForRefs?.() || null;
+          const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
+          const refs = kvUrl ? [{ url: kvUrl, label: 'master kv' }] : [];
+          const out = await generateImageFromPrompt({
+            prompt: job.prompt,
+            settings: args.settings,
+            aspectRatio: args.aspectRatio,
+            references: refs,
+            strict: true,
+            requireAllReferences: refs.length > 0,
+          });
+          return { imageUrl: out.imageUrl, debug: out.debug };
+        }
 
-	        if (job.kind === 'character') {
-	          const story = args.getStoryForRefs?.() || null;
-	          const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
-	          const out = await generateImageFromPrompt({
-	            prompt: job.prompt,
-	            settings: args.settings,
-	            aspectRatio: '1:1',
-	            references: kvUrl ? [{ url: kvUrl, label: 'master kv' }] : [],
-	            strict: true,
-	          });
-	          return { imageUrl: out.imageUrl, debug: out.debug };
-	        }
+        if (job.kind === 'character') {
+          const story = args.getStoryForRefs?.() || null;
+          const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
+          const refs = kvUrl ? [{ url: kvUrl, label: 'master kv' }] : [];
+          const out = await generateImageFromPrompt({
+            prompt: job.prompt,
+            settings: args.settings,
+            aspectRatio: '1:1',
+            references: refs,
+            strict: true,
+            requireAllReferences: refs.length > 0,
+          });
+          return { imageUrl: out.imageUrl, debug: out.debug };
+        }
 
 	        // look
 	        const story = args.getStoryForRefs?.() || null;
 	        const ch = story ? (story.characters || []).find((c) => c.id === job.characterId) : null;
 	        const avatarUrl = ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch) : '';
 	        const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
+	        const refs = [
+	          ...(kvUrl ? [{ url: kvUrl, label: 'master kv' }] : []),
+	          ...(avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : []),
+	        ];
 	        const out = await generateImageFromPrompt({
 	          prompt:
 	            job.prompt +
 	            '\n\nUse the provided reference image(s) to keep the exact same character identity. Only vary styling described for this look.',
 	          settings: args.settings,
 	          aspectRatio: '1:1',
-	          references: [
-	            ...(kvUrl ? [{ url: kvUrl, label: 'master kv' }] : []),
-	            ...(avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : []),
-	          ],
+	          references: refs,
 	          strict: true,
+	          requireAllReferences: refs.length > 0,
 	        });
 	        return { imageUrl: out.imageUrl, debug: out.debug };
 	      };

@@ -1,11 +1,13 @@
 import { AgentAction, AgentPlan, ElementType, ModelRuntimeSettings, SelectionState, Story } from '../../../types';
 import { addDebugEvent } from '../../debug/eventLog';
+import { AgentApiError, isAgentApiError, readErrorBody } from './apiError';
 
 export interface DirectorCommandRequest {
   message: string;
   selection: SelectionState;
   story: Story;
   settings: ModelRuntimeSettings;
+  allowSingleFallback?: boolean;
 }
 
 export interface DirectorCommandResponse {
@@ -39,9 +41,15 @@ const postJson = async <T>(url: string, body: unknown, timeoutMs: number): Promi
       signal: controller.signal,
     });
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      addDebugEvent({ level: 'error', scope: 'agent.direct', message: 'HTTP error', data: { url, status: res.status, text } });
-      throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ''}`);
+      const { text, json } = await readErrorBody(res);
+      addDebugEvent({ level: 'error', scope: 'agent.direct', message: 'HTTP error', data: { url, status: res.status, text, json } });
+      throw new AgentApiError({
+        message: `HTTP ${res.status}${text ? `: ${text}` : ''}`,
+        status: res.status,
+        url,
+        bodyText: text,
+        bodyJson: json,
+      });
     }
     const json = (await res.json()) as T;
     addDebugEvent({ level: 'info', scope: 'agent.direct', message: 'Response', data: { url, json } });
@@ -326,6 +334,7 @@ export const runDirectorCommand = async (req: DirectorCommandRequest): Promise<D
         message: req.message,
         selection: req.selection,
         story: req.story,
+        allowSingleFallback: Boolean(req.allowSingleFallback),
         settings: {
           provider: req.settings.provider,
           model: req.settings.model,
@@ -346,17 +355,7 @@ export const runDirectorCommand = async (req: DirectorCommandRequest): Promise<D
       },
     };
   } catch (e) {
-    const fallback = ruleBased(req);
-    return {
-      ...fallback,
-      debug: {
-        transport: 'rule',
-        provider: 'mock',
-        model: 'rule',
-        endpoint,
-        error: `HTTP director failed for ${req.settings.provider}/${req.settings.model}: ${e instanceof Error ? e.message : String(e)}`,
-        upstream: { provider: req.settings.provider, model: req.settings.model },
-      },
-    };
+    if (isAgentApiError(e)) throw e;
+    throw new Error(`HTTP director failed for ${req.settings.provider}/${req.settings.model}: ${e instanceof Error ? e.message : String(e)}`);
   }
 };

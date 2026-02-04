@@ -19,10 +19,13 @@ Last Updated: 2026-02-04
 - 交互骨架：Sidebar（层级导航）、Project Dashboard、Stage（Storyboard）、Shot Editor、Inspector（Shot 级参数）、Director Console（对话入口）、Master Player（播放容器）。
 - 项目管理：Project Library（创建/重命名/删除/复制/最近打开）、本地持久化（localStorage）。
 - 资产编辑：Environment / Character / Look 的编辑器与基础 CRUD；支持 Environment/Casting/KV 的 variants 生成与 active 选定（刷新/切菜单不丢）。
+- 占位图不再作为 variants 展示（当有真实生成资产时）。
 - 资产流水线：严格生成顺序与阻断（KV → env → character → look → shot），下游只会引用已成功生成的上游资产（active variant）。
 - Shot 版本：Shot 版本列表与切换（真实写入 Story state）。
 - 主题与沉浸：Dark/Light、Cinema Mode（全屏）等展示能力。
+- 图片资产支持点击放大查看（Lightbox）。
 - 可观测性：Debug 面板支持 Event Log + LLM Trace（含 promptId/promptVersion）+ Agent/Prompt Registry。
+- Multi-agent 失败不再静默 fallback：在 UI 中可选择 Retry 或显式 single-call fallback。
 
 ### 2.2 关键缺口（从 Demo → 可用产品必须补齐）
 

@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Story, Shot } from '../../types';
 import { X, Play, Pause, Maximize2, SkipForward, Volume2, AlertCircle } from 'lucide-react';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface MasterPlayerProps {
   story: Story;
@@ -81,9 +82,10 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
              ) : (
                  <img 
                     src={currentShot.thumbnailUrl} 
-                    className="w-full h-full object-contain" 
+                    className="w-full h-full object-contain cursor-zoom-in" 
                     alt="Current Shot" 
                     onError={() => setImgError(true)}
+                    onClick={() => currentShot?.thumbnailUrl && openLightbox({ url: currentShot.thumbnailUrl, title: `Shot #${currentShot.sequence}` })}
                  />
              )}
              

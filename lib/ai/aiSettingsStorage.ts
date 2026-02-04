@@ -7,6 +7,8 @@ const normalizeGeminiModel = (model: string): string => {
   if (!m) return 'gemini-3-pro-preview';
   // Gemini 1.5 (including gemini-1.5-flash / -pro) was shut down on 2025-09-29.
   if (m.startsWith('gemini-1.5-')) return 'gemini-3-pro-preview';
+  // We only support a subset of Gemini models; keep users off older/default prototyping names.
+  if (m.startsWith('gemini-2.5-')) return 'gemini-3-pro-preview';
   // Older internal names we used during prototyping.
   if (m === 'gemini-2.0-flash-thinking') return 'gemini-3-pro-preview';
   return m;

@@ -2,7 +2,8 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
-import { scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
+import { createLocalMockProject, scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
+import { isAgentApiError } from '../../lib/ai/agent/apiError';
 import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
 
 interface ProjectCreationWizardProps {
@@ -17,13 +18,16 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
   const [isProcessing, setIsProcessing] = useState(false);
   const [plan, setPlan] = useState<AgentPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [fallbackConfirmArmed, setFallbackConfirmArmed] = useState(false);
+  const [mockFallbackConfirmArmed, setMockFallbackConfirmArmed] = useState(false);
+  const [singleFallbackConfirmArmed, setSingleFallbackConfirmArmed] = useState(false);
+  const [canSingleFallback, setCanSingleFallback] = useState(false);
   const [phase, setPhase] = useState<'scaffold' | 'assets'>('scaffold');
   const [assetTotal, setAssetTotal] = useState(0);
   const [assetDone, setAssetDone] = useState(0);
   const [assetErrors, setAssetErrors] = useState(0);
   const [assetCurrent, setAssetCurrent] = useState<string>('');
   const lastScaffoldRef = useRef<Awaited<ReturnType<typeof scaffoldProjectWithSettings>> | null>(null);
+  const lastScaffoldArgsRef = useRef<{ intent: string; ratio: AspectRatio } | null>(null);
   const storyRef = useRef<Story | null>(null);
 
   const formats: { label: string; ratio: AspectRatio; icon: any }[] = [
@@ -43,7 +47,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
   const resetProgress = () => {
     setPlan(null);
     setError(null);
-    setFallbackConfirmArmed(false);
+    setMockFallbackConfirmArmed(false);
+    setSingleFallbackConfirmArmed(false);
+    setCanSingleFallback(false);
     setPhase('scaffold');
     setAssetTotal(0);
     setAssetDone(0);
@@ -51,6 +57,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     setAssetCurrent('');
     storyRef.current = null;
     lastScaffoldRef.current = null;
+    lastScaffoldArgsRef.current = null;
   };
 
   const runAssets = async (res: Awaited<ReturnType<typeof scaffoldProjectWithSettings>>) => {
@@ -115,11 +122,13 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     });
   };
 
-  const runScaffold = async () => {
+  const runScaffold = async (opts?: { allowSingleFallback?: boolean }) => {
     if (!intent.trim()) return;
     setIsProcessing(true);
     setError(null);
-    setFallbackConfirmArmed(false);
+    setMockFallbackConfirmArmed(false);
+    setSingleFallbackConfirmArmed(false);
+    setCanSingleFallback(false);
     setPhase('scaffold');
     setAssetTotal(0);
     setAssetDone(0);
@@ -127,28 +136,33 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     setAssetCurrent('');
     storyRef.current = null;
 
-    const res = await scaffoldProjectWithSettings({ intent, aspectRatio: ratio, aiSettings });
-    lastScaffoldRef.current = res;
-    storyRef.current = res.story;
-    setPlan(res.plan);
-
-    const isFallback = res.debug?.transport === 'mock' && aiSettings.scaffoldWorker.provider !== 'mock';
-    if ((res.debug?.error || isFallback) && aiSettings.scaffoldWorker.provider !== 'mock') {
-      setError(res.debug?.error || 'Scaffold fell back to local mock output. Confirm to continue or retry.');
-      return;
+    lastScaffoldArgsRef.current = { intent: intent.trim(), ratio };
+    try {
+      const res = await scaffoldProjectWithSettings({
+        intent: intent.trim(),
+        aspectRatio: ratio,
+        aiSettings,
+        allowSingleFallback: Boolean(opts?.allowSingleFallback),
+      });
+      lastScaffoldRef.current = res;
+      storyRef.current = res.story;
+      setPlan(res.plan);
+      await runAssets(res);
+    } catch (e) {
+      if (isAgentApiError(e) && e.bodyJson?.errorCode === 'MULTI_AGENT_FAILED') {
+        setCanSingleFallback(true);
+        setError(String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message || 'Multi-agent scaffold failed'));
+        return;
+      }
+      setCanSingleFallback(false);
+      setError(e instanceof Error ? e.message : String(e));
     }
-
-    await runAssets(res);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     resetProgress();
-    try {
-      await runScaffold();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    await runScaffold({ allowSingleFallback: false });
   };
 
   return (
@@ -192,37 +206,63 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
                                     type="button"
                                     onClick={() => {
                                       setError(null);
-                                      setFallbackConfirmArmed(false);
-                                      runScaffold().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+                                      setMockFallbackConfirmArmed(false);
+                                      setSingleFallbackConfirmArmed(false);
+                                      runScaffold({ allowSingleFallback: false }).catch((e) =>
+                                        setError(e instanceof Error ? e.message : String(e)),
+                                      );
                                     }}
                                     className="px-4 py-2 rounded-xl bg-rose-500/20 border border-rose-500/30 text-rose-100 text-[11px] font-black uppercase tracking-widest hover:bg-rose-500/25"
                                   >
                                     Retry Scaffold
                                   </button>
-                                  {lastScaffoldRef.current && (
+                                  {canSingleFallback && (
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        const res = lastScaffoldRef.current;
-                                        if (!fallbackConfirmArmed) {
-                                          setFallbackConfirmArmed(true);
+                                        if (!singleFallbackConfirmArmed) {
+                                          setSingleFallbackConfirmArmed(true);
                                           return;
                                         }
                                         setError(null);
-                                        setFallbackConfirmArmed(false);
-                                        if (!res) return;
-                                        runAssets(res).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+                                        setSingleFallbackConfirmArmed(false);
+                                        runScaffold({ allowSingleFallback: true }).catch((e) =>
+                                          setError(e instanceof Error ? e.message : String(e)),
+                                        );
                                       }}
                                       className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white/70 text-[11px] font-black uppercase tracking-widest hover:bg-white/10"
                                     >
-                                      {fallbackConfirmArmed ? 'Confirm Fallback' : 'Use Fallback'}
+                                      {singleFallbackConfirmArmed ? 'Confirm Single-call' : 'Use Single-call'}
                                     </button>
                                   )}
                                   <button
                                     type="button"
                                     onClick={() => {
+                                      if (!mockFallbackConfirmArmed) {
+                                        setMockFallbackConfirmArmed(true);
+                                        return;
+                                      }
+                                      const args = lastScaffoldArgsRef.current;
+                                      if (!args) return;
                                       setError(null);
-                                      setFallbackConfirmArmed(false);
+                                      setMockFallbackConfirmArmed(false);
+                                      setSingleFallbackConfirmArmed(false);
+                                      const mockRes = createLocalMockProject(args.intent, args.ratio);
+                                      lastScaffoldRef.current = mockRes as any;
+                                      storyRef.current = mockRes.story;
+                                      setPlan(mockRes.plan);
+                                      runAssets(mockRes as any).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+                                    }}
+                                    className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white/70 text-[11px] font-black uppercase tracking-widest hover:bg-white/10"
+                                  >
+                                    {mockFallbackConfirmArmed ? 'Confirm Local Mock' : 'Use Local Mock'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setError(null);
+                                      setMockFallbackConfirmArmed(false);
+                                      setSingleFallbackConfirmArmed(false);
                                       setIsProcessing(false);
                                     }}
                                     className="text-[11px] font-black uppercase tracking-widest text-rose-200/80 hover:underline"

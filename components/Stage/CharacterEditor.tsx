@@ -4,6 +4,7 @@ import { AlertCircle, Edit3, Film, Image as ImageIcon, Lock, Plus, Save, Shirt, 
 import { Character, CharacterLook, ModelRuntimeSettings, Sequence, Shot } from '../../types';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt } from '../../lib/ai/prompts';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface CharacterEditorProps {
   character: Character;
@@ -30,7 +31,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     const url = String(c.avatarUrl || '').trim();
     if (!url) return { versions: [], activeId: '' };
     const id = 'av-1';
-    return { versions: [{ id, imageUrl: url, createdAt: Date.now(), type: 'base' }], activeId: id };
+    const isDone = (c as any)?.assetState?.status === 'done';
+    return { versions: [{ id, imageUrl: url, createdAt: Date.now(), type: isDone ? 'base' : 'placeholder' }], activeId: id };
   };
 
   const seedLookPreviewVersions = (look: CharacterLook) => {
@@ -39,7 +41,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     const url = String(look.previewUrl || '').trim();
     if (!url) return { versions: [], activeId: '' };
     const id = 'lv-1';
-    return { versions: [{ id, imageUrl: url, createdAt: Date.now(), type: 'base' }], activeId: id };
+    const isDone = (look as any)?.assetState?.status === 'done';
+    return { versions: [{ id, imageUrl: url, createdAt: Date.now(), type: isDone ? 'base' : 'placeholder' }], activeId: id };
   };
 
   const normalizeDraft = (c: Character): Character => {
@@ -110,18 +113,20 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         aspectRatio: '1:1',
         references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
         strict: true,
+        requireAllReferences: Boolean(keyVisualUrl),
       });
       const now = Date.now();
       const seeded = seedAvatarVersions(draft);
       const baseVersions =
         Array.isArray((draft as any).avatarVersions) && (draft as any).avatarVersions.length ? (draft as any).avatarVersions : seeded.versions;
+      const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
       const newId = `av-${now}-${Math.random().toString(16).slice(2, 8)}`;
       const next: Character = {
         ...draft,
         avatarUrl: out.imageUrl,
         avatarVersions: [
-          ...baseVersions,
-          { id: newId, imageUrl: out.imageUrl, createdAt: now, type: baseVersions.length ? 'variation' : 'base' },
+          ...cleanedBase,
+          { id: newId, imageUrl: out.imageUrl, createdAt: now, type: cleanedBase.length ? 'variation' : 'base' },
         ] as any,
         activeAvatarVersionId: newId as any,
         assetState: {
@@ -141,7 +146,9 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   };
 
   const avatarVersions = (draft as any).avatarVersions || seedAvatarVersions(draft).versions;
-  const activeAvatarVersionId = (draft as any).activeAvatarVersionId || avatarVersions[avatarVersions.length - 1]?.id || '';
+  const nonPlaceholderAvatarVersions = (avatarVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
+  const displayAvatarVersions = nonPlaceholderAvatarVersions.length ? nonPlaceholderAvatarVersions : avatarVersions;
+  const activeAvatarVersionId = (draft as any).activeAvatarVersionId || displayAvatarVersions[displayAvatarVersions.length - 1]?.id || '';
 
   const handleSelectAvatarVariant = (versionId: string) => {
     const v = (avatarVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
@@ -173,11 +180,13 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         aspectRatio: '1:1',
         references: refs,
         strict: true,
+        requireAllReferences: refs.length > 0,
       });
       const now = Date.now();
       const seededLook = seedLookPreviewVersions(look);
       const baseVersions =
         Array.isArray((look as any).previewVersions) && (look as any).previewVersions.length ? (look as any).previewVersions : seededLook.versions;
+      const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
       const newId = `lv-${now}-${Math.random().toString(16).slice(2, 8)}`;
       const next: Character = {
         ...draft,
@@ -187,8 +196,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                 ...l,
                 previewUrl: out.imageUrl,
                 previewVersions: [
-                  ...baseVersions,
-                  { id: newId, imageUrl: out.imageUrl, createdAt: now, type: baseVersions.length ? 'variation' : 'base' },
+                  ...cleanedBase,
+                  { id: newId, imageUrl: out.imageUrl, createdAt: now, type: cleanedBase.length ? 'variation' : 'base' },
                 ] as any,
                 activePreviewVersionId: newId as any,
                 assetState: {
@@ -290,10 +299,14 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-                      <div className="relative w-full max-w-md aspect-square bg-zinc-900 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl">
-                          <img src={draft.avatarUrl} className="w-full h-full object-cover" />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-70"></div>
-                      </div>
+	                      <div className="relative w-full max-w-md aspect-square bg-zinc-900 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl">
+	                          <img
+	                            src={draft.avatarUrl}
+	                            className="w-full h-full object-cover cursor-zoom-in"
+	                            onClick={() => draft.avatarUrl && openLightbox({ url: draft.avatarUrl, title: `Character: ${draft.name}` })}
+	                          />
+	                          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-70"></div>
+	                      </div>
                       <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
                         <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400 mb-3">Workflow</div>
                         <div className="text-sm text-zinc-200 font-bold">1) Generate Avatar</div>
@@ -308,14 +321,14 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                       </div>
                     </div>
 
-                    {avatarVersions.length > 1 && (
+                    {displayAvatarVersions.length > 1 && (
                       <div className="mt-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4">
                         <div className="flex items-center justify-between mb-3">
                           <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Avatar Variants</div>
-                          <div className="text-[10px] text-zinc-500 font-mono">{avatarVersions.length}</div>
+                          <div className="text-[10px] text-zinc-500 font-mono">{displayAvatarVersions.length}</div>
                         </div>
                         <div className="flex gap-3 overflow-x-auto no-scrollbar">
-                          {avatarVersions.slice().reverse().map((v: any) => {
+                          {displayAvatarVersions.slice().reverse().map((v: any) => {
                             const isActive = String(v.id) === String(activeAvatarVersionId);
                             return (
                               <button
@@ -326,10 +339,17 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                                 }`}
                                 title={isActive ? 'Active' : 'Set active'}
                               >
-                                <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
-                              </button>
-                            );
-                          })}
+	                                <img
+	                                  src={String(v.imageUrl)}
+	                                  className="w-full h-full object-cover cursor-zoom-in"
+	                                  onClick={(e) => {
+	                                    e.stopPropagation();
+	                                    openLightbox({ url: String(v.imageUrl), title: `Avatar variant: ${draft.name}` });
+	                                  }}
+	                                />
+	                              </button>
+	                            );
+	                          })}
                         </div>
                       </div>
                     )}
@@ -358,15 +378,21 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
 	                    {draft.looks.map((look) => {
                         const seeded = seedLookPreviewVersions(look);
                         const lookVersions = (look as any).previewVersions || seeded.versions;
+                        const nonPlaceholderLookVersions = (lookVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
+                        const displayLookVersions = nonPlaceholderLookVersions.length ? nonPlaceholderLookVersions : lookVersions;
                         const activeLookVersionId =
-                          (look as any).activePreviewVersionId || lookVersions[lookVersions.length - 1]?.id || '';
+                          (look as any).activePreviewVersionId || displayLookVersions[displayLookVersions.length - 1]?.id || '';
                         return (
                           <div
                             key={look.id}
                             className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex gap-4 hover:border-indigo-500/50 transition-all shadow-xl"
                           >
                             <div className="w-32 h-40 rounded-xl bg-zinc-800 overflow-hidden shrink-0 border border-white/5">
-                              <img src={look.previewUrl} className="w-full h-full object-cover" />
+                              <img
+                                src={look.previewUrl}
+                                className="w-full h-full object-cover cursor-zoom-in"
+                                onClick={() => look.previewUrl && openLightbox({ url: look.previewUrl, title: `Look: ${draft.name} / ${look.name}` })}
+                              />
                             </div>
                             <div className="flex-1 flex flex-col">
                               <div className="flex justify-between items-start mb-1">
@@ -400,9 +426,9 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                               </div>
                               <p className="text-xs text-zinc-400 leading-relaxed line-clamp-3">{look.description}</p>
 
-                              {lookVersions.length > 1 && (
+                              {displayLookVersions.length > 1 && (
                                 <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
-                                  {lookVersions.slice().reverse().map((v: any) => {
+                                  {displayLookVersions.slice().reverse().map((v: any) => {
                                     const isActive = String(v.id) === String(activeLookVersionId);
                                     return (
                                       <button
@@ -413,7 +439,14 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                                         }`}
                                         title={isActive ? 'Active' : 'Set active'}
                                       >
-                                        <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+                                        <img
+                                          src={String(v.imageUrl)}
+                                          className="w-full h-full object-cover cursor-zoom-in"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            openLightbox({ url: String(v.imageUrl), title: `Look variant: ${draft.name} / ${look.name}` });
+                                          }}
+                                        />
                                       </button>
                                     );
                                   })}

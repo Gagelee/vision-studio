@@ -1,6 +1,7 @@
 import React from 'react';
 import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug } from 'lucide-react';
 import { Story, SelectionState } from '../../types';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface SidebarProps {
   story: Story;
@@ -196,7 +197,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             }`}
                             onClick={() => onSelect({ type: 'character', id: char.id })}
                          >
-                            <img src={char.avatarUrl} className="w-4 h-4 rounded-full object-cover bg-zinc-200" alt={char.name} />
+                            <img
+                              src={char.avatarUrl}
+                              className="w-4 h-4 rounded-full object-cover bg-zinc-200 cursor-zoom-in"
+                              alt={char.name}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (char.avatarUrl) openLightbox({ url: char.avatarUrl, title: `Character: ${char.name}` });
+                              }}
+                            />
                             <span className="text-sm truncate">{char.name}</span>
                          </div>
                      ))}

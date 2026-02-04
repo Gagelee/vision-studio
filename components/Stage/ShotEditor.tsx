@@ -4,6 +4,8 @@ import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Stor
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
 import { buildShotImagePrompt } from '../../lib/ai/prompts';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, getStoryActiveKvUrl } from '../../lib/ai/assetRefs';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ShotEditorProps {
   shot: Shot;
@@ -28,7 +30,11 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   onToggleImmersive,
   imageSettings,
 }) => {
-  const activeVersion = shot.versions.find(v => v.id === shot.activeVersionId) || shot.versions[0];
+  const allVersions = Array.isArray(shot.versions) ? shot.versions : [];
+  const nonPlaceholderVersions = allVersions.filter((v) => String(v?.type || '') !== 'placeholder');
+  const displayVersions = nonPlaceholderVersions.length ? nonPlaceholderVersions : allVersions;
+  const activeVersion =
+    displayVersions.find((v) => v.id === shot.activeVersionId) || displayVersions[displayVersions.length - 1] || null;
   const [isHistoryOpen, setIsHistoryOpen] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
@@ -65,18 +71,20 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 
       const isDone = (st: any) => st && st.status === 'done';
 
-      if (!story || !isDone((story as any).masterKvState) || !story.keyVisualUrl) {
+      const kvUrl = story ? getStoryActiveKvUrl(story) : '';
+      if (!story || !isDone((story as any).masterKvState) || !kvUrl) {
         throw new Error('Blocked: Master KV not generated yet. Please generate Master KV first.');
       }
 
       const loc = story?.locations?.find((l) => l.id === shot.locationId);
-      if (!loc || !isDone((loc as any).assetState) || !loc.previewUrl) {
+      const locUrl = loc ? getLocationActivePreviewUrl(loc) : '';
+      if (!loc || !isDone((loc as any).assetState) || !locUrl) {
         throw new Error('Blocked: Environment asset not generated yet. Please generate the environment first.');
       }
 
       const references: ImageReference[] = [];
-      references.push({ url: story.keyVisualUrl, label: 'master kv' });
-      references.push({ url: loc.previewUrl, label: `environment: ${loc.name}` });
+      references.push({ url: kvUrl, label: 'master kv' });
+      references.push({ url: locUrl, label: `environment: ${loc.name}` });
 
       const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
       const castArr = Array.isArray(cast) ? cast : [];
@@ -85,17 +93,19 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         if (!charId) continue;
         const activeLookId = String(c?.activeLookId || '');
         const master = story?.characters?.find((x) => x.id === charId);
-        if (!master || !isDone((master as any).assetState) || !master.avatarUrl) {
+        const avatarUrl = master ? getCharacterActiveAvatarUrl(master) : '';
+        if (!master || !isDone((master as any).assetState) || !avatarUrl) {
           throw new Error('Blocked: Character avatar not generated yet. Please generate character avatar(s) first.');
         }
         if (activeLookId) {
           const look = master.looks?.find((lk) => lk.id === activeLookId);
-          if (!look || !isDone((look as any).assetState) || !look.previewUrl) {
+          const lookUrl = look ? getLookActivePreviewUrl(look) : '';
+          if (!look || !isDone((look as any).assetState) || !lookUrl) {
             throw new Error('Blocked: Character look not generated yet. Please generate the look first.');
           }
-          references.push({ url: look.previewUrl, label: `character: ${master.name} (${look.name})` });
+          references.push({ url: lookUrl, label: `character: ${master.name} (${look.name})` });
         } else {
-          references.push({ url: master.avatarUrl, label: `character: ${master.name}` });
+          references.push({ url: avatarUrl, label: `character: ${master.name}` });
         }
       }
 
@@ -116,18 +126,36 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         aspectRatio,
         references,
         strict: true,
+        requireAllReferences: references.length > 0,
       });
 
+      const now = Date.now();
+      const existing = Array.isArray(shot.versions) ? shot.versions : [];
+      const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+
+      // If we only have a placeholder base, replace it so placeholders never show up as variants.
+      if (existing.length === 1 && cleaned.length === 0 && existing[0]) {
+        const base = existing[0];
+        onUpdateShot({
+          ...shot,
+          versions: [{ ...base, imageUrl: img.imageUrl, createdAt: now, type: 'base' }],
+          activeVersionId: base.id,
+          thumbnailUrl: img.imageUrl,
+        });
+        return;
+      }
+
+      const baseList = cleaned.length ? cleaned : existing;
       const newVersion: ShotVersion = {
-        id: `v${shot.versions.length + 1}-${Date.now()}`,
+        id: `v${baseList.length + 1}-${now}`,
         imageUrl: img.imageUrl,
-        createdAt: Date.now(),
-        type: 'variation',
+        createdAt: now,
+        type: baseList.length ? 'variation' : 'base',
       };
 
       onUpdateShot({
         ...shot,
-        versions: [...shot.versions, newVersion],
+        versions: [...baseList, newVersion],
         activeVersionId: newVersion.id,
         thumbnailUrl: newVersion.imageUrl,
       });
@@ -195,13 +223,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
-                {activeVersion ? (
-                    <img 
-                        src={activeVersion.imageUrl} 
-                        alt={`Shot ${shot.sequence} - Version ${activeVersion.id}`}
-                        className="w-full h-full object-contain bg-black"
-                    />
-                ) : (
+	                {activeVersion ? (
+	                    <img 
+	                        src={activeVersion.imageUrl} 
+	                        alt={`Shot ${shot.sequence} - Version ${activeVersion.id}`}
+	                        className="w-full h-full object-contain bg-black cursor-zoom-in"
+	                        onClick={() => activeVersion?.imageUrl && openLightbox({ url: activeVersion.imageUrl, title: `Shot #${shot.sequence}` })}
+	                    />
+	                ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
                         <MonitorPlay className="w-12 h-12 opacity-50" />
                         <span>No generated footage</span>
@@ -230,7 +259,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             </div>
             <div className="flex items-center gap-3">
                 <div className="text-[10px] text-zinc-600">
-                    {shot.versions.length} versions generated
+                    {displayVersions.length} versions generated
                 </div>
                 <button className="text-zinc-500 hover:text-white">
                     {isHistoryOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
@@ -252,16 +281,24 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             </button>
 
             {/* Version List */}
-            {shot.versions.slice().reverse().map((version, index) => {
+            {displayVersions.slice().reverse().map((version, index) => {
                 const isActive = version.id === shot.activeVersionId;
-                const versionNumber = shot.versions.length - index;
+                const versionNumber = displayVersions.length - index;
                 return (
                     <div 
                         key={version.id}
                         onClick={(e) => { e.stopPropagation(); handleVersionSelect(version.id); }}
                         className={`relative flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden border-2 cursor-pointer transition-all group shadow-lg ${isActive ? 'border-indigo-500 ring-4 ring-indigo-500/10' : 'border-zinc-800 hover:border-zinc-600'}`}
                     >
-                        <img src={version.imageUrl} className="w-full h-full object-cover" loading="lazy" />
+	                        <img
+	                          src={version.imageUrl}
+	                          className="w-full h-full object-cover cursor-zoom-in"
+	                          loading="lazy"
+	                          onClick={(e) => {
+	                            e.stopPropagation();
+	                            openLightbox({ url: version.imageUrl, title: `Shot #${shot.sequence} (${version.id})` });
+	                          }}
+	                        />
                         
                         <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
                             v{versionNumber}

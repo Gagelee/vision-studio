@@ -15,9 +15,11 @@ import { StageView } from './components/Stage/StageView';
 import { AiSettingsModal } from './components/Settings/AiSettingsModal';
 import { StartProductionModal } from './components/Production/StartProductionModal';
 import { DebugPanel } from './components/Debug/DebugPanel';
+import { ImageLightbox } from './components/Overlay/ImageLightbox';
 import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
 import { loadAiSettings, saveAiSettings } from './lib/ai/aiSettingsStorage';
 import { runDirectorCommand, type DirectorCommandResponse } from './lib/ai/agent/direct';
+import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
 import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
@@ -65,7 +67,7 @@ function createBlankShot(
     duration: typeof init?.duration === 'number' && Number.isFinite(init.duration) ? Math.max(1, Math.round(init.duration)) : 4,
     thumbnailUrl: thumb,
     activeVersionId: 'v1',
-    versions: [{ id: 'v1', imageUrl: thumb, createdAt: now, type: 'base' }],
+    versions: [{ id: 'v1', imageUrl: thumb, createdAt: now, type: 'placeholder' }],
     elements: {
       [ElementType.SCRIPT]: { type: ElementType.SCRIPT, prompt: '', status: 'auto' },
       [ElementType.CASTING]: { type: ElementType.CASTING, prompt: '', status: 'manual', metadata: { characters: [] } },
@@ -413,6 +415,10 @@ export default function App() {
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'info' }>>([]);
   const [pendingDirectorFallback, setPendingDirectorFallback] = useState<null | { projectId: string; res: DirectorCommandResponse }>(null);
   const [pendingDirectorFallbackArmed, setPendingDirectorFallbackArmed] = useState(false);
+  const [pendingDirectorMultiAgentFailure, setPendingDirectorMultiAgentFailure] = useState<
+    null | { projectId: string; message: string; selection: SelectionState; error: string; details?: any }
+  >(null);
+  const [pendingDirectorSingleFallbackArmed, setPendingDirectorSingleFallbackArmed] = useState(false);
 
   const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace());
   const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
@@ -996,6 +1002,7 @@ export default function App() {
 		  const handleDirectorMessage = async (msg: string) => {
 		    if (!activeStory || !workspace.activeProjectId) return;
 	      const projectId = workspace.activeProjectId;
+        const selectionSnapshot = selection;
 
 	    const userEntry: AgentLogEntry = {
 	      id: `u-${Date.now()}`,
@@ -1009,12 +1016,52 @@ export default function App() {
 	      [projectId]: [...(prev[projectId] || []), userEntry],
 	    }));
 
-		    const res = await runDirectorCommand({
-		      message: msg,
-		      selection,
-		      story: activeStory,
-		      settings: aiSettings.direct,
-		    });
+        let res: DirectorCommandResponse;
+        try {
+          res = await runDirectorCommand({
+            message: msg,
+            selection: selectionSnapshot,
+            story: activeStory,
+            settings: aiSettings.direct,
+            allowSingleFallback: false,
+          });
+        } catch (e) {
+          const errMsg = isAgentApiError(e)
+            ? String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message)
+            : e instanceof Error
+              ? e.message
+              : String(e);
+
+          const agentEntry: AgentLogEntry = {
+            id: `a-${Date.now()}`,
+            role: 'agent',
+            content: `Director request failed: ${errMsg}`,
+            timestamp: Date.now(),
+            actionDetails: { type: 'DIRECTOR_ERROR' },
+            debug: isAgentApiError(e) ? { ...(e.bodyJson || {}), status: e.status, url: e.url } : { error: errMsg },
+          };
+
+          setAgentHistoryByProject((prev) => ({
+            ...prev,
+            [projectId]: [...(prev[projectId] || []), agentEntry],
+          }));
+
+          if (isAgentApiError(e) && e.bodyJson?.errorCode === 'MULTI_AGENT_FAILED') {
+            setPendingDirectorMultiAgentFailure({
+              projectId,
+              message: msg,
+              selection: selectionSnapshot,
+              error: errMsg,
+              details: e.bodyJson,
+            });
+            setPendingDirectorSingleFallbackArmed(false);
+            addToast('Director multi-agent failed. Retry or choose single-call fallback.', 'info');
+          } else {
+            addToast('Director request failed. Open Debug (Ctrl/Cmd+Shift+D) for details.', 'info');
+          }
+          return;
+        }
+
         const isFallback = res.debug?.transport === 'rule' && aiSettings.direct.provider !== 'mock';
 
 	    const agentEntry: AgentLogEntry = {
@@ -1040,6 +1087,61 @@ export default function App() {
 		
         applyDirectorActions(projectId, activeStory, res.actions);
 		  };
+
+      const retryDirectorAfterFailure = async (allowSingleFallback: boolean) => {
+        if (!pendingDirectorMultiAgentFailure || !activeStory || !workspace.activeProjectId) return;
+        if (pendingDirectorMultiAgentFailure.projectId !== activeStory.id) return;
+
+        const projectId = pendingDirectorMultiAgentFailure.projectId;
+        const msg = pendingDirectorMultiAgentFailure.message;
+        const selectionSnapshot = pendingDirectorMultiAgentFailure.selection;
+
+        try {
+          const res = await runDirectorCommand({
+            message: msg,
+            selection: selectionSnapshot,
+            story: activeStory,
+            settings: aiSettings.direct,
+            allowSingleFallback,
+          });
+
+          const agentEntry: AgentLogEntry = {
+            id: `sys-${Date.now()}`,
+            role: 'system',
+            content: `Director retry (${allowSingleFallback ? 'single-call fallback enabled' : 'multi-agent only'}) succeeded.`,
+            timestamp: Date.now(),
+            actionDetails: { type: 'DIRECTOR_RETRY', actions: res.actions, planId: res.plan.id },
+            debug: res.debug,
+          };
+          setAgentHistoryByProject((prev) => ({
+            ...prev,
+            [projectId]: [...(prev[projectId] || []), agentEntry],
+          }));
+
+          const isFallback = res.debug?.transport === 'rule' && aiSettings.direct.provider !== 'mock';
+          if (isFallback) {
+            setPendingDirectorFallback({ projectId, res });
+            setPendingDirectorFallbackArmed(false);
+            setPendingDirectorMultiAgentFailure(null);
+            setPendingDirectorSingleFallbackArmed(false);
+            addToast('Director returned fallback output. Confirm before applying.', 'info');
+            return;
+          }
+
+          applyDirectorActions(projectId, activeStory, res.actions);
+          setPendingDirectorMultiAgentFailure(null);
+          setPendingDirectorSingleFallbackArmed(false);
+        } catch (e) {
+          const errMsg = isAgentApiError(e)
+            ? String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message)
+            : e instanceof Error
+              ? e.message
+              : String(e);
+          setPendingDirectorMultiAgentFailure((prev) => (prev ? { ...prev, error: errMsg, details: isAgentApiError(e) ? e.bodyJson : prev.details } : prev));
+          setPendingDirectorSingleFallbackArmed(false);
+          addToast('Director retry failed. Check Debug.', 'info');
+        }
+      };
 
   // ----- Screens -----
 
@@ -1286,6 +1388,74 @@ export default function App() {
           agentHistory={agentHistory}
           onClose={() => setIsDebugOpen(false)}
         />
+      )}
+
+      <ImageLightbox />
+
+      {pendingDirectorMultiAgentFailure && pendingDirectorMultiAgentFailure.projectId === activeStory.id && !isPlayingMaster && (
+        <div className="fixed inset-0 z-[3490] bg-black/60 backdrop-blur-sm p-6 flex items-center justify-center">
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden">
+            <div className="h-14 px-5 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-amber-500" />
+                <div className="text-sm font-bold">Multi-agent failed</div>
+              </div>
+              <button
+                onClick={() => {
+                  setPendingDirectorMultiAgentFailure(null);
+                  setPendingDirectorSingleFallbackArmed(false);
+                }}
+                className="p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
+                title="Close"
+              >
+                <X className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="text-sm text-zinc-700 dark:text-zinc-200">
+                The Director multi-agent pipeline failed. Retry multi-agent, or explicitly opt into a single-call fallback.
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4 text-sm text-zinc-700 dark:text-zinc-200">
+                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Error</div>
+                <div className="whitespace-pre-wrap break-words">{pendingDirectorMultiAgentFailure.error}</div>
+              </div>
+
+              {pendingDirectorMultiAgentFailure.details && (
+                <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Trace</div>
+                  </div>
+                  <pre className="p-4 text-[11px] leading-relaxed font-mono whitespace-pre-wrap text-zinc-700 dark:text-zinc-200 max-h-56 overflow-y-auto custom-scrollbar">
+                    {JSON.stringify(pendingDirectorMultiAgentFailure.details, null, 2)}
+                  </pre>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  onClick={() => retryDirectorAfterFailure(false)}
+                  className="px-4 py-2 rounded-xl bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-200 text-[11px] font-black uppercase tracking-widest hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  Retry Multi-agent
+                </button>
+                <button
+                  onClick={() => {
+                    if (!pendingDirectorSingleFallbackArmed) {
+                      setPendingDirectorSingleFallbackArmed(true);
+                      return;
+                    }
+                    retryDirectorAfterFailure(true);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest hover:opacity-90"
+                >
+                  {pendingDirectorSingleFallbackArmed ? 'Confirm Single-call' : 'Use Single-call'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {pendingDirectorFallback && pendingDirectorFallback.projectId === activeStory.id && !isPlayingMaster && (

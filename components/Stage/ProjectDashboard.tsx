@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildMasterKeyVisualPrompt } from '../../lib/ai/prompts';
+import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ProjectDashboardProps {
   story: Story;
@@ -48,14 +49,21 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
     const url = String(story.keyVisualUrl || '').trim();
     if (!url) return [];
     const createdAt = (story as any).masterKvState?.lastAttemptAt || story.createdAt || Date.now();
-    return [{ id: 'kv-1', imageUrl: url, createdAt, type: 'base' }];
+    const isDone = (story as any)?.masterKvState?.status === 'done';
+    return [{ id: 'kv-1', imageUrl: url, createdAt, type: isDone ? 'base' : 'placeholder' }];
   }, [story]);
+
+  const nonPlaceholderKvVersions = useMemo(() => {
+    return (kvVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
+  }, [kvVersions]);
+
+  const displayKvVersions = nonPlaceholderKvVersions.length ? nonPlaceholderKvVersions : kvVersions;
 
   const activeKvId = useMemo(() => {
     const id = String((story as any).activeKeyVisualVersionId || '').trim();
     if (id) return id;
-    return String(kvVersions[kvVersions.length - 1]?.id || '');
-  }, [kvVersions, story]);
+    return String(displayKvVersions[displayKvVersions.length - 1]?.id || '');
+  }, [displayKvVersions, story]);
 
   const handleSelectKvVariant = (versionId: string) => {
     const v = (kvVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
@@ -93,9 +101,10 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
       const baseExisting = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
       const baseSeed =
         !baseExisting.length && story.keyVisualUrl
-          ? [{ id: `kv-seed-${now}`, imageUrl: String(story.keyVisualUrl), createdAt: now, type: 'base' }]
+          ? [{ id: `kv-seed-${now}`, imageUrl: String(story.keyVisualUrl), createdAt: now, type: 'placeholder' }]
           : [];
       const baseVersions = baseExisting.length ? baseExisting : baseSeed;
+      const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
 
       const refs = story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'current master kv' }] : [];
       const out = await generateImageFromPrompt({
@@ -104,13 +113,14 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
         aspectRatio: story.aspectRatio,
         references: refs,
         strict: true,
+        requireAllReferences: refs.length > 0,
       });
 
       const id = `kv-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
       const createdAt = Date.now();
       const nextVersions = [
-        ...baseVersions,
-        { id, imageUrl: out.imageUrl, createdAt, type: baseVersions.length ? 'variation' : 'base' },
+        ...cleanedBase,
+        { id, imageUrl: out.imageUrl, createdAt, type: cleanedBase.length ? 'variation' : 'base' },
       ];
 
       onUpdateStory((prev) => ({
@@ -157,6 +167,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
             src={story.keyVisualUrl} 
             className="w-full h-full object-cover transition-transform duration-[10s] group-hover:scale-110 ease-out"
             alt="Master Preview"
+            onClick={() => story.keyVisualUrl && openLightbox({ url: story.keyVisualUrl, title: 'Master KV' })}
           />
           
           {/* Visual Texture (Grain/Fog) */}
@@ -265,7 +276,12 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           <div className="p-10 grid grid-cols-1 lg:grid-cols-2 gap-10 items-start">
             <div className="relative aspect-video rounded-3xl overflow-hidden bg-zinc-100 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 shadow-2xl">
               {story.keyVisualUrl ? (
-                <img src={story.keyVisualUrl} className="w-full h-full object-cover" alt="Master KV" />
+                <img
+                  src={story.keyVisualUrl}
+                  className="w-full h-full object-cover cursor-zoom-in"
+                  alt="Master KV"
+                  onClick={() => story.keyVisualUrl && openLightbox({ url: story.keyVisualUrl, title: 'Master KV' })}
+                />
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-zinc-400">
                   <ImageIcon className="w-8 h-8" />
@@ -276,13 +292,13 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
 
             <div className="space-y-4">
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Variants</div>
-              {kvVersions.length <= 1 ? (
+              {displayKvVersions.length <= 1 ? (
                 <div className="text-sm text-zinc-500 dark:text-zinc-400">
                   Generate more variants to audition different global art directions, then click one to set active.
                 </div>
               ) : (
                 <div className="flex gap-3 overflow-x-auto no-scrollbar">
-                  {kvVersions.slice().reverse().map((v: any) => {
+                  {displayKvVersions.slice().reverse().map((v: any) => {
                     const isActive = String(v.id) === String(activeKvId);
                     return (
                       <button
@@ -293,7 +309,14 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                         }`}
                         title={isActive ? 'Active' : 'Set active'}
                       >
-                        <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+                        <img
+                          src={String(v.imageUrl)}
+                          className="w-full h-full object-cover"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openLightbox({ url: String(v.imageUrl), title: `Master KV Variant` });
+                          }}
+                        />
                       </button>
                     );
                   })}
@@ -331,7 +354,14 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                                 <div className="flex -space-x-3">
                                     {seq.shots.slice(0, 4).map(s => (
                                         <div key={s.id} className="w-10 h-10 rounded-full border-2 border-white dark:border-zinc-900 overflow-hidden bg-zinc-800 shadow-xl">
-                                            <img src={s.thumbnailUrl} className="w-full h-full object-cover" />
+                                            <img
+                                              src={s.thumbnailUrl}
+                                              className="w-full h-full object-cover cursor-zoom-in"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (s.thumbnailUrl) openLightbox({ url: s.thumbnailUrl, title: `Shot #${s.sequence}` });
+                                              }}
+                                            />
                                         </div>
                                     ))}
                                 </div>
