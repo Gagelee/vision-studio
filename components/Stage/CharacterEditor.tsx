@@ -24,14 +24,47 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   imageSettings,
   keyVisualUrl,
 }) => {
-  const [draft, setDraft] = useState<Character>(character);
+  const seedAvatarVersions = (c: Character) => {
+    const existing = Array.isArray((c as any).avatarVersions) ? (c as any).avatarVersions : [];
+    if (existing.length) return { versions: existing, activeId: (c as any).activeAvatarVersionId || existing[existing.length - 1]?.id || '' };
+    const url = String(c.avatarUrl || '').trim();
+    if (!url) return { versions: [], activeId: '' };
+    const id = 'av-1';
+    return { versions: [{ id, imageUrl: url, createdAt: Date.now(), type: 'base' }], activeId: id };
+  };
+
+  const seedLookPreviewVersions = (look: CharacterLook) => {
+    const existing = Array.isArray((look as any).previewVersions) ? (look as any).previewVersions : [];
+    if (existing.length) return { versions: existing, activeId: (look as any).activePreviewVersionId || existing[existing.length - 1]?.id || '' };
+    const url = String(look.previewUrl || '').trim();
+    if (!url) return { versions: [], activeId: '' };
+    const id = 'lv-1';
+    return { versions: [{ id, imageUrl: url, createdAt: Date.now(), type: 'base' }], activeId: id };
+  };
+
+  const normalizeDraft = (c: Character): Character => {
+    const seededAvatar = seedAvatarVersions(c);
+    const nextLooks = (c.looks || []).map((lk) => {
+      const existing = Array.isArray((lk as any).previewVersions) ? (lk as any).previewVersions : [];
+      if (existing.length) return lk;
+      const seeded = seedLookPreviewVersions(lk);
+      if (!seeded.versions.length) return lk;
+      return { ...lk, previewVersions: seeded.versions, activePreviewVersionId: seeded.activeId } as any;
+    });
+
+    const hasAvatarVersions = Array.isArray((c as any).avatarVersions) && (c as any).avatarVersions.length;
+    const avatarPatch = hasAvatarVersions || !seededAvatar.versions.length ? {} : { avatarVersions: seededAvatar.versions, activeAvatarVersionId: seededAvatar.activeId };
+    return { ...c, ...avatarPatch, looks: nextLooks } as any;
+  };
+
+  const [draft, setDraft] = useState<Character>(() => normalizeDraft(character));
   const [editingLook, setEditingLook] = useState<CharacterLook | null>(null);
   const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
   const [generatingLookIds, setGeneratingLookIds] = useState<Record<string, boolean>>({});
   const [generationError, setGenerationError] = useState<string | null>(null);
   
   useEffect(() => {
-    setDraft(character);
+    setDraft(normalizeDraft(character));
   }, [character.id]);
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(character);
@@ -79,9 +112,18 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         strict: true,
       });
       const now = Date.now();
+      const seeded = seedAvatarVersions(draft);
+      const baseVersions =
+        Array.isArray((draft as any).avatarVersions) && (draft as any).avatarVersions.length ? (draft as any).avatarVersions : seeded.versions;
+      const newId = `av-${now}-${Math.random().toString(16).slice(2, 8)}`;
       const next: Character = {
         ...draft,
         avatarUrl: out.imageUrl,
+        avatarVersions: [
+          ...baseVersions,
+          { id: newId, imageUrl: out.imageUrl, createdAt: now, type: baseVersions.length ? 'variation' : 'base' },
+        ] as any,
+        activeAvatarVersionId: newId as any,
         assetState: {
           status: 'done',
           lastError: '',
@@ -96,6 +138,22 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     } finally {
       setIsGeneratingAvatar(false);
     }
+  };
+
+  const avatarVersions = (draft as any).avatarVersions || seedAvatarVersions(draft).versions;
+  const activeAvatarVersionId = (draft as any).activeAvatarVersionId || avatarVersions[avatarVersions.length - 1]?.id || '';
+
+  const handleSelectAvatarVariant = (versionId: string) => {
+    const v = (avatarVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
+    if (!v?.imageUrl) return;
+    const next: Character = {
+      ...draft,
+      avatarUrl: String(v.imageUrl),
+      avatarVersions,
+      activeAvatarVersionId: String(versionId) as any,
+    };
+    setDraft(next);
+    onSave(next);
   };
 
   const handleGenerateLook = async (look: CharacterLook) => {
@@ -117,6 +175,10 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         strict: true,
       });
       const now = Date.now();
+      const seededLook = seedLookPreviewVersions(look);
+      const baseVersions =
+        Array.isArray((look as any).previewVersions) && (look as any).previewVersions.length ? (look as any).previewVersions : seededLook.versions;
+      const newId = `lv-${now}-${Math.random().toString(16).slice(2, 8)}`;
       const next: Character = {
         ...draft,
         looks: (draft.looks || []).map((l) =>
@@ -124,6 +186,11 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
             ? {
                 ...l,
                 previewUrl: out.imageUrl,
+                previewVersions: [
+                  ...baseVersions,
+                  { id: newId, imageUrl: out.imageUrl, createdAt: now, type: baseVersions.length ? 'variation' : 'base' },
+                ] as any,
+                activePreviewVersionId: newId as any,
                 assetState: {
                   status: 'done',
                   lastError: '',
@@ -141,6 +208,25 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     } finally {
       setGeneratingLookIds((m) => ({ ...m, [look.id]: false }));
     }
+  };
+
+  const handleSelectLookVariant = (lookId: string, versionId: string) => {
+    const lk = (draft.looks || []).find((l) => l.id === lookId);
+    if (!lk) return;
+    const seeded = seedLookPreviewVersions(lk);
+    const versions = (lk as any).previewVersions || seeded.versions;
+    const v = (versions || []).find((x: any) => String(x?.id || '') === String(versionId));
+    if (!v?.imageUrl) return;
+    const next: Character = {
+      ...draft,
+      looks: (draft.looks || []).map((l) =>
+        l.id === lookId
+          ? { ...l, previewUrl: String(v.imageUrl), previewVersions: versions, activePreviewVersionId: String(versionId) as any }
+          : l,
+      ),
+    };
+    setDraft(next);
+    onSave(next);
   };
 
   return (
@@ -199,12 +285,12 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                           title={!canGenerate ? 'Image provider is Mock' : 'Generate base avatar'}
                         >
                           <Sparkles className={`w-4 h-4 ${isGeneratingAvatar ? 'animate-pulse' : ''}`} />
-                          {isGeneratingAvatar ? 'Generating...' : 'Generate Avatar'}
+                          {isGeneratingAvatar ? 'Generating...' : draft.avatarUrl ? 'Generate Variant' : 'Generate Avatar'}
                         </button>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-                      <div className="relative w-full max-w-sm aspect-square bg-zinc-900 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl">
+                      <div className="relative w-full max-w-md aspect-square bg-zinc-900 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl">
                           <img src={draft.avatarUrl} className="w-full h-full object-cover" />
                           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-70"></div>
                       </div>
@@ -221,6 +307,32 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                         )}
                       </div>
                     </div>
+
+                    {avatarVersions.length > 1 && (
+                      <div className="mt-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Avatar Variants</div>
+                          <div className="text-[10px] text-zinc-500 font-mono">{avatarVersions.length}</div>
+                        </div>
+                        <div className="flex gap-3 overflow-x-auto no-scrollbar">
+                          {avatarVersions.slice().reverse().map((v: any) => {
+                            const isActive = String(v.id) === String(activeAvatarVersionId);
+                            return (
+                              <button
+                                key={String(v.id)}
+                                onClick={() => handleSelectAvatarVariant(String(v.id))}
+                                className={`relative w-20 aspect-square rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
+                                  isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
+                                }`}
+                                title={isActive ? 'Active' : 'Set active'}
+                              >
+                                <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     {generationError && (
                       <div className="mt-4 text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
                         Generate failed: {generationError}
@@ -243,39 +355,74 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                     </div>
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-	                        {draft.looks.map(look => (
-	                            <div key={look.id} className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex gap-4 hover:border-indigo-500/50 transition-all shadow-xl">
-	                                <div className="w-32 h-40 rounded-xl bg-zinc-800 overflow-hidden shrink-0 border border-white/5">
-	                                    <img src={look.previewUrl} className="w-full h-full object-cover" />
-	                                </div>
-                                <div className="flex-1 flex flex-col">
-                                    <div className="flex justify-between items-start mb-1">
-                                        <h4 className="font-bold text-white">{look.name}</h4>
-	                                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-	                                            <button
-	                                              onClick={() => handleGenerateLook(look)}
-	                                              disabled={!canGenerate || isLocked || Boolean(generatingLookIds[look.id])}
-	                                              className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-widest border transition-all ${
-	                                                !canGenerate || isLocked
-	                                                  ? 'border-zinc-800 text-zinc-600 cursor-not-allowed'
-	                                                  : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/20'
-	                                              }`}
-	                                              title={!draft.avatarUrl ? 'Generate avatar first for best identity consistency' : 'Generate look image'}
-	                                            >
-	                                              {generatingLookIds[look.id] ? 'Gen…' : 'Generate'}
-	                                            </button>
-	                                            <button onClick={() => setEditingLook(look)} className="p-1.5 text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-md">
-	                                                <Edit3 className="w-3.5 h-3.5" />
-	                                            </button>
-	                                            <button onClick={() => handleRemoveLook(look.id)} className="p-1.5 text-zinc-400 hover:text-rose-500 bg-white/5 hover:bg-white/10 rounded-md">
-	                                                <Trash2 className="w-3.5 h-3.5" />
-	                                            </button>
-	                                        </div>
-                                    </div>
-                                    <p className="text-xs text-zinc-400 leading-relaxed line-clamp-3">{look.description}</p>
-                                </div>
+	                    {draft.looks.map((look) => {
+                        const seeded = seedLookPreviewVersions(look);
+                        const lookVersions = (look as any).previewVersions || seeded.versions;
+                        const activeLookVersionId =
+                          (look as any).activePreviewVersionId || lookVersions[lookVersions.length - 1]?.id || '';
+                        return (
+                          <div
+                            key={look.id}
+                            className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex gap-4 hover:border-indigo-500/50 transition-all shadow-xl"
+                          >
+                            <div className="w-32 h-40 rounded-xl bg-zinc-800 overflow-hidden shrink-0 border border-white/5">
+                              <img src={look.previewUrl} className="w-full h-full object-cover" />
                             </div>
-                        ))}
+                            <div className="flex-1 flex flex-col">
+                              <div className="flex justify-between items-start mb-1">
+                                <h4 className="font-bold text-white">{look.name}</h4>
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    onClick={() => handleGenerateLook(look)}
+                                    disabled={!canGenerate || isLocked || Boolean(generatingLookIds[look.id])}
+                                    className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-widest border transition-all ${
+                                      !canGenerate || isLocked
+                                        ? 'border-zinc-800 text-zinc-600 cursor-not-allowed'
+                                        : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/20'
+                                    }`}
+                                    title={!draft.avatarUrl ? 'Generate avatar first for best identity consistency' : 'Generate look variant'}
+                                  >
+                                    {generatingLookIds[look.id] ? 'Gen…' : look.previewUrl ? 'Variant' : 'Generate'}
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingLook(look)}
+                                    className="p-1.5 text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-md"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleRemoveLook(look.id)}
+                                    className="p-1.5 text-zinc-400 hover:text-rose-500 bg-white/5 hover:bg-white/10 rounded-md"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                              <p className="text-xs text-zinc-400 leading-relaxed line-clamp-3">{look.description}</p>
+
+                              {lookVersions.length > 1 && (
+                                <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
+                                  {lookVersions.slice().reverse().map((v: any) => {
+                                    const isActive = String(v.id) === String(activeLookVersionId);
+                                    return (
+                                      <button
+                                        key={String(v.id)}
+                                        onClick={() => handleSelectLookVariant(look.id, String(v.id))}
+                                        className={`relative w-16 aspect-square rounded-lg overflow-hidden border-2 shrink-0 transition-all ${
+                                          isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
+                                        }`}
+                                        title={isActive ? 'Active' : 'Set active'}
+                                      >
+                                        <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                 </section>
 

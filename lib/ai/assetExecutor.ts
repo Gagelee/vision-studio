@@ -209,6 +209,9 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
 };
 
 export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string): Story => {
+  const now = Date.now();
+  const rand = () => Math.random().toString(16).slice(2, 8);
+
   if (job.kind === 'masterkv') {
     return { ...story, keyVisualUrl: imageUrl, masterKvState: bumpState((story as any).masterKvState, { status: 'done', lastError: '' }) };
   }
@@ -217,7 +220,26 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
     return {
       ...story,
       locations: (story.locations || []).map((l) =>
-        l.id === job.locationId ? { ...l, previewUrl: imageUrl, assetState: bumpState((l as any).assetState, { status: 'done', lastError: '' }) } : l,
+        l.id === job.locationId
+          ? {
+              ...l,
+              previewUrl: imageUrl,
+              ...(() => {
+                const existing = Array.isArray((l as any).previewVersions) ? (l as any).previewVersions : [];
+                const seededBase =
+                  !existing.length && l.previewUrl && String(l.previewUrl) !== String(imageUrl)
+                    ? [{ id: `pv-seed-${now}-${rand()}`, imageUrl: String(l.previewUrl), createdAt: (l as any).assetState?.lastAttemptAt || now, type: 'base' }]
+                    : [];
+                const base = existing.length ? existing : seededBase;
+                const id = `pv-${now}-${rand()}`;
+                return {
+                  previewVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
+                  activePreviewVersionId: id,
+                };
+              })(),
+              assetState: bumpState((l as any).assetState, { status: 'done', lastError: '' }),
+            }
+          : l,
       ),
     };
   }
@@ -226,7 +248,26 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
     return {
       ...story,
       characters: (story.characters || []).map((c) =>
-        c.id === job.characterId ? { ...c, avatarUrl: imageUrl, assetState: bumpState((c as any).assetState, { status: 'done', lastError: '' }) } : c,
+        c.id === job.characterId
+          ? {
+              ...c,
+              avatarUrl: imageUrl,
+              ...(() => {
+                const existing = Array.isArray((c as any).avatarVersions) ? (c as any).avatarVersions : [];
+                const seededBase =
+                  !existing.length && c.avatarUrl && String(c.avatarUrl) !== String(imageUrl)
+                    ? [{ id: `av-seed-${now}-${rand()}`, imageUrl: String(c.avatarUrl), createdAt: (c as any).assetState?.lastAttemptAt || now, type: 'base' }]
+                    : [];
+                const base = existing.length ? existing : seededBase;
+                const id = `av-${now}-${rand()}`;
+                return {
+                  avatarVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
+                  activeAvatarVersionId: id,
+                };
+              })(),
+              assetState: bumpState((c as any).assetState, { status: 'done', lastError: '' }),
+            }
+          : c,
       ),
     };
   }
@@ -239,7 +280,26 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
         return {
           ...c,
           looks: (c.looks || []).map((lk) =>
-            lk.id === job.lookId ? { ...lk, previewUrl: imageUrl, assetState: bumpState((lk as any).assetState, { status: 'done', lastError: '' }) } : lk,
+            lk.id === job.lookId
+              ? {
+                  ...lk,
+                  previewUrl: imageUrl,
+                  ...(() => {
+                    const existing = Array.isArray((lk as any).previewVersions) ? (lk as any).previewVersions : [];
+                    const seededBase =
+                      !existing.length && lk.previewUrl && String(lk.previewUrl) !== String(imageUrl)
+                        ? [{ id: `lv-seed-${now}-${rand()}`, imageUrl: String(lk.previewUrl), createdAt: (lk as any).assetState?.lastAttemptAt || now, type: 'base' }]
+                        : [];
+                    const base = existing.length ? existing : seededBase;
+                    const id = `lv-${now}-${rand()}`;
+                    return {
+                      previewVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
+                      activePreviewVersionId: id,
+                    };
+                  })(),
+                  assetState: bumpState((lk as any).assetState, { status: 'done', lastError: '' }),
+                }
+              : lk,
           ),
         };
       }),

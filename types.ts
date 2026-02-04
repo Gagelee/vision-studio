@@ -49,8 +49,17 @@ export interface Location {
   description: string;
   visualStyle: string;
   previewUrl: string;
+  previewVersions?: AssetImageVersion[];
+  activePreviewVersionId?: string;
   status: 'draft' | 'locked';
   assetState?: AssetGenerationState;
+}
+
+export interface AssetImageVersion {
+  id: string;
+  imageUrl: string;
+  createdAt: number;
+  type: string;
 }
 
 export interface CharacterLook {
@@ -58,6 +67,8 @@ export interface CharacterLook {
   name: string;
   description: string;
   previewUrl: string;
+  previewVersions?: AssetImageVersion[];
+  activePreviewVersionId?: string;
   assetState?: AssetGenerationState;
 }
 
@@ -67,6 +78,8 @@ export interface Character {
   description: string;
   voiceProfile?: string;
   avatarUrl?: string;
+  avatarVersions?: AssetImageVersion[];
+  activeAvatarVersionId?: string;
   status?: 'draft' | 'locked';
   looks: CharacterLook[];
   assetState?: AssetGenerationState;
