@@ -17,6 +17,7 @@ import {
   buildTeamScaffoldEnvironmentDirectorPrompt,
   buildTeamScaffoldScriptWriterPrompt,
 } from './lib/ai/prompts';
+import { getPromptMetaForAgent } from './lib/ai/promptMeta';
 import { ProxyAgent } from 'undici';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -1138,16 +1139,18 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         for (const p of getProviderCandidates(provider, env)) {
           attemptedProviders.push(p);
           try {
-            if (p === 'gemini') {
-              const teamTrace: any[] = [];
-              const call = async (
-                agent: string,
-                prompt: string,
-                opts?: { model?: string; temperature?: number; maxOutputTokens?: number; responseSchema?: any },
-              ) => {
-                const started = Date.now();
-                try {
-                  const out = await callGeminiJson({
+	            if (p === 'gemini') {
+	              const teamTrace: any[] = [];
+	              const traceId = crypto.randomUUID();
+	              const call = async (
+	                agent: string,
+	                prompt: string,
+	                opts?: { model?: string; temperature?: number; maxOutputTokens?: number; responseSchema?: any },
+	              ) => {
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('scaffold', agent);
+	                try {
+	                  const out = await callGeminiJson({
                     apiKey: env.GEMINI_API_KEY,
                     model: String(opts?.model || chosenModel),
                     temperature: Number(opts?.temperature ?? chosenTemperature),
@@ -1156,13 +1159,30 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     env,
                     responseSchema: opts?.responseSchema,
                   });
-                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: true });
-                  return out;
-                } catch (e: any) {
-                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: false, error: e?.message || String(e) });
-                  throw e;
-                }
-              };
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model: String(opts?.model || chosenModel),
+	                    ms: Date.now() - started,
+	                    ok: true,
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  return out;
+	                } catch (e: any) {
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model: String(opts?.model || chosenModel),
+	                    ms: Date.now() - started,
+	                    ok: false,
+	                    error: e?.message || String(e),
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  throw e;
+	                }
+	              };
 
               try {
                 const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
@@ -1221,43 +1241,77 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   { model: chosenModel, temperature: chosenTemperature, maxOutputTokens: resolvedMergeTokens, responseSchema: GEMINI_SCHEMA.scaffoldFinal },
                 );
 
-                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (Gemini)', p, chosenModel, { teamTrace }));
-              } catch (e: any) {
-                // Fall back to a single-call scaffold for this provider if multi-agent fails.
-                lastError = e;
-                const spec = await callGeminiJson({
-                  apiKey: env.GEMINI_API_KEY,
-                  model: chosenModel,
-                  temperature: chosenTemperature,
+	                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (Gemini)', p, chosenModel, { teamTrace, traceId }));
+	              } catch (e: any) {
+	                // Fall back to a single-call scaffold for this provider if multi-agent fails.
+	                lastError = e;
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+	                const spec = await callGeminiJson({
+	                  apiKey: env.GEMINI_API_KEY,
+	                  model: chosenModel,
+	                  temperature: chosenTemperature,
                   maxOutputTokens: resolvedMergeTokens,
                   prompt: scaffoldPrompt,
-                  env,
-                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
-                });
-                return sendJson(res, 200, buildFromSpec(spec, 'Single-call (Gemini)', p, chosenModel, { teamTrace, multiAgentError: e?.message || String(e) }));
-              }
-            }
+	                  env,
+	                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
+	                });
+	                teamTrace.push({
+	                  agent: 'scaffold.single',
+	                  provider: p,
+	                  model: chosenModel,
+	                  ms: Date.now() - started,
+	                  ok: true,
+	                  promptId: meta?.id,
+	                  promptVersion: meta?.version,
+	                });
+	                return sendJson(
+	                  res,
+	                  200,
+	                  buildFromSpec(spec, 'Single-call (Gemini)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
+	                );
+	              }
+	            }
 
-            if (p === 'openai') {
-              const teamTrace: any[] = [];
-              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
-                const started = Date.now();
-                try {
-                  const out = await callOpenAICompatibleJson({
+	            if (p === 'openai') {
+	              const teamTrace: any[] = [];
+	              const traceId = crypto.randomUUID();
+	              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('scaffold', agent);
+	                try {
+	                  const out = await callOpenAICompatibleJson({
                     baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
                     apiKey: env.OPENAI_API_KEY,
                     model: String(opts?.model || chosenModel),
                     temperature: Number(opts?.temperature ?? chosenTemperature),
-                    prompt,
-                    env,
-                  });
-                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: true });
-                  return out;
-                } catch (e: any) {
-                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: false, error: e?.message || String(e) });
-                  throw e;
-                }
-              };
+	                    prompt,
+	                    env,
+	                  });
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model: String(opts?.model || chosenModel),
+	                    ms: Date.now() - started,
+	                    ok: true,
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  return out;
+	                } catch (e: any) {
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model: String(opts?.model || chosenModel),
+	                    ms: Date.now() - started,
+	                    ok: false,
+	                    error: e?.message || String(e),
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  throw e;
+	                }
+	              };
 
               try {
                 const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
@@ -1308,41 +1362,75 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   { model: chosenModel, temperature: chosenTemperature },
                 );
 
-                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (OpenAI)', p, chosenModel, { teamTrace }));
-              } catch (e: any) {
-                lastError = e;
-                const spec = await callOpenAICompatibleJson({
-                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-                  apiKey: env.OPENAI_API_KEY,
+	                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (OpenAI)', p, chosenModel, { teamTrace, traceId }));
+	              } catch (e: any) {
+	                lastError = e;
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+	                const spec = await callOpenAICompatibleJson({
+	                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+	                  apiKey: env.OPENAI_API_KEY,
                   model: chosenModel,
                   temperature: chosenTemperature,
-                  prompt: scaffoldPrompt,
-                  env,
-                });
-                return sendJson(res, 200, buildFromSpec(spec, 'Single-call (OpenAI)', p, chosenModel, { teamTrace, multiAgentError: e?.message || String(e) }));
-              }
-            }
+	                  prompt: scaffoldPrompt,
+	                  env,
+	                });
+	                teamTrace.push({
+	                  agent: 'scaffold.single',
+	                  provider: p,
+	                  model: chosenModel,
+	                  ms: Date.now() - started,
+	                  ok: true,
+	                  promptId: meta?.id,
+	                  promptVersion: meta?.version,
+	                });
+	                return sendJson(
+	                  res,
+	                  200,
+	                  buildFromSpec(spec, 'Single-call (OpenAI)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
+	                );
+	              }
+	            }
 
-            if (p === 'deepseek') {
-              const teamTrace: any[] = [];
-              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
-                const started = Date.now();
-                try {
-                  const out = await callOpenAICompatibleJson({
+	            if (p === 'deepseek') {
+	              const teamTrace: any[] = [];
+	              const traceId = crypto.randomUUID();
+	              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('scaffold', agent);
+	                try {
+	                  const out = await callOpenAICompatibleJson({
                     baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
                     apiKey: env.DEEPSEEK_API_KEY,
                     model: String(opts?.model || chosenModel),
                     temperature: Number(opts?.temperature ?? chosenTemperature),
-                    prompt,
-                    env,
-                  });
-                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: true });
-                  return out;
-                } catch (e: any) {
-                  teamTrace.push({ agent, provider: p, model: String(opts?.model || chosenModel), ms: Date.now() - started, ok: false, error: e?.message || String(e) });
-                  throw e;
-                }
-              };
+	                    prompt,
+	                    env,
+	                  });
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model: String(opts?.model || chosenModel),
+	                    ms: Date.now() - started,
+	                    ok: true,
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  return out;
+	                } catch (e: any) {
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model: String(opts?.model || chosenModel),
+	                    ms: Date.now() - started,
+	                    ok: false,
+	                    error: e?.message || String(e),
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  throw e;
+	                }
+	              };
 
               try {
                 const directorBrief = await call('director.brief', buildTeamScaffoldDirectorBriefPrompt({ intent, aspectRatio }), {
@@ -1393,20 +1481,35 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   { model: chosenModel, temperature: chosenTemperature },
                 );
 
-                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (DeepSeek)', p, chosenModel, { teamTrace }));
-              } catch (e: any) {
-                lastError = e;
-                const spec = await callOpenAICompatibleJson({
-                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-                  apiKey: env.DEEPSEEK_API_KEY,
+	                return sendJson(res, 200, buildFromSpec(spec, 'Multi-Agent (DeepSeek)', p, chosenModel, { teamTrace, traceId }));
+	              } catch (e: any) {
+	                lastError = e;
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+	                const spec = await callOpenAICompatibleJson({
+	                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+	                  apiKey: env.DEEPSEEK_API_KEY,
                   model: chosenModel,
                   temperature: chosenTemperature,
-                  prompt: scaffoldPrompt,
-                  env,
-                });
-                return sendJson(res, 200, buildFromSpec(spec, 'Single-call (DeepSeek)', p, chosenModel, { teamTrace, multiAgentError: e?.message || String(e) }));
-              }
-            }
+	                  prompt: scaffoldPrompt,
+	                  env,
+	                });
+	                teamTrace.push({
+	                  agent: 'scaffold.single',
+	                  provider: p,
+	                  model: chosenModel,
+	                  ms: Date.now() - started,
+	                  ok: true,
+	                  promptId: meta?.id,
+	                  promptVersion: meta?.version,
+	                });
+	                return sendJson(
+	                  res,
+	                  200,
+	                  buildFromSpec(spec, 'Single-call (DeepSeek)', p, chosenModel, { teamTrace, traceId, multiAgentError: e?.message || String(e) }),
+	                );
+	              }
+	            }
           } catch (e: any) {
             lastError = e;
           }
@@ -1700,19 +1803,38 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
-	          if (p === 'gemini' && env.GEMINI_API_KEY) {
-              const teamTrace: any[] = [];
-              const call = async (agent: string, prompt: string, responseSchema?: any) => {
-                const started = Date.now();
-                try {
-                  const out = await callGeminiJson({ apiKey: env.GEMINI_API_KEY, model, temperature, prompt, env, responseSchema });
-                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: true });
-                  return out;
-                } catch (e: any) {
-                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: false, error: e?.message || String(e) });
-                  throw e;
-                }
-              };
+		          if (p === 'gemini' && env.GEMINI_API_KEY) {
+	              const teamTrace: any[] = [];
+	              const traceId = crypto.randomUUID();
+	              const call = async (agent: string, prompt: string, responseSchema?: any) => {
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('direct', agent);
+	                try {
+	                  const out = await callGeminiJson({ apiKey: env.GEMINI_API_KEY, model, temperature, prompt, env, responseSchema });
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model,
+	                    ms: Date.now() - started,
+	                    ok: true,
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  return out;
+	                } catch (e: any) {
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model,
+	                    ms: Date.now() - started,
+	                    ok: false,
+	                    error: e?.message || String(e),
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  throw e;
+	                }
+	              };
 
               try {
                 const planner = await call(
@@ -1774,27 +1896,38 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
                     ],
                     actions,
-                  },
-                  actions,
-                  debug: { transport: 'http', provider: p, model, teamTrace, mode: 'multi-agent' },
-                });
-              } catch (e: any) {
-                lastError = e;
-                // Single-call fallback
-                const output = await callGeminiJson({
-                  apiKey: env.GEMINI_API_KEY,
-                  model,
-                  temperature,
+	                  },
+	                  actions,
+	                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'multi-agent' },
+	                });
+	              } catch (e: any) {
+	                lastError = e;
+	                // Single-call fallback
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('direct', 'director.actions');
+	                const output = await callGeminiJson({
+	                  apiKey: env.GEMINI_API_KEY,
+	                  model,
+	                  temperature,
                   prompt: buildDirectorActionsPrompt({
                     selectionJson,
                     storyJson: story ? storyJson : undefined,
                     directive: message,
-                  }),
-                  env,
-                });
-                const actions = Array.isArray(output?.actions) ? output.actions : [];
-                return sendJson(res, 200, {
-                  reply: String(output?.reply || 'OK'),
+	                  }),
+	                  env,
+	                });
+	                teamTrace.push({
+	                  agent: 'director.actions',
+	                  provider: p,
+	                  model,
+	                  ms: Date.now() - started,
+	                  ok: true,
+	                  promptId: meta?.id,
+	                  promptVersion: meta?.version,
+	                });
+	                const actions = Array.isArray(output?.actions) ? output.actions : [];
+	                return sendJson(res, 200, {
+	                  reply: String(output?.reply || 'OK'),
                   plan: {
                     id: mkId('plan'),
                     summary: 'Generated structured actions (Gemini, single-call fallback).',
@@ -1803,33 +1936,52 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
                     ],
                     actions,
-                  },
-                  actions,
-                  debug: { transport: 'http', provider: p, model, mode: 'single-call', multiAgentError: e?.message || String(e) },
-                });
-              }
-	          }
+	                  },
+	                  actions,
+	                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'single-call', multiAgentError: e?.message || String(e) },
+	                });
+	              }
+		          }
 
-	          if (p === 'openai' && env.OPENAI_API_KEY) {
-              const teamTrace: any[] = [];
-              const call = async (agent: string, prompt: string) => {
-                const started = Date.now();
-                try {
-                  const out = await callOpenAICompatibleJson({
+		          if (p === 'openai' && env.OPENAI_API_KEY) {
+	              const teamTrace: any[] = [];
+	              const traceId = crypto.randomUUID();
+	              const call = async (agent: string, prompt: string) => {
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('direct', agent);
+	                try {
+	                  const out = await callOpenAICompatibleJson({
                     baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
                     apiKey: env.OPENAI_API_KEY,
                     model,
                     temperature,
-                    prompt,
-                    env,
-                  });
-                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: true });
-                  return out;
-                } catch (e: any) {
-                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: false, error: e?.message || String(e) });
-                  throw e;
-                }
-              };
+	                    prompt,
+	                    env,
+	                  });
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model,
+	                    ms: Date.now() - started,
+	                    ok: true,
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  return out;
+	                } catch (e: any) {
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model,
+	                    ms: Date.now() - started,
+	                    ok: false,
+	                    error: e?.message || String(e),
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  throw e;
+	                }
+	              };
 
               try {
                 const planner = await call(
@@ -1887,27 +2039,38 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
                     ],
                     actions,
-                  },
-                  actions,
-                  debug: { transport: 'http', provider: p, model, teamTrace, mode: 'multi-agent' },
-                });
-              } catch (e: any) {
-                lastError = e;
-                const output = await callOpenAICompatibleJson({
-                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-                  apiKey: env.OPENAI_API_KEY,
+	                  },
+	                  actions,
+	                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'multi-agent' },
+	                });
+	              } catch (e: any) {
+	                lastError = e;
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('direct', 'director.actions');
+	                const output = await callOpenAICompatibleJson({
+	                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+	                  apiKey: env.OPENAI_API_KEY,
                   model,
                   temperature,
                   prompt: buildDirectorActionsPrompt({
                     selectionJson,
                     storyJson: story ? storyJson : undefined,
                     directive: message,
-                  }),
-                  env,
-                });
-                const actions = Array.isArray(output?.actions) ? output.actions : [];
-                return sendJson(res, 200, {
-                  reply: String(output?.reply || 'OK'),
+	                  }),
+	                  env,
+	                });
+	                teamTrace.push({
+	                  agent: 'director.actions',
+	                  provider: p,
+	                  model,
+	                  ms: Date.now() - started,
+	                  ok: true,
+	                  promptId: meta?.id,
+	                  promptVersion: meta?.version,
+	                });
+	                const actions = Array.isArray(output?.actions) ? output.actions : [];
+	                return sendJson(res, 200, {
+	                  reply: String(output?.reply || 'OK'),
                   plan: {
                     id: mkId('plan'),
                     summary: 'Generated structured actions (OpenAI, single-call fallback).',
@@ -1916,33 +2079,52 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
                     ],
                     actions,
-                  },
-                  actions,
-                  debug: { transport: 'http', provider: p, model, mode: 'single-call', multiAgentError: e?.message || String(e) },
-                });
-              }
-	          }
+	                  },
+	                  actions,
+	                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'single-call', multiAgentError: e?.message || String(e) },
+	                });
+	              }
+		          }
 
-	          if (p === 'deepseek' && env.DEEPSEEK_API_KEY) {
-              const teamTrace: any[] = [];
-              const call = async (agent: string, prompt: string) => {
-                const started = Date.now();
-                try {
-                  const out = await callOpenAICompatibleJson({
+		          if (p === 'deepseek' && env.DEEPSEEK_API_KEY) {
+	              const teamTrace: any[] = [];
+	              const traceId = crypto.randomUUID();
+	              const call = async (agent: string, prompt: string) => {
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('direct', agent);
+	                try {
+	                  const out = await callOpenAICompatibleJson({
                     baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
                     apiKey: env.DEEPSEEK_API_KEY,
                     model,
                     temperature,
-                    prompt,
-                    env,
-                  });
-                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: true });
-                  return out;
-                } catch (e: any) {
-                  teamTrace.push({ agent, provider: p, model, ms: Date.now() - started, ok: false, error: e?.message || String(e) });
-                  throw e;
-                }
-              };
+	                    prompt,
+	                    env,
+	                  });
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model,
+	                    ms: Date.now() - started,
+	                    ok: true,
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  return out;
+	                } catch (e: any) {
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model,
+	                    ms: Date.now() - started,
+	                    ok: false,
+	                    error: e?.message || String(e),
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  throw e;
+	                }
+	              };
 
               try {
                 const planner = await call(
@@ -2000,27 +2182,38 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
                     ],
                     actions,
-                  },
-                  actions,
-                  debug: { transport: 'http', provider: p, model, teamTrace, mode: 'multi-agent' },
-                });
-              } catch (e: any) {
-                lastError = e;
-                const output = await callOpenAICompatibleJson({
-                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-                  apiKey: env.DEEPSEEK_API_KEY,
+	                  },
+	                  actions,
+	                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'multi-agent' },
+	                });
+	              } catch (e: any) {
+	                lastError = e;
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('direct', 'director.actions');
+	                const output = await callOpenAICompatibleJson({
+	                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+	                  apiKey: env.DEEPSEEK_API_KEY,
                   model,
                   temperature,
                   prompt: buildDirectorActionsPrompt({
                     selectionJson,
                     storyJson: story ? storyJson : undefined,
                     directive: message,
-                  }),
-                  env,
-                });
-                const actions = Array.isArray(output?.actions) ? output.actions : [];
-                return sendJson(res, 200, {
-                  reply: String(output?.reply || 'OK'),
+	                  }),
+	                  env,
+	                });
+	                teamTrace.push({
+	                  agent: 'director.actions',
+	                  provider: p,
+	                  model,
+	                  ms: Date.now() - started,
+	                  ok: true,
+	                  promptId: meta?.id,
+	                  promptVersion: meta?.version,
+	                });
+	                const actions = Array.isArray(output?.actions) ? output.actions : [];
+	                return sendJson(res, 200, {
+	                  reply: String(output?.reply || 'OK'),
                   plan: {
                     id: mkId('plan'),
                     summary: 'Generated structured actions (DeepSeek, single-call fallback).',
@@ -2029,12 +2222,12 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
                     ],
                     actions,
-                  },
-                  actions,
-                  debug: { transport: 'http', provider: p, model, mode: 'single-call', multiAgentError: e?.message || String(e) },
-                });
-              }
-	          }
+	                  },
+	                  actions,
+	                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'single-call', multiAgentError: e?.message || String(e) },
+	                });
+	              }
+		          }
             } catch (e: any) {
               lastError = e;
             }

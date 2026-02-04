@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Copy, Trash2, X, Bug } from 'lucide-react';
 import { AiSettings, Story } from '../../types';
 import { DebugEvent, clearDebugEvents, getDebugEvents, subscribeDebugEvents } from '../../lib/debug/eventLog';
+import { AGENT_REGISTRY } from '../../lib/ai/agentRegistry';
+import { PROMPT_REGISTRY } from '../../lib/ai/promptMeta';
 
 interface DebugPanelProps {
   aiSettings: AiSettings;
@@ -21,6 +23,7 @@ const levelStyle: Record<string, string> = {
 export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory, agentHistory, onClose }) => {
   const [events, setEvents] = useState<DebugEvent[]>(() => getDebugEvents());
   const [filter, setFilter] = useState<'all' | 'error' | 'warn'>('all');
+  const [tab, setTab] = useState<'events' | 'trace' | 'registry'>('events');
   const [copyStatus, setCopyStatus] = useState<'idle' | 'ok' | 'err'>('idle');
   const [copyMessage, setCopyMessage] = useState<string>('');
 
@@ -32,6 +35,42 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
     if (filter === 'all') return events;
     return events.filter((e) => e.level === filter);
   }, [events, filter]);
+
+  const traceSessions = useMemo(() => {
+    const sessions: Array<{
+      ts: number;
+      scope: string;
+      endpoint?: string;
+      provider?: string;
+      model?: string;
+      mode?: string;
+      traceId?: string;
+      multiAgentError?: string;
+      teamTrace: any[];
+    }> = [];
+
+    for (const e of events) {
+      if (e.message !== 'Response') continue;
+      if (e.scope !== 'agent.scaffold' && e.scope !== 'agent.direct') continue;
+      const json = (e as any)?.data?.json;
+      const dbg = json?.debug || null;
+      const tt = Array.isArray(dbg?.teamTrace) ? dbg.teamTrace : null;
+      if (!tt || tt.length === 0) continue;
+      sessions.push({
+        ts: e.ts,
+        scope: e.scope,
+        endpoint: String((e as any)?.data?.url || ''),
+        provider: dbg?.provider ? String(dbg.provider) : undefined,
+        model: dbg?.model ? String(dbg.model) : undefined,
+        mode: dbg?.mode ? String(dbg.mode) : undefined,
+        traceId: dbg?.traceId ? String(dbg.traceId) : undefined,
+        multiAgentError: dbg?.multiAgentError ? String(dbg.multiAgentError) : undefined,
+        teamTrace: tt,
+      });
+    }
+
+    return sessions.sort((a, b) => b.ts - a.ts);
+  }, [events]);
 
   const diagnostics = useMemo(() => {
     return {
@@ -141,6 +180,38 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div className="hidden md:flex items-center gap-2 mr-2">
+              <button
+                onClick={() => setTab('events')}
+                className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
+                  tab === 'events'
+                    ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-black dark:border-white'
+                    : 'bg-transparent text-zinc-500 border-zinc-200 dark:text-zinc-400 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-900'
+                }`}
+              >
+                Events
+              </button>
+              <button
+                onClick={() => setTab('trace')}
+                className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
+                  tab === 'trace'
+                    ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-black dark:border-white'
+                    : 'bg-transparent text-zinc-500 border-zinc-200 dark:text-zinc-400 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-900'
+                }`}
+              >
+                Trace
+              </button>
+              <button
+                onClick={() => setTab('registry')}
+                className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
+                  tab === 'registry'
+                    ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-black dark:border-white'
+                    : 'bg-transparent text-zinc-500 border-zinc-200 dark:text-zinc-400 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-900'
+                }`}
+              >
+                Registry
+              </button>
+            </div>
             <button
               onClick={copyDiagnostics}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 text-white dark:bg-white dark:text-black font-black uppercase tracking-widest text-[11px] hover:opacity-90 transition-all"
@@ -228,8 +299,11 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
           {/* Right: event log */}
           <div className="xl:col-span-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden flex flex-col min-h-0">
             <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20 flex items-center justify-between">
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Event Log</div>
-              <div className="flex items-center gap-2">
+              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                {tab === 'events' ? 'Event Log' : tab === 'trace' ? 'LLM Trace' : 'Agent & Prompt Registry'}
+              </div>
+              {tab === 'events' && (
+                <div className="flex items-center gap-2">
                 <button
                   onClick={() => setFilter('all')}
                   className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border ${
@@ -260,44 +334,180 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
                 >
                   Error
                 </button>
-              </div>
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3 min-h-0">
-              {filtered.length === 0 ? (
-                <div className="text-zinc-500 text-sm italic mt-6 text-center">No events captured yet.</div>
-              ) : (
-                filtered
-                  .slice()
-                  .reverse()
-                  .map((e) => (
-                    <div key={e.id} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
-                      <div className="px-4 py-3 flex items-center justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${levelStyle[e.level]}`}>
-                              {e.level}
-                            </span>
-                            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{e.scope}</span>
-                            <span className="text-[10px] font-mono text-zinc-400">{formatTs(e.ts)}</span>
+              {tab === 'events' && (
+                <>
+                  {filtered.length === 0 ? (
+                    <div className="text-zinc-500 text-sm italic mt-6 text-center">No events captured yet.</div>
+                  ) : (
+                    filtered
+                      .slice()
+                      .reverse()
+                      .map((e) => (
+                        <div key={e.id} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                          <div className="px-4 py-3 flex items-center justify-between gap-4">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${levelStyle[e.level]}`}>
+                                  {e.level}
+                                </span>
+                                <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{e.scope}</span>
+                                <span className="text-[10px] font-mono text-zinc-400">{formatTs(e.ts)}</span>
+                              </div>
+                              <div className="mt-1 text-sm text-zinc-800 dark:text-zinc-200 break-words">{e.message}</div>
+                            </div>
+                            <button
+                              onClick={() => copyEvent(e)}
+                              className="shrink-0 p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
+                              title="Copy this event JSON"
+                            >
+                              <Copy className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
+                            </button>
                           </div>
-                          <div className="mt-1 text-sm text-zinc-800 dark:text-zinc-200 break-words">{e.message}</div>
+                          {typeof e.data !== 'undefined' && (
+                            <pre className="border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-black/30 p-4 text-[11px] text-zinc-700 dark:text-zinc-300 overflow-x-auto">
+                              {JSON.stringify(e.data, null, 2)}
+                            </pre>
+                          )}
                         </div>
-                        <button
-                          onClick={() => copyEvent(e)}
-                          className="shrink-0 p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
-                          title="Copy this event JSON"
-                        >
-                          <Copy className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
-                        </button>
+                      ))
+                  )}
+                </>
+              )}
+
+              {tab === 'trace' && (
+                <>
+                  {traceSessions.length === 0 ? (
+                    <div className="text-zinc-500 text-sm italic mt-6 text-center">No LLM trace captured yet.</div>
+                  ) : (
+                    traceSessions.map((s) => (
+                      <div key={`${s.ts}-${s.scope}-${s.traceId || ''}`} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                        <div className="px-4 py-3 flex items-center justify-between gap-4 border-b border-zinc-200 dark:border-zinc-800">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{s.scope}</span>
+                              <span className="text-[10px] font-mono text-zinc-400">{formatTs(s.ts)}</span>
+                              {s.mode && (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                                  {s.mode}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1 text-sm text-zinc-800 dark:text-zinc-200 break-words">
+                              {(s.provider || 'unknown') + ' / ' + (s.model || 'unknown')}
+                            </div>
+                            {s.endpoint && <div className="mt-1 text-[11px] font-mono text-zinc-500 break-words">{s.endpoint}</div>}
+                            {s.traceId && <div className="mt-1 text-[11px] font-mono text-zinc-500">traceId: {s.traceId}</div>}
+                            {s.multiAgentError && <div className="mt-2 text-[11px] text-amber-300 break-words">multiAgentError: {s.multiAgentError}</div>}
+                          </div>
+                          <button
+                            onClick={() => copyEvent({ ...(s as any), id: `trace-${s.ts}`, level: 'info', message: 'trace', data: s } as any)}
+                            className="shrink-0 p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
+                            title="Copy this trace JSON"
+                          >
+                            <Copy className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
+                          </button>
+                        </div>
+
+                        <div className="p-4 overflow-x-auto">
+                          <table className="w-full text-left text-[12px]">
+                            <thead>
+                              <tr className="text-zinc-500">
+                                <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Agent</th>
+                                <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Prompt</th>
+                                <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Version</th>
+                                <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">MS</th>
+                                <th className="py-2 pr-0 font-black uppercase tracking-widest text-[10px]">OK</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {s.teamTrace.map((t: any, idx: number) => (
+                                <tr key={`${idx}-${String(t.agent)}`} className="border-t border-zinc-100 dark:border-zinc-800/60">
+                                  <td className="py-2 pr-4 font-mono text-zinc-800 dark:text-zinc-200">{String(t.agent || '')}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-600 dark:text-zinc-300">{String(t.promptId || '')}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-500">{String(t.promptVersion || '')}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-500">{typeof t.ms === 'number' ? `${t.ms}` : ''}</td>
+                                  <td className="py-2 pr-0 font-mono">
+                                    <span className={t.ok ? 'text-emerald-400' : 'text-rose-400'}>{t.ok ? 'yes' : 'no'}</span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                      {typeof e.data !== 'undefined' && (
-                        <pre className="border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-black/30 p-4 text-[11px] text-zinc-700 dark:text-zinc-300 overflow-x-auto">
-                          {JSON.stringify(e.data, null, 2)}
-                        </pre>
-                      )}
+                    ))
+                  )}
+                </>
+              )}
+
+              {tab === 'registry' && (
+                <div className="space-y-6">
+                  <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Agents</div>
                     </div>
-                  ))
+                    <div className="p-4 space-y-3">
+                      {AGENT_REGISTRY.map((a) => (
+                        <div key={a.id} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="min-w-0">
+                              <div className="font-bold text-zinc-900 dark:text-zinc-100">{a.title}</div>
+                              <div className="text-[11px] text-zinc-500 break-words">{a.description}</div>
+                            </div>
+                            <div className="shrink-0 text-[11px] font-mono text-zinc-500">{a.id}</div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {a.promptIds.map((pid) => (
+                              <span
+                                key={pid}
+                                className="px-2 py-1 rounded-full text-[10px] font-mono bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-200"
+                              >
+                                {pid}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Prompts</div>
+                    </div>
+                    <div className="p-4 space-y-3">
+                      {PROMPT_REGISTRY.map((p) => (
+                        <div key={p.id} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0">
+                              <div className="font-bold text-zinc-900 dark:text-zinc-100">{p.title}</div>
+                              <div className="mt-1 text-[11px] font-mono text-zinc-500 break-words">{p.id}</div>
+                              <div className="mt-1 text-[11px] text-zinc-500 break-words">{p.fileHint}</div>
+                            </div>
+                            <div className="shrink-0 text-[11px] font-mono text-zinc-500">{p.version}</div>
+                          </div>
+                          {p.usedByAgents?.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {p.usedByAgents.map((x) => (
+                                <span
+                                  key={x}
+                                  className="px-2 py-1 rounded-full text-[10px] font-mono bg-indigo-500/10 border border-indigo-500/20 text-indigo-300"
+                                >
+                                  {x}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           </div>
