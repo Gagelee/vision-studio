@@ -125,12 +125,40 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help='Fail if any endpoint falls back (debug.transport != "http")',
     )
+    ap.add_argument(
+        "--allow-single-fallback",
+        action="store_true",
+        help="Allow server-side single-call fallback when multi-agent fails (opt-in).",
+    )
+    ap.add_argument(
+        "--dump-error-json",
+        action="store_true",
+        help="Print full JSON error bodies for failed requests.",
+    )
     ap.add_argument("--include-image", action="store_true", help="Also test /api/asset/image/generate and fetch generated asset")
     ap.add_argument("--timeout-s", type=float, default=60.0, help="Timeout in seconds (default 60)")
     args = ap.parse_args(argv)
 
     base = _strip_trailing_slash(args.base)
     results = []
+
+    def _summarize_multi_agent_failure(name: str, payload: dict) -> str:
+        if payload.get("errorCode") != "MULTI_AGENT_FAILED":
+            return ""
+        multi_err = str(payload.get("multiAgentError") or payload.get("message") or "")
+        trace = payload.get("teamTrace")
+        first_fail = ""
+        if isinstance(trace, list):
+            for step in trace:
+                if isinstance(step, dict) and step.get("ok") is False:
+                    first_fail = f"{step.get('agent')} ({step.get('provider')}/{step.get('model')}): {step.get('error')}"
+                    break
+        hint = "Tip: re-run with --allow-single-fallback to opt into single-call fallback."
+        bits = [f"{name}: MULTI_AGENT_FAILED", multi_err]
+        if first_fail:
+            bits.append(f"firstFail={first_fail}")
+        bits.append(hint)
+        return " | ".join([b for b in bits if b])
 
     # Avoid accidental proxying for localhost when users set HTTP(S)_PROXY for Gemini.
     # (Python urllib honors env proxies by default; without NO_PROXY this can break localhost calls.)
@@ -153,12 +181,26 @@ def main(argv: list[str]) -> int:
         {
             "intent": "API connectivity test",
             "aspectRatio": "16:9",
+            "allowSingleFallback": bool(args.allow_single_fallback),
             "settings": {"provider": "gemini", "model": "gemini-3-pro-preview", "temperature": 0.4, "maxOutputTokens": 8192},
         },
         args.timeout_s,
     )
-    results.append({"name": "scaffold", **{k: scaffold[k] for k in ["url", "ms", "status", "ok", "textPreview"]}, "debug": (scaffold.get("json") or {}).get("debug")})
-    _assert(scaffold["ok"], f"scaffold HTTP {scaffold['status']}")
+    results.append(
+        {
+            "name": "scaffold",
+            **{k: scaffold[k] for k in ["url", "ms", "status", "ok", "textPreview"]},
+            "debug": (scaffold.get("json") or {}).get("debug") if isinstance(scaffold.get("json"), dict) else None,
+        }
+    )
+    if not scaffold["ok"]:
+        if isinstance(scaffold.get("json"), dict):
+            msg = _summarize_multi_agent_failure("scaffold", scaffold["json"])
+            if msg:
+                if args.dump_error_json:
+                    print(_pretty(scaffold["json"]), file=sys.stderr)
+                raise RuntimeError(msg)
+        raise RuntimeError(f"scaffold HTTP {scaffold['status']}")
     _assert(isinstance(scaffold.get("json"), dict) and scaffold["json"].get("ok") is True, f"scaffold: expected {{ok:true}} (got {scaffold['textPreview']})")
     _assert("story" in scaffold["json"] and "plan" in scaffold["json"], "scaffold: missing story/plan")
     if args.require_http:
@@ -195,12 +237,20 @@ def main(argv: list[str]) -> int:
             "message": "make it warmer",
             "selection": selection,
             "story": story,
+            "allowSingleFallback": bool(args.allow_single_fallback),
             "settings": {"provider": "gemini", "model": "gemini-3-pro-preview", "temperature": 0.3, "maxOutputTokens": 4096},
         },
         args.timeout_s,
     )
     results.append({"name": "direct", **{k: direct[k] for k in ["url", "ms", "status", "ok", "textPreview"]}, "debug": (direct.get("json") or {}).get("debug")})
-    _assert(direct["ok"], f"direct HTTP {direct['status']}")
+    if not direct["ok"]:
+        if isinstance(direct.get("json"), dict):
+            msg = _summarize_multi_agent_failure("direct", direct["json"])
+            if msg:
+                if args.dump_error_json:
+                    print(_pretty(direct["json"]), file=sys.stderr)
+                raise RuntimeError(msg)
+        raise RuntimeError(f"direct HTTP {direct['status']}")
     _assert(isinstance(direct.get("json"), dict) and isinstance(direct["json"].get("reply"), str), f"direct: missing reply (got {direct['textPreview']})")
     _assert(isinstance(direct["json"].get("actions"), list), "direct: missing actions[]")
     if args.require_http:
