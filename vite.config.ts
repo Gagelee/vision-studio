@@ -124,6 +124,27 @@ const callGeminiJson = async (args: {
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/```$/i, '')
       .trim();
+    const normalizeQuotes = (s: string) =>
+      s
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/\uFEFF/g, '');
+    const stripJsonComments = (s: string) =>
+      s
+        // /* ... */ comments
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        // // ... comments
+        .replace(/(^|\s)\/\/.*$/gm, '$1');
+    const stripTrailingCommas = (s: string) => {
+      let out = s;
+      for (let i = 0; i < 8; i++) {
+        const next = out.replace(/,\s*([}\]])/g, '$1');
+        if (next === out) return out;
+        out = next;
+      }
+      return out;
+    };
+    const repairJsonCandidate = (s: string) => stripTrailingCommas(stripJsonComments(normalizeQuotes(s))).trim();
     const extractFirstJsonObject = (input: string) => {
       const start = input.indexOf('{');
       if (start < 0) return null;
@@ -159,12 +180,22 @@ const callGeminiJson = async (args: {
     try {
       return JSON.parse(stripped);
     } catch {
+      // Try common repairs (Gemini sometimes includes trailing commas or comments despite instructions).
+      try {
+        return JSON.parse(repairJsonCandidate(stripped));
+      } catch {
+        // fall through
+      }
       const firstObj = extractFirstJsonObject(stripped);
       if (firstObj) {
         try {
           return JSON.parse(firstObj);
         } catch {
-          // fall through
+          try {
+            return JSON.parse(repairJsonCandidate(firstObj));
+          } catch {
+            // fall through
+          }
         }
       }
       const start = stripped.indexOf('{');
@@ -174,7 +205,11 @@ const callGeminiJson = async (args: {
         try {
           return JSON.parse(candidate);
         } catch {
-          // fall through
+          try {
+            return JSON.parse(repairJsonCandidate(candidate));
+          } catch {
+            // fall through
+          }
         }
       }
       throw new Error(`Gemini: response was not valid JSON. Preview: ${stripped.slice(0, 240)}`);
