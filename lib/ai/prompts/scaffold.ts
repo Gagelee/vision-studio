@@ -18,7 +18,7 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `Required top-level keys: "title","logline","styleGuide","locations","characters","sequences".\n` +
     `\n` +
     `Schema:\n` +
-    `- styleGuide: string (concise, production-ready style bible; include genre/tone/rendering style/palette/lighting/camera language; 6-12 bullet-like sentences)\n` +
+    `- styleGuide: string (DIRECTOR-created art core; assume user didn't specify style and you must decide it; include: rendering medium/style (e.g., live-action photoreal / anime / ink wash / oil painting), genre+tone, color palette, lighting mood, composition rules, camera language, negative constraints; 8-14 bullet-like sentences)\n` +
     `- locations: array of {name, description, visualStyle}\n` +
     `- characters: array of {name, description, looks:[{name, description}]}\n` +
     `- sequences: array of {title, context, shots:[...]} (2-4 sequences; 2-4 shots each)\n` +

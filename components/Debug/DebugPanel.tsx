@@ -51,22 +51,22 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
     }> = [];
 
     for (const e of events) {
-      if (e.message !== 'Response') continue;
+      if (e.message !== 'Response' && e.message !== 'HTTP error') continue;
       if (e.scope !== 'agent.scaffold' && e.scope !== 'agent.direct') continue;
       const json = (e as any)?.data?.json;
       const dbg = json?.debug || null;
-      const tt = Array.isArray(dbg?.teamTrace) ? dbg.teamTrace : null;
+      const tt = Array.isArray(dbg?.teamTrace) ? dbg.teamTrace : Array.isArray(json?.teamTrace) ? json.teamTrace : null;
       if (!tt || tt.length === 0) continue;
-      const msgs = Array.isArray(dbg?.teamMessages) ? dbg.teamMessages : null;
+      const msgs = Array.isArray(dbg?.teamMessages) ? dbg.teamMessages : Array.isArray(json?.teamMessages) ? json.teamMessages : null;
       sessions.push({
         ts: e.ts,
         scope: e.scope,
         endpoint: String((e as any)?.data?.url || ''),
-        provider: dbg?.provider ? String(dbg.provider) : undefined,
-        model: dbg?.model ? String(dbg.model) : undefined,
-        mode: dbg?.mode ? String(dbg.mode) : undefined,
-        traceId: dbg?.traceId ? String(dbg.traceId) : undefined,
-        multiAgentError: dbg?.multiAgentError ? String(dbg.multiAgentError) : undefined,
+        provider: dbg?.provider ? String(dbg.provider) : json?.provider ? String(json.provider) : undefined,
+        model: dbg?.model ? String(dbg.model) : json?.model ? String(json.model) : undefined,
+        mode: dbg?.mode ? String(dbg.mode) : json?.mode ? String(json.mode) : undefined,
+        traceId: dbg?.traceId ? String(dbg.traceId) : json?.traceId ? String(json.traceId) : undefined,
+        multiAgentError: dbg?.multiAgentError ? String(dbg.multiAgentError) : json?.multiAgentError ? String(json.multiAgentError) : undefined,
         teamTrace: tt,
         teamMessages: msgs || undefined,
       });

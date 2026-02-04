@@ -5,6 +5,7 @@ import { Character, CharacterLook, ModelRuntimeSettings, Sequence, Shot } from '
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt } from '../../lib/ai/prompts';
 import { openLightbox } from '../../lib/ui/lightboxStore';
+import { getCharacterActiveAvatarUrl, isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
 
 interface CharacterEditorProps {
   character: Character;
@@ -14,6 +15,7 @@ interface CharacterEditorProps {
   onSelectShot?: (shotId: string, seqId: string) => void;
   imageSettings?: ModelRuntimeSettings;
   keyVisualUrl?: string;
+  styleGuide?: string;
 }
 
 export const CharacterEditor: React.FC<CharacterEditorProps> = ({
@@ -24,6 +26,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   onSelectShot,
   imageSettings,
   keyVisualUrl,
+  styleGuide,
 }) => {
   const seedAvatarVersions = (c: Character) => {
     const existing = Array.isArray((c as any).avatarVersions) ? (c as any).avatarVersions : [];
@@ -108,12 +111,10 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     setIsGeneratingAvatar(true);
     try {
       const out = await generateImageFromPrompt({
-        prompt: buildCharacterAvatarPrompt(draft),
+        prompt: buildCharacterAvatarPrompt(draft, styleGuide),
         settings: imageSettings,
         aspectRatio: '1:1',
-        references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
         strict: true,
-        requireAllReferences: Boolean(keyVisualUrl),
       });
       const now = Date.now();
       const seeded = seedAvatarVersions(draft);
@@ -168,16 +169,20 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     setGenerationError(null);
     setGeneratingLookIds((m) => ({ ...m, [look.id]: true }));
     try {
-      const refs = [...(draft.avatarUrl ? [{ url: draft.avatarUrl, label: 'character base avatar' }] : [])];
+      const avatarUrl = getCharacterActiveAvatarUrl(draft);
+      if (!avatarUrl || isLikelyPlaceholderImageUrl(avatarUrl)) {
+        throw new Error('Blocked: Base character avatar not generated yet. Please generate the avatar first.');
+      }
+      const refs = [{ url: avatarUrl, label: 'character base avatar' }];
       const out = await generateImageFromPrompt({
         prompt:
-          buildCharacterLookPrompt(draft, look) +
+          buildCharacterLookPrompt(draft, look, styleGuide) +
           `\n\nKeep the exact same character identity as the reference avatar (same person, same face). Only change wardrobe/makeup/style described for this look.`,
         settings: imageSettings,
         aspectRatio: '1:1',
         references: refs,
         strict: true,
-        requireAllReferences: refs.length > 0,
+        requireAllReferences: true,
       });
       const now = Date.now();
       const seededLook = seedLookPreviewVersions(look);

@@ -581,8 +581,24 @@ export default function App() {
     addToast('Demo project created', 'success');
   };
 
+  const upsertWorkspaceProject = (project: Story) => {
+    setWorkspace((prev) => {
+      const idx = prev.projects.findIndex((p) => p.id === project.id);
+      if (idx < 0) return { ...prev, projects: [project, ...prev.projects] };
+      const projects = prev.projects.slice();
+      projects[idx] = project;
+      return { ...prev, projects };
+    });
+  };
+
   const handleCreationComplete = (project: Story, plan: AgentPlan, debug?: any) => {
-    setWorkspace((prev) => ({ ...prev, projects: [project, ...prev.projects], activeProjectId: project.id }));
+    setWorkspace((prev) => {
+      const idx = prev.projects.findIndex((p) => p.id === project.id);
+      const projects = prev.projects.slice();
+      if (idx < 0) projects.unshift(project);
+      else projects[idx] = project;
+      return { ...prev, projects, activeProjectId: project.id };
+    });
     setSelection({ type: 'story', id: project.id });
     setScreen('project');
 
@@ -1183,6 +1199,7 @@ export default function App() {
         <ProjectCreationWizard
           aiSettings={aiSettings}
           onComplete={handleCreationComplete}
+          onDraftProject={upsertWorkspaceProject}
           onCancel={() => setScreen('library')}
         />
         {isAiSettingsOpen && (
@@ -1299,6 +1316,7 @@ export default function App() {
               onSelectShot={(shotId, seqId) => setSelection({ type: 'shot', id: shotId, parentId: seqId })}
               imageSettings={aiSettings.image}
               keyVisualUrl={activeStory.keyVisualUrl}
+              styleGuide={activeStory.styleGuide}
               aspectRatio={activeStory.aspectRatio}
             />
           )}
@@ -1312,6 +1330,7 @@ export default function App() {
               onSelectShot={(shotId, seqId) => setSelection({ type: 'shot', id: shotId, parentId: seqId })}
               imageSettings={aiSettings.image}
               keyVisualUrl={activeStory.keyVisualUrl}
+              styleGuide={activeStory.styleGuide}
             />
           )}
         </div>
@@ -1355,6 +1374,7 @@ export default function App() {
           availableCharacters={activeStory.characters}
           keyVisualUrl={activeStory.keyVisualUrl}
           masterStyle={[
+            activeStory.styleGuide ? String(activeStory.styleGuide) : '',
             activeStory.intent ? `Intent: ${activeStory.intent}` : '',
             activeStory.logline ? `Logline: ${activeStory.logline}` : '',
           ]

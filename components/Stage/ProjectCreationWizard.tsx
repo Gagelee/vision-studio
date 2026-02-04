@@ -9,10 +9,11 @@ import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, 
 interface ProjectCreationWizardProps {
   aiSettings: AiSettings;
   onComplete: (project: Story, plan: AgentPlan, debug?: any) => void;
+  onDraftProject?: (project: Story) => void;
   onCancel: () => void;
 }
 
-export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ aiSettings, onComplete, onCancel }) => {
+export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ aiSettings, onComplete, onDraftProject, onCancel }) => {
   const [intent, setIntent] = useState('');
   const [ratio, setRatio] = useState<AspectRatio>('16:9');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -83,38 +84,42 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
 	          getStoryForRefs: () => storyRef.current,
 	          maxAttempts: 3,
 	          stopAfterMasterKvFailure: false,
-	          onEvent: (ev) => {
-	            const currentStory = storyRef.current || res.story;
-	            if (ev.type === 'start') {
-	              storyRef.current = applyAssetStart(currentStory, ev.job);
-              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
-              return;
-            }
-            if (ev.type === 'success') {
-              storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl);
-              done = ev.done;
-              setAssetDone(ev.done);
-              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
-              return;
-            }
-            if (ev.type === 'blocked') {
-              storyRef.current = applyAssetBlocked(currentStory, ev.job, ev.reason);
-              done = ev.done;
-              setAssetDone(ev.done);
-              setAssetErrors((n) => n + 1);
-              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
-              return;
-            }
-            // error
-            storyRef.current = applyAssetError(currentStory, ev.job, ev.error);
-            done = ev.done;
-            errors += 1;
-            setAssetDone(ev.done);
-            setAssetErrors((n) => n + 1);
-            setAssetCurrent(getJobLabel(ev.job, storyRef.current));
-          },
-        });
-      }
+		          onEvent: (ev) => {
+		            const currentStory = storyRef.current || res.story;
+		            if (ev.type === 'start') {
+		              storyRef.current = applyAssetStart(currentStory, ev.job);
+	              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                if (storyRef.current) onDraftProject?.(storyRef.current);
+	              return;
+	            }
+	            if (ev.type === 'success') {
+	              storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl);
+	              done = ev.done;
+	              setAssetDone(ev.done);
+	              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                if (storyRef.current) onDraftProject?.(storyRef.current);
+	              return;
+	            }
+	            if (ev.type === 'blocked') {
+	              storyRef.current = applyAssetBlocked(currentStory, ev.job, ev.reason);
+	              done = ev.done;
+	              setAssetDone(ev.done);
+	              setAssetErrors((n) => n + 1);
+	              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                if (storyRef.current) onDraftProject?.(storyRef.current);
+	              return;
+	            }
+	            // error
+	            storyRef.current = applyAssetError(currentStory, ev.job, ev.error);
+	            done = ev.done;
+	            errors += 1;
+	            setAssetDone(ev.done);
+	            setAssetErrors((n) => n + 1);
+	            setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+              if (storyRef.current) onDraftProject?.(storyRef.current);
+		          },
+		        });
+		      }
     }
 
     const finalStory = storyRef.current || res.story;
@@ -177,11 +182,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
               aiSettings,
               allowSingleFallback: Boolean(opts?.allowSingleFallback),
             });
-      lastScaffoldRef.current = res;
-      storyRef.current = res.story;
-      setPlan(res.plan);
-      await runAssets(res);
-    } catch (e) {
+	      lastScaffoldRef.current = res;
+	      storyRef.current = res.story;
+	      setPlan(res.plan);
+        onDraftProject?.(res.story);
+	      await runAssets(res);
+	    } catch (e) {
       if (isAgentApiError(e) && e.bodyJson?.errorCode === 'MULTI_AGENT_FAILED') {
         setCanSingleFallback(true);
         setError(String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message || 'Multi-agent scaffold failed'));

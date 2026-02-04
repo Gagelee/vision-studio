@@ -14,6 +14,7 @@ interface LocationEditorProps {
   onSelectShot?: (shotId: string, seqId: string) => void;
   imageSettings?: ModelRuntimeSettings;
   keyVisualUrl?: string;
+  styleGuide?: string;
   aspectRatio?: string;
 }
 
@@ -25,6 +26,7 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
   onSelectShot,
   imageSettings,
   keyVisualUrl,
+  styleGuide,
   aspectRatio,
 }) => {
   const seedPreviewVersions = (l: Location) => {
@@ -77,7 +79,7 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
     setIsGeneratingPreview(true);
     try {
       const out = await generateImageFromPrompt({
-        prompt: buildLocationPreviewPrompt(draft),
+        prompt: buildLocationPreviewPrompt(draft, styleGuide),
         settings: imageSettings,
         aspectRatio: aspectRatio || '16:9',
         strict: true,

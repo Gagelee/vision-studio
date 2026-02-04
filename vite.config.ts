@@ -332,6 +332,9 @@ const GEMINI_SCHEMA = {
 } as const;
 
 const getProxyDispatcher = (targetUrl: string, env: Record<string, string>) => {
+  const disableProxy = String(env.VISION_DISABLE_PROXY || env.DISABLE_PROXY || '').trim().toLowerCase();
+  if (disableProxy === '1' || disableProxy === 'true' || disableProxy === 'yes') return undefined;
+
   const proxyUrl =
     env.HTTPS_PROXY ||
     env.HTTP_PROXY ||
@@ -501,6 +504,7 @@ const callGeminiJson = async (args: {
   responseSchema?: any;
 }): Promise<any> => {
   const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
+  const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
 
   const parseJsonLenient = (raw: string) => {
     const text = String(raw || '').trim();
@@ -634,7 +638,7 @@ const callGeminiJson = async (args: {
         clearTimeout(timeout);
       }
     },
-    { label: `gemini.json:${args.model}`, maxAttempts: 3 },
+    { label: `gemini.json:${args.model}`, maxAttempts },
   );
 
   const data = (await res.json()) as any;
@@ -789,6 +793,7 @@ const callGeminiImage = async (args: {
   env?: Record<string, string>;
 }): Promise<{ mimeType: string; bytes: Buffer }> => {
   const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
+  const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
 
   const generationConfig: any = {
     temperature: args.temperature,
@@ -840,7 +845,7 @@ const callGeminiImage = async (args: {
         clearTimeout(timeout);
       }
     },
-    { label: `gemini.image:${args.model}`, maxAttempts: 3 },
+    { label: `gemini.image:${args.model}`, maxAttempts },
   );
 
   const parts = (data?.candidates?.[0]?.content?.parts || []) as any[];
@@ -1213,12 +1218,29 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
 
-        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string, debugExtra?: any) => {
-          // Minimal mapping into the app's Story schema. IDs generated server-side for stability.
-          const projectId = mkId('proj');
-          const locations = Array.isArray(spec?.locations) ? spec.locations : [];
-          const characters = Array.isArray(spec?.characters) ? spec.characters : [];
-          const sequences = Array.isArray(spec?.sequences) ? spec.sequences : [];
+	        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string, debugExtra?: any) => {
+	          // Minimal mapping into the app's Story schema. IDs generated server-side for stability.
+	          const projectId = mkId('proj');
+	          const locations = Array.isArray(spec?.locations) ? spec.locations : [];
+	          const characters = Array.isArray(spec?.characters) ? spec.characters : [];
+	          const sequences = Array.isArray(spec?.sequences) ? spec.sequences : [];
+	          const styleGuideRaw = String(spec?.styleGuide || '').trim();
+	          const styleGuideFallback = () => {
+	            const styles = locations
+	              .map((l: any) => String(l?.visualStyle || '').trim())
+	              .filter(Boolean)
+	              .slice(0, 3);
+	            const hints = styles.length ? `VisualStyle hints: ${styles.join(' | ')}.` : '';
+	            return (
+	              `Style Guide:\n` +
+	              `- Decide a clear rendering style/medium and stick to it.\n` +
+	              `- Use cohesive palette and lighting language across all assets.\n` +
+	              `- Keep character identity consistent across looks and shots.\n` +
+	              (hints ? `- ${hints}\n` : '') +
+	              `- No sudden style shifts; no text/watermarks.\n`
+	            );
+	          };
+	          const styleGuide = styleGuideRaw || styleGuideFallback();
 
           const locByName = new Map<string, any>();
           const mappedLocations = locations.map((l: any) => {
@@ -1315,7 +1337,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		              id: projectId,
 		              title: String(spec?.title || intent.split(/\s+/).slice(0, 4).join(' ') || 'New Masterpiece'),
 		              logline: String(spec?.logline || `An AI-directed story based on: "${intent}"`),
-		              styleGuide: String(spec?.styleGuide || '').trim(),
+		              styleGuide,
 		              intent,
 		              keyVisualUrl:
 		                keyVisualUrl ||
@@ -2159,38 +2181,57 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
-		          if (p === 'gemini' && geminiApiKey) {
-	              const teamTrace: any[] = [];
-	              const traceId = crypto.randomUUID();
-	              const call = async (agent: string, prompt: string, responseSchema?: any) => {
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', agent);
-	                try {
-	                  const out = await callGeminiJson({ apiKey: geminiApiKey, model, temperature, prompt, env, responseSchema });
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
-	                    model,
-	                    ms: Date.now() - started,
-	                    ok: true,
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  return out;
-	                } catch (e: any) {
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
-	                    model,
-	                    ms: Date.now() - started,
-	                    ok: false,
-	                    error: formatFetchError(e),
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  throw e;
-	                }
-	              };
+			          if (p === 'gemini' && geminiApiKey) {
+		              const teamTrace: any[] = [];
+		              const teamMessages: any[] = [];
+		              const traceId = crypto.randomUUID();
+		              const call = async (agent: string, prompt: string, responseSchema?: any) => {
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', agent);
+		                try {
+		                  const out = await callGeminiJson({ apiKey: geminiApiKey, model, temperature, prompt, env, responseSchema });
+		                  teamTrace.push({
+		                    agent,
+		                    provider: p,
+		                    model,
+		                    ms: Date.now() - started,
+		                    ok: true,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  });
+		                  teamMessages.push({
+		                    agent,
+		                    ok: true,
+		                    ms: Date.now() - started,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                    promptPreview: String(prompt || '').slice(0, 800),
+		                    responsePreview: JSON.stringify(out).slice(0, 1600),
+		                  });
+		                  return out;
+		                } catch (e: any) {
+		                  teamTrace.push({
+		                    agent,
+		                    provider: p,
+		                    model,
+		                    ms: Date.now() - started,
+		                    ok: false,
+		                    error: formatFetchError(e),
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  });
+		                  teamMessages.push({
+		                    agent,
+		                    ok: false,
+		                    ms: Date.now() - started,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                    promptPreview: String(prompt || '').slice(0, 800),
+		                    error: formatFetchError(e),
+		                  });
+		                  throw e;
+		                }
+		              };
 
               try {
                 const planner = await call(
@@ -2241,37 +2282,38 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 );
 
                 const actions = Array.isArray(final?.actions) ? final.actions : [];
-                return sendJson(res, 200, {
-                  reply: String(final?.reply || planner?.reply || 'OK'),
-                  plan: {
-                    id: mkId('plan'),
-                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
+		                return sendJson(res, 200, {
+		                  reply: String(final?.reply || planner?.reply || 'OK'),
+		                  plan: {
+		                    id: mkId('plan'),
+		                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
                     steps: [
                       { id: mkId('step'), title: 'Director: plan', status: 'done' },
                       ...(uniqAgents.map((a: string) => ({ id: mkId('step'), title: `Specialist: ${a}`, status: 'done' })) as any),
                       { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
                     ],
                     actions,
-	                  },
-	                  actions,
-	                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'multi-agent' },
-	                });
-	              } catch (e: any) {
-	                lastError = e;
-	                if (!allowSingleFallback) {
-	                  return sendJson(res, 502, {
+		                  },
+		                  actions,
+		                  debug: { transport: 'http', provider: p, model, teamTrace, teamMessages, traceId, mode: 'multi-agent' },
+		                });
+		              } catch (e: any) {
+		                lastError = e;
+		                if (!allowSingleFallback) {
+		                  return sendJson(res, 502, {
 	                    ok: false,
 	                    errorCode: 'MULTI_AGENT_FAILED',
 	                    message: 'Multi-agent director failed',
-	                    provider: p,
-	                    model,
-	                    traceId,
-	                    teamTrace,
-	                    multiAgentError: e?.message || String(e),
-	                    mode: 'multi-agent',
-	                  });
-	                }
-	                // Single-call fallback
+		                    provider: p,
+		                    model,
+		                    traceId,
+		                    teamTrace,
+		                    teamMessages,
+		                    multiAgentError: e?.message || String(e),
+		                    mode: 'multi-agent',
+		                  });
+		                }
+		                // Single-call fallback
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('direct', 'director.actions');
 	                const output = await callGeminiJson({
@@ -2285,18 +2327,34 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                  }),
 	                  env,
 	                });
-	                teamTrace.push({
-	                  agent: 'director.actions',
-	                  provider: p,
-	                  model,
-	                  ms: Date.now() - started,
-	                  ok: true,
-	                  promptId: meta?.id,
-	                  promptVersion: meta?.version,
-	                });
-	                const actions = Array.isArray(output?.actions) ? output.actions : [];
-	                return sendJson(res, 200, {
-	                  reply: String(output?.reply || 'OK'),
+		                teamTrace.push({
+		                  agent: 'director.actions',
+		                  provider: p,
+		                  model,
+		                  ms: Date.now() - started,
+		                  ok: true,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                });
+		                teamMessages.push({
+		                  agent: 'director.actions',
+		                  ok: true,
+		                  ms: Date.now() - started,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                  promptPreview: String(
+		                    buildDirectorActionsPrompt({
+		                      selectionJson,
+		                      storyJson: story ? storyJson : undefined,
+		                      directive: message,
+		                    }),
+		                  ).slice(0, 800),
+		                  responsePreview: JSON.stringify(output).slice(0, 1600),
+		                  multiAgentError: e?.message || String(e),
+		                });
+		                const actions = Array.isArray(output?.actions) ? output.actions : [];
+		                return sendJson(res, 200, {
+		                  reply: String(output?.reply || 'OK'),
                   plan: {
                     id: mkId('plan'),
                     summary: 'Generated structured actions (Gemini, single-call fallback).',
@@ -2305,12 +2363,21 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       { id: mkId('step'), title: 'Generate structured actions', status: 'done' },
                     ],
                     actions,
-	                  },
-	                  actions,
-	                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'single-call', multiAgentError: e?.message || String(e) },
-	                });
-	              }
-		          }
+		                  },
+		                  actions,
+		                  debug: {
+		                    transport: 'http',
+		                    provider: p,
+		                    model,
+		                    teamTrace,
+		                    teamMessages,
+		                    traceId,
+		                    mode: 'single-call',
+		                    multiAgentError: e?.message || String(e),
+		                  },
+		                });
+		              }
+			          }
 
 		          if (p === 'openai' && env.OPENAI_API_KEY) {
 	              const teamTrace: any[] = [];

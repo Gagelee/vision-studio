@@ -35,6 +35,8 @@ export const buildTeamScaffoldDirectorBriefPrompt = (args: { intent: string; asp
     `Rules:\n` +
     `- Keep it compact but concrete. Prefer 3-6 characters, 2-5 locations, 2-4 sequences.\n` +
     `- Characters MUST be distinct and reusable across shots.\n` +
+    `- If user didn't specify art style, YOU must decide a clear artistic core.\n` +
+    `- styleBible.visualKeywords MUST include rendering style/medium (e.g., ink wash, anime, photoreal, watercolor), palette and texture cues.\n` +
     `Intent: ${intent}\n` +
     `AspectRatio: ${aspectRatio}\n`
   );
@@ -86,6 +88,7 @@ export const buildTeamScaffoldCastingDirectorPrompt = (args: { directorBriefJson
     `Rules:\n` +
     `- Keep identity anchors stable across looks (face, hair, body type, signature details).\n` +
     `- Produce 2-4 looks per character when appropriate.\n` +
+    `- Ensure all character descriptions are compatible with director style bible (rendering style, tone).\n` +
     `DirectorBrief: ${brief}\n`
   );
 };
@@ -169,6 +172,7 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
     `Rules:\n` +
     `- "videoPrompt" must be self-contained and consistent with director style bible.\n` +
     `- Include environment + cast + action + lens/camera + lighting cues.\n` +
+    `- Start each "videoPrompt" with a short STYLE header derived from director style bible (rendering style/medium, palette, lighting mood, camera language).\n` +
     `- No text/watermarks.\n` +
     `AspectRatio: ${aspectRatio}\n` +
     `DirectorBrief: ${brief}\n` +

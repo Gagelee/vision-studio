@@ -225,6 +225,8 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
       return false;
     }
   };
+  const isNewPlaceholder = isLikelyPlaceholderUrl(imageUrl);
+  const dropPlaceholders = (versions: any[]) => (Array.isArray(versions) ? versions.filter((v: any) => String(v?.type || '') !== 'placeholder') : []);
 
   if (job.kind === 'masterkv') {
     const existing = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
@@ -239,7 +241,8 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
             },
           ]
         : [];
-    const base = existing.length ? existing : seededBase;
+    const baseRaw = existing.length ? existing : seededBase;
+    const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
     const id = `kv-${now}-${rand()}`;
     const versions = [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }];
     return {
@@ -270,9 +273,10 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
                           createdAt: (l as any).assetState?.lastAttemptAt || now,
                           type: isLikelyPlaceholderUrl(String(l.previewUrl)) ? 'placeholder' : 'base',
                         },
-                      ]
+                        ]
                     : [];
-                const base = existing.length ? existing : seededBase;
+                const baseRaw = existing.length ? existing : seededBase;
+                const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
                 const id = `pv-${now}-${rand()}`;
                 return {
                   previewVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
@@ -307,7 +311,8 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
                         },
                       ]
                     : [];
-                const base = existing.length ? existing : seededBase;
+                const baseRaw = existing.length ? existing : seededBase;
+                const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
                 const id = `av-${now}-${rand()}`;
                 return {
                   avatarVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
@@ -346,7 +351,8 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
                             },
                           ]
                         : [];
-                    const base = existing.length ? existing : seededBase;
+                    const baseRaw = existing.length ? existing : seededBase;
+                    const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
                     const id = `lv-${now}-${rand()}`;
                     return {
                       previewVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
@@ -371,14 +377,31 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
         ...seq,
         shots: seq.shots.map((s) => {
           if (s.id !== job.shot.id) return s;
-          const first = s.versions?.[0];
-          const nextVersions = first
-            ? [{ ...first, imageUrl }, ...(s.versions || []).slice(1)]
-            : [{ id: 'v1', imageUrl, createdAt: Date.now(), type: 'base' }];
+          const existing = Array.isArray((s as any).versions) ? (s as any).versions : [];
+          const cleaned = isNewPlaceholder ? existing : dropPlaceholders(existing);
+
+          // If we only had a placeholder base, replace it and keep the same id so selection stays stable.
+          if (!isNewPlaceholder && existing.length === 1 && cleaned.length === 0 && existing[0]) {
+            const base = existing[0];
+            const nextVersions = [{ ...base, imageUrl, createdAt: now, type: 'base' }];
+            return {
+              ...s,
+              versions: nextVersions,
+              activeVersionId: base.id,
+              thumbnailUrl: imageUrl,
+              aiState: 'idle',
+              aiPrompt: '',
+              assetState: bumpState((s as any).assetState, { status: 'done', lastError: '' }),
+            };
+          }
+
+          const baseList = cleaned.length ? cleaned : existing;
+          const id = `v-${now}-${rand()}`;
+          const nextVersions = [...baseList, { id, imageUrl, createdAt: now, type: baseList.length ? 'variation' : 'base' }];
           return {
             ...s,
             versions: nextVersions,
-            activeVersionId: nextVersions[0].id,
+            activeVersionId: id,
             thumbnailUrl: imageUrl,
             aiState: 'idle',
             aiPrompt: '',
@@ -444,12 +467,16 @@ export const executeAssetJobs = async (args: {
 
     if (kind === 'location') {
       const ids = new Set(phaseJobs.filter((j) => j.kind === 'location').map((j: any) => String(j.locationId)));
-      return (story.locations || []).filter((l) => ids.has(l.id)).every((l) => isDone((l as any).assetState));
+      return (story.locations || [])
+        .filter((l) => ids.has(l.id))
+        .every((l) => isDone((l as any).assetState) && Boolean(getLocationActivePreviewUrl(l)));
     }
 
     if (kind === 'character') {
       const ids = new Set(phaseJobs.filter((j) => j.kind === 'character').map((j: any) => String(j.characterId)));
-      return (story.characters || []).filter((c) => ids.has(c.id)).every((c) => isDone((c as any).assetState));
+      return (story.characters || [])
+        .filter((c) => ids.has(c.id))
+        .every((c) => isDone((c as any).assetState) && Boolean(getCharacterActiveAvatarUrl(c)));
     }
 
     if (kind === 'look') {
@@ -457,7 +484,7 @@ export const executeAssetJobs = async (args: {
         if (j.kind !== 'look') continue;
         const ch = (story.characters || []).find((c) => c.id === j.characterId);
         const lk = ch?.looks?.find((x) => x.id === j.lookId);
-        if (!lk || !isDone((lk as any).assetState)) return false;
+        if (!lk || !isDone((lk as any).assetState) || !getLookActivePreviewUrl(lk)) return false;
       }
       return true;
     }
@@ -467,6 +494,8 @@ export const executeAssetJobs = async (args: {
       if (j.kind !== 'shot') continue;
       const sh = resolveShotFromStory(story, j.sequenceId, j.shot.id);
       if (!sh || !isDone((sh as any).assetState)) return false;
+      const thumb = String((sh as any).thumbnailUrl || '').trim();
+      if (!thumb || isLikelyPlaceholderImageUrl(thumb)) return false;
     }
     return true;
   };
