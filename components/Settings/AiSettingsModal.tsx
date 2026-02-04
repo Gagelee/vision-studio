@@ -41,6 +41,7 @@ const ProfileEditor: React.FC<{
   title: string;
   value: ModelRuntimeSettings;
   onChange: (patch: Partial<ModelRuntimeSettings>) => void;
+  showFunctionCalling?: boolean;
 }> = ({ title, value, onChange }) => {
   return (
     <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
@@ -110,6 +111,16 @@ const ProfileEditor: React.FC<{
         </div>
 
         <div className="flex items-center gap-6 pt-2">
+          {Boolean(showFunctionCalling) && (
+            <label className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                checked={Boolean((value as any).useFunctionCalling)}
+                onChange={(e) => onChange({ useFunctionCalling: e.target.checked } as any)}
+              />
+              Function calling (strict actions)
+            </label>
+          )}
           <label className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
             <input
               type="checkbox"
@@ -198,6 +209,7 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ settings, onSa
             title="Director Console (Follow-up directives)"
             value={draft.direct}
             onChange={(patch) => setDraft((prev) => updateProfile(prev, 'direct', patch))}
+            showFunctionCalling
           />
 
           <ProfileEditor

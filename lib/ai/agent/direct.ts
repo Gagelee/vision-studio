@@ -8,6 +8,7 @@ export interface DirectorCommandRequest {
   story: Story;
   settings: ModelRuntimeSettings;
   allowSingleFallback?: boolean;
+  useFunctionCalling?: boolean;
 }
 
 export interface DirectorCommandResponse {
@@ -340,6 +341,7 @@ export const runDirectorCommand = async (req: DirectorCommandRequest): Promise<D
         selection: req.selection,
         story: req.story,
         allowSingleFallback: Boolean(req.allowSingleFallback),
+        useFunctionCalling: Boolean(req.useFunctionCalling ?? (req.settings as any)?.useFunctionCalling),
         settings: {
           provider: req.settings.provider,
           model: req.settings.model,

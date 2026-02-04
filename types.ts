@@ -25,6 +25,8 @@ export interface ModelRuntimeSettings {
   temperature: number;
   maxOutputTokens?: number;
   baseUrl?: string;
+  // Opt-in for agents that can use structured tool/function calling (more reliable than raw JSON).
+  useFunctionCalling?: boolean;
   debug?: {
     enabled: boolean;
     logPrompts: boolean;

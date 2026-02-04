@@ -1034,14 +1034,15 @@ export default function App() {
 
         let res: DirectorCommandResponse;
         try {
-          res = await runDirectorCommand({
-            message: msg,
-            selection: selectionSnapshot,
-            story: activeStory,
-            settings: aiSettings.direct,
-            allowSingleFallback: false,
-          });
-        } catch (e) {
+	          res = await runDirectorCommand({
+	            message: msg,
+	            selection: selectionSnapshot,
+	            story: activeStory,
+	            settings: aiSettings.direct,
+	            allowSingleFallback: false,
+              useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
+	          });
+	        } catch (e) {
           const errMsg = isAgentApiError(e)
             ? String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message)
             : e instanceof Error
@@ -1113,13 +1114,14 @@ export default function App() {
         const selectionSnapshot = pendingDirectorMultiAgentFailure.selection;
 
         try {
-          const res = await runDirectorCommand({
-            message: msg,
-            selection: selectionSnapshot,
-            story: activeStory,
-            settings: aiSettings.direct,
-            allowSingleFallback,
-          });
+	          const res = await runDirectorCommand({
+	            message: msg,
+	            selection: selectionSnapshot,
+	            story: activeStory,
+	            settings: aiSettings.direct,
+	            allowSingleFallback,
+              useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
+	          });
 
           const agentEntry: AgentLogEntry = {
             id: `sys-${Date.now()}`,
