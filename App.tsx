@@ -1140,6 +1140,9 @@ export default function App() {
             <ProjectDashboard
               story={activeStory}
               onSelect={handleSelect}
+              imageSettings={aiSettings.image}
+              onUpdateStory={updateActiveStory}
+              onToast={addToast}
               onPlayCinema={() => {
                 setIsPlayingMaster(true);
                 addToast('Starting Master Screen...', 'success');

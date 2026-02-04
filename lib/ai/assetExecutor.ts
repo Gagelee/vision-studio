@@ -213,7 +213,28 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
   const rand = () => Math.random().toString(16).slice(2, 8);
 
   if (job.kind === 'masterkv') {
-    return { ...story, keyVisualUrl: imageUrl, masterKvState: bumpState((story as any).masterKvState, { status: 'done', lastError: '' }) };
+    const existing = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
+    const seededBase =
+      !existing.length && story.keyVisualUrl && String(story.keyVisualUrl) !== String(imageUrl)
+        ? [
+            {
+              id: `kv-seed-${now}-${rand()}`,
+              imageUrl: String(story.keyVisualUrl),
+              createdAt: (story as any).masterKvState?.lastAttemptAt || now,
+              type: 'base',
+            },
+          ]
+        : [];
+    const base = existing.length ? existing : seededBase;
+    const id = `kv-${now}-${rand()}`;
+    const versions = [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }];
+    return {
+      ...story,
+      keyVisualUrl: imageUrl,
+      keyVisualVersions: versions as any,
+      activeKeyVisualVersionId: id as any,
+      masterKvState: bumpState((story as any).masterKvState, { status: 'done', lastError: '' }),
+    };
   }
 
   if (job.kind === 'location') {
@@ -366,9 +387,6 @@ export const executeAssetJobs = async (args: {
     return shot || null;
   };
 
-  const isDone = (st: any) => st && st.status === 'done';
-  const getMasterOk = (s: Story | null) => Boolean(s && (s.keyVisualUrl || '').trim() && isDone((s as any).masterKvState));
-
   const pickActiveImageUrl = (args: {
     entity: any;
     versionsKey: string;
@@ -389,6 +407,16 @@ export const executeAssetJobs = async (args: {
     if (fallback) return fallback;
     return '';
   };
+
+  const isDone = (st: any) => st && st.status === 'done';
+  const getStoryActiveKvUrl = (s: any) =>
+    pickActiveImageUrl({
+      entity: s,
+      versionsKey: 'keyVisualVersions',
+      activeIdKey: 'activeKeyVisualVersionId',
+      fallbackUrl: s?.keyVisualUrl,
+    });
+  const getMasterOk = (s: Story | null) => Boolean(s && getStoryActiveKvUrl(s) && isDone((s as any).masterKvState));
 
   const getLocationActivePreviewUrl = (loc: any) =>
     pickActiveImageUrl({
@@ -500,7 +528,8 @@ export const executeAssetJobs = async (args: {
 
   const buildShotReferences = (story: Story, shot: Shot): ImageReference[] => {
     const refs: ImageReference[] = [];
-    if (getMasterOk(story) && story.keyVisualUrl) refs.push({ url: story.keyVisualUrl, label: 'master kv' });
+    const kvUrl = getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
+    if (kvUrl) refs.push({ url: kvUrl, label: 'master kv' });
 
     const loc = (story.locations || []).find((l) => l.id === shot.locationId);
     const locUrl = loc && isDone((loc as any).assetState) ? getLocationActivePreviewUrl(loc) : '';
@@ -602,34 +631,37 @@ export const executeAssetJobs = async (args: {
           return { imageUrl: out.imageUrl, debug: out.debug };
         }
 
-        if (job.kind === 'location') {
-          const story = args.getStoryForRefs?.() || null;
-          const out = await generateImageFromPrompt({
-            prompt: job.prompt,
-            settings: args.settings,
-            aspectRatio: args.aspectRatio,
-            references: story && getMasterOk(story) && story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : [],
-            strict: true,
-          });
-          return { imageUrl: out.imageUrl, debug: out.debug };
-        }
+	        if (job.kind === 'location') {
+	          const story = args.getStoryForRefs?.() || null;
+	          const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
+	          const out = await generateImageFromPrompt({
+	            prompt: job.prompt,
+	            settings: args.settings,
+	            aspectRatio: args.aspectRatio,
+	            references: kvUrl ? [{ url: kvUrl, label: 'master kv' }] : [],
+	            strict: true,
+	          });
+	          return { imageUrl: out.imageUrl, debug: out.debug };
+	        }
 
-        if (job.kind === 'character') {
-          const story = args.getStoryForRefs?.() || null;
-          const out = await generateImageFromPrompt({
-            prompt: job.prompt,
-            settings: args.settings,
-            aspectRatio: '1:1',
-            references: story && getMasterOk(story) && story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : [],
-            strict: true,
-          });
-          return { imageUrl: out.imageUrl, debug: out.debug };
-        }
+	        if (job.kind === 'character') {
+	          const story = args.getStoryForRefs?.() || null;
+	          const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
+	          const out = await generateImageFromPrompt({
+	            prompt: job.prompt,
+	            settings: args.settings,
+	            aspectRatio: '1:1',
+	            references: kvUrl ? [{ url: kvUrl, label: 'master kv' }] : [],
+	            strict: true,
+	          });
+	          return { imageUrl: out.imageUrl, debug: out.debug };
+	        }
 
 	        // look
 	        const story = args.getStoryForRefs?.() || null;
 	        const ch = story ? (story.characters || []).find((c) => c.id === job.characterId) : null;
 	        const avatarUrl = ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch) : '';
+	        const kvUrl = story && getMasterOk(story) ? getStoryActiveKvUrl(story) : '';
 	        const out = await generateImageFromPrompt({
 	          prompt:
 	            job.prompt +
@@ -637,7 +669,7 @@ export const executeAssetJobs = async (args: {
 	          settings: args.settings,
 	          aspectRatio: '1:1',
 	          references: [
-	            ...(story && getMasterOk(story) && story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'master kv' }] : []),
+	            ...(kvUrl ? [{ url: kvUrl, label: 'master kv' }] : []),
 	            ...(avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : []),
 	          ],
 	          strict: true,

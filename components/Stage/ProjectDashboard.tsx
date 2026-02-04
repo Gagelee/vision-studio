@@ -1,6 +1,6 @@
 
-import React from 'react';
-import { Story, SelectionState } from '../../types';
+import React, { useMemo, useState } from 'react';
+import { ModelRuntimeSettings, Story, SelectionState } from '../../types';
 import { 
   Play, 
   ChevronRight,
@@ -10,19 +10,139 @@ import {
   Clock,
   Sparkles,
   Clapperboard,
-  Maximize
+  Maximize,
+  AlertTriangle,
+  Image as ImageIcon
 } from 'lucide-react';
+import { generateImageFromPrompt } from '../../lib/ai/image/generate';
+import { buildMasterKeyVisualPrompt } from '../../lib/ai/prompts';
 
 interface ProjectDashboardProps {
   story: Story;
   onSelect: (sel: SelectionState) => void;
   onPlayCinema: () => void;
+  imageSettings?: ModelRuntimeSettings;
+  onUpdateStory: (updater: (prev: Story) => Story) => void;
+  onToast?: (message: string, type?: 'success' | 'info') => void;
 }
 
-export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ story, onSelect, onPlayCinema }) => {
+export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
+  story,
+  onSelect,
+  onPlayCinema,
+  imageSettings,
+  onUpdateStory,
+  onToast,
+}) => {
   const totalShots = story.sequences.reduce((acc, seq) => acc + seq.shots.length, 0);
   const totalDuration = story.sequences.reduce((acc, seq) => acc + seq.shots.reduce((sAcc, shot) => sAcc + shot.duration, 0), 0);
   const firstSeqId = story.sequences[0]?.id;
+
+  const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
+  const [isGeneratingKv, setIsGeneratingKv] = useState(false);
+  const [kvError, setKvError] = useState<string | null>(null);
+
+  const kvVersions = useMemo(() => {
+    const existing = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
+    if (existing.length) return existing;
+    const url = String(story.keyVisualUrl || '').trim();
+    if (!url) return [];
+    const createdAt = (story as any).masterKvState?.lastAttemptAt || story.createdAt || Date.now();
+    return [{ id: 'kv-1', imageUrl: url, createdAt, type: 'base' }];
+  }, [story]);
+
+  const activeKvId = useMemo(() => {
+    const id = String((story as any).activeKeyVisualVersionId || '').trim();
+    if (id) return id;
+    return String(kvVersions[kvVersions.length - 1]?.id || '');
+  }, [kvVersions, story]);
+
+  const handleSelectKvVariant = (versionId: string) => {
+    const v = (kvVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
+    if (!v?.imageUrl) return;
+    onUpdateStory((prev) => ({
+      ...prev,
+      keyVisualUrl: String(v.imageUrl),
+      keyVisualVersions: kvVersions as any,
+      activeKeyVisualVersionId: String(versionId) as any,
+      masterKvState: {
+        ...(prev as any).masterKvState,
+        status: 'done',
+        lastError: '',
+      },
+    }));
+    onToast?.('Master KV set active', 'info');
+  };
+
+  const handleGenerateKvVariant = async () => {
+    if (!canGenerate || isGeneratingKv) return;
+    setKvError(null);
+    setIsGeneratingKv(true);
+    const now = Date.now();
+    onUpdateStory((prev) => ({
+      ...prev,
+      masterKvState: {
+        ...(prev as any).masterKvState,
+        status: 'running',
+        lastAttemptAt: now,
+        attempts: ((prev as any).masterKvState?.attempts || 0) + 1,
+      },
+    }));
+
+    try {
+      const baseExisting = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
+      const baseSeed =
+        !baseExisting.length && story.keyVisualUrl
+          ? [{ id: `kv-seed-${now}`, imageUrl: String(story.keyVisualUrl), createdAt: now, type: 'base' }]
+          : [];
+      const baseVersions = baseExisting.length ? baseExisting : baseSeed;
+
+      const refs = story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'current master kv' }] : [];
+      const out = await generateImageFromPrompt({
+        prompt: buildMasterKeyVisualPrompt({ intent: story.intent, logline: story.logline }),
+        settings: imageSettings!,
+        aspectRatio: story.aspectRatio,
+        references: refs,
+        strict: true,
+      });
+
+      const id = `kv-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const createdAt = Date.now();
+      const nextVersions = [
+        ...baseVersions,
+        { id, imageUrl: out.imageUrl, createdAt, type: baseVersions.length ? 'variation' : 'base' },
+      ];
+
+      onUpdateStory((prev) => ({
+        ...prev,
+        keyVisualUrl: out.imageUrl,
+        keyVisualVersions: nextVersions as any,
+        activeKeyVisualVersionId: id as any,
+        masterKvState: {
+          ...(prev as any).masterKvState,
+          status: 'done',
+          lastError: '',
+          lastAttemptAt: createdAt,
+        },
+      }));
+      onToast?.('Master KV generated', 'success');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setKvError(msg);
+      onUpdateStory((prev) => ({
+        ...prev,
+        masterKvState: {
+          ...(prev as any).masterKvState,
+          status: 'error',
+          lastError: msg,
+          lastAttemptAt: Date.now(),
+        },
+      }));
+      onToast?.('Master KV generation failed', 'info');
+    } finally {
+      setIsGeneratingKv(false);
+    }
+  };
 
   return (
     <div className="flex-1 h-full overflow-y-auto custom-scrollbar bg-white dark:bg-[#050505] scroll-smooth">
@@ -99,6 +219,89 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ story, onSel
 
       {/* Production Modules */}
       <div className="p-12 max-w-7xl mx-auto space-y-20 pb-40">
+
+        {/* Master KV */}
+        <section className="bg-white dark:bg-zinc-900/30 border border-zinc-200 dark:border-zinc-800 rounded-[40px] overflow-hidden shadow-sm">
+          <div className="p-10 flex items-start justify-between gap-8 border-b border-zinc-100 dark:border-zinc-800/50">
+            <div className="min-w-0">
+              <div className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400 flex items-center gap-3">
+                <Anchor className="w-5 h-5 text-[#ee4d2d]" />
+                Master Key Visual
+              </div>
+              <div className="mt-3 text-zinc-700 dark:text-zinc-200 font-medium max-w-2xl leading-relaxed">
+                This is the global style anchor. All environments, casting, and storyboard keyframes should reference the active Master KV variant.
+              </div>
+              {(story as any).masterKvState?.status === 'error' && (
+                <div className="mt-4 text-xs text-rose-200 bg-rose-500/10 border border-rose-500/20 rounded-2xl px-4 py-3 flex items-start gap-3">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <div className="break-words">
+                    <div className="font-bold mb-0.5">KV generation failed</div>
+                    <div className="opacity-80">{String((story as any).masterKvState?.lastError || kvError || '')}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="shrink-0 flex flex-col items-end gap-3">
+              <button
+                onClick={handleGenerateKvVariant}
+                disabled={!canGenerate || isGeneratingKv}
+                className={`flex items-center gap-2 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-sm ${
+                  !canGenerate
+                    ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 cursor-not-allowed border border-zinc-200 dark:border-zinc-700'
+                    : 'bg-[#ee4d2d] hover:bg-[#f05d40] text-white'
+                }`}
+                title={!canGenerate ? 'Image provider is Mock' : story.keyVisualUrl ? 'Generate KV variant' : 'Generate Master KV'}
+              >
+                <Sparkles className={`w-4 h-4 ${isGeneratingKv ? 'animate-pulse' : ''}`} />
+                {isGeneratingKv ? 'Generating…' : story.keyVisualUrl ? 'Generate Variant' : 'Generate KV'}
+              </button>
+              <div className="text-[10px] font-mono text-zinc-400">
+                Status: {(story as any).masterKvState?.status || 'idle'}
+              </div>
+            </div>
+          </div>
+
+          <div className="p-10 grid grid-cols-1 lg:grid-cols-2 gap-10 items-start">
+            <div className="relative aspect-video rounded-3xl overflow-hidden bg-zinc-100 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 shadow-2xl">
+              {story.keyVisualUrl ? (
+                <img src={story.keyVisualUrl} className="w-full h-full object-cover" alt="Master KV" />
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center text-zinc-400">
+                  <ImageIcon className="w-8 h-8" />
+                  <div className="mt-3 text-xs font-bold uppercase tracking-widest">No Master KV</div>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Variants</div>
+              {kvVersions.length <= 1 ? (
+                <div className="text-sm text-zinc-500 dark:text-zinc-400">
+                  Generate more variants to audition different global art directions, then click one to set active.
+                </div>
+              ) : (
+                <div className="flex gap-3 overflow-x-auto no-scrollbar">
+                  {kvVersions.slice().reverse().map((v: any) => {
+                    const isActive = String(v.id) === String(activeKvId);
+                    return (
+                      <button
+                        key={String(v.id)}
+                        onClick={() => handleSelectKvVariant(String(v.id))}
+                        className={`relative w-40 aspect-video rounded-2xl overflow-hidden border-2 shrink-0 transition-all ${
+                          isActive ? 'border-emerald-500' : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-600'
+                        }`}
+                        title={isActive ? 'Active' : 'Set active'}
+                      >
+                        <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
         
         {/* Narrative Roadmap */}
         <section>

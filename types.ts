@@ -144,7 +144,9 @@ export interface Story {
   title: string;
   logline: string;
   intent?: string;
-  keyVisualUrl?: string; 
+  keyVisualUrl?: string;
+  keyVisualVersions?: AssetImageVersion[];
+  activeKeyVisualVersionId?: string;
   masterKvState?: AssetGenerationState;
   aspectRatio: AspectRatio;
   status: 'scaffolding' | 'ready';
