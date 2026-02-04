@@ -471,6 +471,12 @@ const withRetries = async <T,>(
   throw lastErr;
 };
 
+const resolveGeminiBaseUrl = (env?: Record<string, string>) => {
+  const raw = String(env?.COMPASS_GATEWAY_URL || env?.GATEWAY_URL || env?.GEMINI_BASE_URL || '').trim();
+  if (raw) return raw.replace(/\/$/, '');
+  return 'https://generativelanguage.googleapis.com/v1beta';
+};
+
 const callGeminiJson = async (args: {
   apiKey: string;
   model: string;
@@ -480,7 +486,8 @@ const callGeminiJson = async (args: {
   env?: Record<string, string>;
   responseSchema?: any;
 }): Promise<any> => {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
+  const baseUrl = resolveGeminiBaseUrl(args.env);
+  const url = `${baseUrl}/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
 
   const parseJsonLenient = (raw: string) => {
     const text = String(raw || '').trim();
@@ -685,7 +692,7 @@ const getProviderCandidates = (preferred: string, env: Record<string, string>): 
   const unique = [pref, ...all].filter(Boolean) as ModelProvider[];
 
   const hasKey = (p: ModelProvider) => {
-    if (p === 'gemini') return Boolean(env.GEMINI_API_KEY);
+    if (p === 'gemini') return Boolean(env.COMPASS_API_KEY || env.GEMINI_API_KEY);
     if (p === 'openai') return Boolean(env.OPENAI_API_KEY);
     if (p === 'deepseek') return Boolean(env.DEEPSEEK_API_KEY);
     return false;
@@ -768,7 +775,8 @@ const callGeminiImage = async (args: {
   references?: Array<{ mimeType: string; bytes: Buffer; label?: string }>;
   env?: Record<string, string>;
 }): Promise<{ mimeType: string; bytes: Buffer }> => {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
+  const baseUrl = resolveGeminiBaseUrl(args.env);
+  const url = `${baseUrl}/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`;
 
   const generationConfig: any = {
     temperature: args.temperature,
@@ -833,6 +841,12 @@ const callGeminiImage = async (args: {
 };
 
 const agentApiPlugin = (env: Record<string, string>): Plugin => {
+  // Support calling Gemini through internal gateways (e.g. Compass) by setting:
+  // - COMPASS_API_KEY / COMPASS_GATEWAY_URL (or GATEWAY_URL)
+  // Falls back to direct Google Gemini via GEMINI_API_KEY.
+  const geminiApiKey = String(env.COMPASS_API_KEY || env.GEMINI_API_KEY || '').trim();
+  const geminiBaseUrl = resolveGeminiBaseUrl(env);
+
   const applyRoutes = (middlewares: any) => {
     middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') return next();
@@ -877,7 +891,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const promptPreview = prompt.slice(0, 120);
 
         try {
-          if (provider === 'gemini' && env.GEMINI_API_KEY) {
+          if (provider === 'gemini' && geminiApiKey) {
             const usedModel = normalizeGeminiImageModel(model);
             ensureGeneratedDir();
 
@@ -990,15 +1004,15 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              throw new Error(`Missing required reference image(s): ${list || 'unknown'}`);
 	            }
 
-	            const out = await callGeminiImage({
-	              apiKey: env.GEMINI_API_KEY,
-	              model: usedModel,
-	              temperature,
-	              prompt,
-	              aspectRatio,
-	              references: loadedRefs,
-	              env,
-	            });
+		            const out = await callGeminiImage({
+		              apiKey: geminiApiKey,
+		              model: usedModel,
+		              temperature,
+		              prompt,
+		              aspectRatio,
+		              references: loadedRefs,
+		              env,
+		            });
 
             const ext =
               out.mimeType === 'image/png'
@@ -1017,17 +1031,18 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
             return sendJson(res, 200, {
               imageUrl: `/__generated__/${filename}`,
-	              debug: {
-	                transport: 'http',
-	                provider,
-	                model: usedModel,
-	                mimeType: out.mimeType,
-	                bytes: out.bytes.length,
-	                promptPreview,
-	                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
-	                requireAllReferences,
-	                missingReferences: missingRefs,
-	              },
+		              debug: {
+		                transport: 'http',
+		                provider,
+		                model: usedModel,
+                    baseUrl: geminiBaseUrl,
+		                mimeType: out.mimeType,
+		                bytes: out.bytes.length,
+		                promptPreview,
+		                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
+		                requireAllReferences,
+		                missingReferences: missingRefs,
+		              },
 	            });
 	          }
 	        } catch (e: any) {
@@ -1281,7 +1296,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                const meta = getPromptMetaForAgent('scaffold', agent);
 	                try {
 	                  const out = await callGeminiJson({
-                    apiKey: env.GEMINI_API_KEY,
+                    apiKey: geminiApiKey,
                     model: String(opts?.model || chosenModel),
                     temperature: Number(opts?.temperature ?? chosenTemperature),
                     maxOutputTokens: Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192),
@@ -1392,7 +1407,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
 	                const spec = await callGeminiJson({
-	                  apiKey: env.GEMINI_API_KEY,
+	                  apiKey: geminiApiKey,
 	                  model: chosenModel,
 	                  temperature: chosenTemperature,
                   maxOutputTokens: resolvedMergeTokens,
@@ -1976,14 +1991,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
-		          if (p === 'gemini' && env.GEMINI_API_KEY) {
+		          if (p === 'gemini' && geminiApiKey) {
 	              const teamTrace: any[] = [];
 	              const traceId = crypto.randomUUID();
 	              const call = async (agent: string, prompt: string, responseSchema?: any) => {
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('direct', agent);
 	                try {
-	                  const out = await callGeminiJson({ apiKey: env.GEMINI_API_KEY, model, temperature, prompt, env, responseSchema });
+	                  const out = await callGeminiJson({ apiKey: geminiApiKey, model, temperature, prompt, env, responseSchema });
 	                  teamTrace.push({
 	                    agent,
 	                    provider: p,
@@ -2092,7 +2107,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                const started = Date.now();
 	                const meta = getPromptMetaForAgent('direct', 'director.actions');
 	                const output = await callGeminiJson({
-	                  apiKey: env.GEMINI_API_KEY,
+	                  apiKey: geminiApiKey,
 	                  model,
 	                  temperature,
                   prompt: buildDirectorActionsPrompt({
