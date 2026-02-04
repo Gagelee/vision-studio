@@ -1976,27 +1976,86 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             return m?.[1] ? String(m[1]).trim() : '';
           };
 
+          const pickFirstAny = (re: RegExp) => {
+            const m = s.match(re);
+            if (!m) return '';
+            const v = m?.[1] ?? m?.[0] ?? '';
+            return String(v).trim();
+          };
+
+          // Sometimes specialists embed a JSON object inside a freeform sentence. Try extracting/parsing it.
+          const embeddedJson = (() => {
+            const m = s.match(/\{[\s\S]*\}/);
+            const maybe = m?.[0] ? String(m[0]).trim() : '';
+            if (!maybe) return null;
+            const parsed = parseLooseJsonObject(maybe);
+            return parsed && typeof parsed === 'object' ? (parsed as any) : null;
+          })();
+          if (embeddedJson) {
+            const characterId = String(embeddedJson.characterId || embeddedJson.parentId || '').trim();
+            const name = String(embeddedJson.name || '').trim();
+            const description = String(embeddedJson.description || embeddedJson.desc || '').trim();
+            if (characterId && name && description) return { characterId, name, description };
+          }
+
           const characterId =
             pickFirst(/\breference\s*:\s*(char-[a-zA-Z0-9-]+)/i) ||
+            pickFirst(/\bcharacterId\s*[:=]\s*(char-[a-zA-Z0-9-]+)/i) ||
             pickFirst(/\bparentId\s*[:=]\s*(char-[a-zA-Z0-9-]+)/i) ||
-            pickFirst(/\bchar-[a-zA-Z0-9-]+/i); // fallback (may capture without group)
+            pickFirstAny(/\((char-[a-zA-Z0-9-]+)\)/i) ||
+            pickFirstAny(/\b(char-[a-zA-Z0-9-]+)\b/i);
 
-          const name = pickFirst(/\bname\s*:\s*([^\n\r]+)/i);
+          let name = pickFirst(/\bname\s*[:=]\s*([^\n\r]+)/i);
+          if (name) {
+            name = name
+              .split(/(?:\bcharacter\b|\brequest\b|\breference\b|\bref\b)\s*[:(]/i)[0]
+              .replace(/[.。]\s*$/g, '')
+              .trim();
+          }
 
-          // Prefer explicit description field; otherwise take tail after "description:"
-          const description = pickFirst(/\bdescription\s*:\s*([\s\S]+)$/i) || pickFirst(/\bdesc\s*:\s*([\s\S]+)$/i);
+          // Prefer explicit description field
+          let description = pickFirst(/\bdescription\s*[:=]\s*([\s\S]+)$/i) || pickFirst(/\bdesc\s*[:=]\s*([\s\S]+)$/i);
+          if (!description) {
+            // Common pattern: "<description> Name: <name>. Character: ..."
+            const mName = s.match(/\bname\s*[:=]\s*/i);
+            if (mName && typeof mName.index === 'number') {
+              description = s.slice(0, mName.index).trim();
+            } else if (name) {
+              // Alternate pattern: "... name: X - <description>"
+              const mDash = s.match(/\bname\s*[:=]\s*[^\n\r-]+-\s*([\s\S]+)$/i);
+              if (mDash?.[1]) description = String(mDash[1]).trim();
+            }
+          }
+          description = String(description || '').trim();
 
           return {
             characterId: characterId.startsWith('char-') ? characterId : '',
-            name,
-            description: description.trim(),
+            name: String(name || '').trim(),
+            description,
           };
         };
 
         const normalizeAction = (action: any) => {
-          const type = String(action?.type || '').trim();
+          let type = String(action?.type || '').trim();
           if (!type) return null;
-          const payloadRaw = normalizeActionPayload(action?.payload);
+          let payloadRaw = normalizeActionPayload(action?.payload);
+
+          // Map common non-canonical action names from specialists into the app's action set.
+          if (type === 'ADD_LOOK') type = 'CREATE_CHARACTER_LOOK';
+          if (type === 'CREATE_ELEMENT' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const elementType = String(p?.elementType || '').toUpperCase();
+            if (elementType === 'LOOK') {
+              type = 'CREATE_CHARACTER_LOOK';
+              payloadRaw = {
+                characterId: p.parentId,
+                parentId: p.parentId,
+                name: p.name,
+                description: p.description,
+                _raw: p._raw,
+              };
+            }
+          }
 
           // Heuristic: Gemini schema-freeform payload sometimes comes back as {_raw:"{...}"} where the object contains
           // shorthand fields like {id, description}. Convert these into the app's expected payload shapes.
@@ -2104,7 +2163,26 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         const normalizeActions = (arr: any) => {
           const actions = Array.isArray(arr) ? arr : [];
-          return actions.map(normalizeAction).filter(Boolean);
+          const normalized = actions.map(normalizeAction).filter(Boolean) as any[];
+          const seen = new Set<string>();
+          const sig = (a: any) => {
+            const t = String(a?.type || '');
+            const p = a?.payload;
+            if (t === 'CREATE_CHARACTER_LOOK') {
+              return `CREATE_CHARACTER_LOOK:${String(p?.characterId || '')}:${String(p?.name || '')}:${String(p?.description || '')}`;
+            }
+            try {
+              return `${t}:${JSON.stringify(p)}`;
+            } catch {
+              return `${t}:${String(p)}`;
+            }
+          };
+          return normalized.filter((a) => {
+            const k = sig(a);
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+          });
         };
 
 		        const rule = () => {

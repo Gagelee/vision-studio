@@ -84,15 +84,21 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
       description: 'Describe wardrobe and makeup...',
       previewUrl: draft.avatarUrl || ''
     };
-    setDraft({ ...draft, looks: [...draft.looks, newLook] });
+    const next = { ...draft, looks: [...draft.looks, newLook] };
+    setDraft(next);
+    onSave(next);
   };
 
   const handleRemoveLook = (id: string) => {
-    setDraft({ ...draft, looks: draft.looks.filter(l => l.id !== id) });
+    const next = { ...draft, looks: draft.looks.filter(l => l.id !== id) };
+    setDraft(next);
+    onSave(next);
   };
 
   const handleUpdateLook = (look: CharacterLook) => {
-    setDraft({ ...draft, looks: draft.looks.map(l => l.id === look.id ? look : l) });
+    const next = { ...draft, looks: draft.looks.map(l => l.id === look.id ? look : l) };
+    setDraft(next);
+    onSave(next);
     setEditingLook(null);
   };
 
