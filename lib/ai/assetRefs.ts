@@ -10,8 +10,11 @@ export const pickActiveImageUrl = (args: {
   const activeId = String(args.entity?.[args.activeIdKey] || '').trim();
   if (activeId) {
     const hit = versions.find((v: any) => String(v?.id || '') === activeId);
-    const url = String(hit?.imageUrl || '').trim();
-    if (url) return url;
+    // Never treat placeholders as "active" for downstream reference selection.
+    if (String(hit?.type || '') !== 'placeholder') {
+      const url = String(hit?.imageUrl || '').trim();
+      if (url) return url;
+    }
   }
   // Prefer most-recent non-placeholder if present.
   for (let i = versions.length - 1; i >= 0; i--) {
@@ -68,3 +71,18 @@ export const getLookActivePreviewUrl = (lk: CharacterLook | null | undefined) =>
   });
 };
 
+export const isLikelyPlaceholderImageUrl = (url: string) => {
+  const s = String(url || '').trim();
+  if (!s) return true;
+  if (s.startsWith('/__generated__/')) return false;
+  if (s.startsWith('data:image/')) return false;
+  try {
+    const parsed = new URL(s);
+    // Current mock/placeholder strategy uses Unsplash URLs.
+    if (/images\.unsplash\.com$/i.test(parsed.hostname)) return true;
+  } catch {
+    // Non-URL strings are treated as placeholders to avoid passing unusable refs (e.g., blob: URLs).
+    return true;
+  }
+  return false;
+};

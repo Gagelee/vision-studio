@@ -17,6 +17,7 @@ import {
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildMasterKeyVisualPrompt } from '../../lib/ai/prompts';
 import { openLightbox } from '../../lib/ui/lightboxStore';
+import { isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
 
 interface ProjectDashboardProps {
   story: Story;
@@ -68,6 +69,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
   const handleSelectKvVariant = (versionId: string) => {
     const v = (kvVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
     if (!v?.imageUrl) return;
+    const isPlaceholder = String(v?.type || '') === 'placeholder' || isLikelyPlaceholderImageUrl(String(v.imageUrl));
     onUpdateStory((prev) => ({
       ...prev,
       keyVisualUrl: String(v.imageUrl),
@@ -75,11 +77,11 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
       activeKeyVisualVersionId: String(versionId) as any,
       masterKvState: {
         ...(prev as any).masterKvState,
-        status: 'done',
-        lastError: '',
+        status: isPlaceholder ? ((prev as any).masterKvState?.status || 'idle') : 'done',
+        lastError: isPlaceholder ? 'Active KV is a placeholder; generate a real Master KV.' : '',
       },
     }));
-    onToast?.('Master KV set active', 'info');
+    onToast?.(isPlaceholder ? 'Placeholder KV selected (won’t unblock assets)' : 'Master KV set active', 'info');
   };
 
   const handleGenerateKvVariant = async () => {

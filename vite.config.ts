@@ -898,18 +898,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             const usedModel = normalizeGeminiImageModel(model);
             ensureGeneratedDir();
 
-            const loadReference = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
-              const u = String(url || '').trim();
-              if (!u) return null;
+	            const loadReference = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
+	              const u = String(url || '').trim();
+	              if (!u) return null;
 
-              // Local generated assets: /__generated__/...
-              if (u.startsWith('/__generated__/')) {
-                const filePath = safeGeneratedAssetPath(u);
-                if (!filePath) return null;
-                const bytes = await fs.promises.readFile(filePath);
-                const mimeType = mimeByExt(path.extname(filePath));
-                return { mimeType, bytes };
-              }
+	              // Local generated assets: /__generated__/...
+	              if (u.startsWith('/__generated__/')) {
+	                const clean = u.split('?')[0].split('#')[0];
+	                const filePath = safeGeneratedAssetPath(clean);
+	                if (!filePath) return null;
+	                const bytes = await fs.promises.readFile(filePath);
+	                const mimeType = mimeByExt(path.extname(filePath));
+	                return { mimeType, bytes };
+	              }
 
               // data: URLs
               if (u.startsWith('data:image/')) {
@@ -918,8 +919,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 return { mimeType: match[1], bytes: Buffer.from(match[2], 'base64') };
               }
 
-              // Remote http(s) URLs
-              if (u.startsWith('http://') || u.startsWith('https://')) {
+	              // Remote http(s) URLs
+	              if (u.startsWith('http://') || u.startsWith('https://')) {
                 const shrinkIfUnsplash = (input: string): string => {
                   try {
                     const parsed = new URL(input);
@@ -934,16 +935,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }
                 };
 
-                try {
-                  const tryFetch = async (input: string) => {
-                    const controller = new AbortController();
-                    const timeout = setTimeout(() => controller.abort(), 15_000);
-                    try {
-                      const resp = await fetch(input, { signal: controller.signal });
-                      if (!resp.ok) return null;
-                      const ct = String(resp.headers.get('content-type') || '');
-                      if (!ct.startsWith('image/')) return null;
-                      const buf = Buffer.from(await resp.arrayBuffer());
+	                try {
+	                  const tryFetch = async (input: string) => {
+	                    const controller = new AbortController();
+	                    const timeout = setTimeout(() => controller.abort(), 15_000);
+	                    try {
+	                      const init: any = { signal: controller.signal };
+	                      const dispatcher = getProxyDispatcher(input, env);
+	                      if (dispatcher) init.dispatcher = dispatcher;
+	                      const resp = await fetch(input, init);
+	                      if (!resp.ok) return null;
+	                      const ct = String(resp.headers.get('content-type') || '');
+	                      if (!ct.startsWith('image/')) return null;
+	                      const buf = Buffer.from(await resp.arrayBuffer());
                       return { mimeType: ct.split(';')[0] || 'image/png', bytes: buf, bytesLen: buf.length };
                     } finally {
                       clearTimeout(timeout);

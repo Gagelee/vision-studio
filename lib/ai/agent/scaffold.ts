@@ -53,34 +53,37 @@ export const scaffoldProjectStream = async (
   }
 
   const endpoint = joinUrl(req.settings.baseUrl, '/api/agent/scaffold/stream');
+  const body = {
+    intent: req.intent,
+    aspectRatio: req.aspectRatio,
+    keyVisualUrl: req.keyVisualUrl,
+    allowSingleFallback: Boolean(req.allowSingleFallback),
+    settings: {
+      provider: req.settings.provider,
+      model: req.settings.model,
+      temperature: req.settings.temperature,
+      maxOutputTokens: req.settings.maxOutputTokens,
+    },
+    plannerSettings: req.plannerSettings
+      ? {
+          provider: req.plannerSettings.provider,
+          model: req.plannerSettings.model,
+          temperature: req.plannerSettings.temperature,
+          maxOutputTokens: req.plannerSettings.maxOutputTokens,
+        }
+      : undefined,
+  };
+
   const controller = new AbortController();
   const timeoutMs = 10 * 60_000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'POST (stream)', data: { url: endpoint, body } });
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        intent: req.intent,
-        aspectRatio: req.aspectRatio,
-        keyVisualUrl: req.keyVisualUrl,
-        allowSingleFallback: Boolean(req.allowSingleFallback),
-        settings: {
-          provider: req.settings.provider,
-          model: req.settings.model,
-          temperature: req.settings.temperature,
-          maxOutputTokens: req.settings.maxOutputTokens,
-        },
-        plannerSettings: req.plannerSettings
-          ? {
-              provider: req.plannerSettings.provider,
-              model: req.plannerSettings.model,
-              temperature: req.plannerSettings.temperature,
-              maxOutputTokens: req.plannerSettings.maxOutputTokens,
-            }
-          : undefined,
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     }).catch((e) => {
       if (e && typeof e === 'object' && (e as any).name === 'AbortError') {
@@ -124,12 +127,23 @@ export const scaffoldProjectStream = async (
           // keep raw string
         }
         opts?.onEvent?.({ event: parsed.event, data });
+        if (parsed.event === 'hello') {
+          addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'SSE hello', data });
+        }
+        if (parsed.event === 'progress') {
+          addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'SSE progress', data });
+        }
+        if (parsed.event === 'trace') {
+          addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'SSE trace', data });
+        }
         if (parsed.event === 'done' && data) {
+          addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'Response', data: { url: endpoint, json: data } });
           return data as ScaffoldProjectResponse;
         }
         if (parsed.event === 'error' && data) {
           // Server-streamed errors are sent as JSON payloads.
           const status = Number((data as any)?.status || 502);
+          addDebugEvent({ level: 'error', scope: 'agent.scaffold', message: 'Response', data: { url: endpoint, json: data } });
           throw new AgentApiError({
             message: `HTTP ${status}: ${String((data as any)?.message || 'Scaffold failed')}`,
             status,

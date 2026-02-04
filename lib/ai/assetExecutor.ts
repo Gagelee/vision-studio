@@ -1,6 +1,6 @@
 import type { AiSettings, AspectRatio, ElementType, Shot, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from './image/generate';
-import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, getStoryActiveKvUrl } from './assetRefs';
+import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, getStoryActiveKvUrl, isLikelyPlaceholderImageUrl } from './assetRefs';
 import {
   buildMasterKeyVisualPrompt,
   buildCharacterAvatarPrompt,
@@ -422,7 +422,17 @@ export const executeAssetJobs = async (args: {
   };
 
   const isDone = (st: any) => st && st.status === 'done';
-  const getMasterOk = (s: Story | null) => Boolean(s && getStoryActiveKvUrl(s) && isDone((s as any).masterKvState));
+  const getMasterOk = (s: Story | null) => {
+    if (!s) return false;
+    const kvUrl = getStoryActiveKvUrl(s);
+    if (!kvUrl) return false;
+    if (isLikelyPlaceholderImageUrl(kvUrl)) return false;
+    const st = (s as any).masterKvState || null;
+    if (st?.status === 'running') return false;
+    if (st?.status === 'error') return false;
+    // Allow user-provided KV even if masterKvState is still idle/undefined.
+    return true;
+  };
 
   const getJobKind = (job: AssetJob): AssetJob['kind'] => job.kind;
   const orderedPhases: Array<AssetJob['kind']> = ['masterkv', 'location', 'character', 'look', 'shot'];
@@ -473,7 +483,10 @@ export const executeAssetJobs = async (args: {
   const checkBlocked = (job: AssetJob, story: Story | null): string | null => {
     if (!story) return null;
     if (job.kind === 'masterkv') return null;
-    if (!getMasterOk(story)) return 'blocked: master KV not generated (or failed)';
+    const kvUrl = getStoryActiveKvUrl(story);
+    if (!kvUrl) return 'blocked: master KV missing';
+    if (isLikelyPlaceholderImageUrl(kvUrl)) return 'blocked: master KV is placeholder (generate a real KV first)';
+    if (!getMasterOk(story)) return 'blocked: master KV not ready (running/failed)';
 
     if (job.kind === 'location') return null;
     if (job.kind === 'character') return null;
