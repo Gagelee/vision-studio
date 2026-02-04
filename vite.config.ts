@@ -594,7 +594,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const plannerSettings = body?.plannerSettings || {};
         const provider = String(settings?.provider || 'gemini');
         // Gemini 1.5 models were shut down in 2025; default to a supported 2.5 model.
-        const model = String(settings?.model || 'gemini-3-thinking');
+        const model = String(settings?.model || 'gemini-3-pro-preview');
         const temperature = Number(settings?.temperature ?? 0.6);
         const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
         const plannerModel = String(plannerSettings?.model || '');
@@ -1075,7 +1075,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const story = body?.story || null;
         const settings = body?.settings || {};
         const provider = String(settings?.provider || 'gemini');
-        const model = String(settings?.model || 'gemini-3-thinking');
+        const model = String(settings?.model || 'gemini-3-pro-preview');
         const temperature = Number(settings?.temperature ?? 0.6);
 
         if (!message) return sendJson(res, 400, { ok: false, error: 'Missing message' });

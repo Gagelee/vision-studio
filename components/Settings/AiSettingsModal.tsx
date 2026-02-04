@@ -70,7 +70,7 @@ const ProfileEditor: React.FC<{
               value={value.model}
               onChange={(e) => onChange({ model: e.target.value })}
               className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-sm font-mono"
-              placeholder="e.g. gemini-3-thinking"
+              placeholder="e.g. gemini-3-pro-preview"
             />
           </label>
 
