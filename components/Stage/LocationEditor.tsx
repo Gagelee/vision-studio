@@ -64,7 +64,20 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
         references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
         strict: true,
       });
-      setDraft((prev) => ({ ...prev, previewUrl: out.imageUrl }));
+      const now = Date.now();
+      const next: Location = {
+        ...draft,
+        previewUrl: out.imageUrl,
+        assetState: {
+          status: 'done',
+          lastError: '',
+          lastAttemptAt: now,
+          attempts: (draft.assetState?.attempts || 0) + 1,
+        },
+      };
+      setDraft(next);
+      // Auto-persist generated assets so they don't disappear on navigation/refresh.
+      onSave(next);
     } catch (e) {
       setGenerationError(e instanceof Error ? e.message : String(e));
     } finally {

@@ -78,7 +78,19 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         references: keyVisualUrl ? [{ url: keyVisualUrl, label: 'master kv' }] : [],
         strict: true,
       });
-      setDraft((prev) => ({ ...prev, avatarUrl: out.imageUrl }));
+      const now = Date.now();
+      const next: Character = {
+        ...draft,
+        avatarUrl: out.imageUrl,
+        assetState: {
+          status: 'done',
+          lastError: '',
+          lastAttemptAt: now,
+          attempts: (draft.assetState?.attempts || 0) + 1,
+        },
+      };
+      setDraft(next);
+      onSave(next);
     } catch (e) {
       setGenerationError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -104,10 +116,26 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         references: refs,
         strict: true,
       });
-      setDraft((prev) => ({
-        ...prev,
-        looks: prev.looks.map((l) => (l.id === look.id ? { ...l, previewUrl: out.imageUrl } : l)),
-      }));
+      const now = Date.now();
+      const next: Character = {
+        ...draft,
+        looks: (draft.looks || []).map((l) =>
+          l.id === look.id
+            ? {
+                ...l,
+                previewUrl: out.imageUrl,
+                assetState: {
+                  status: 'done',
+                  lastError: '',
+                  lastAttemptAt: now,
+                  attempts: (l.assetState?.attempts || 0) + 1,
+                },
+              }
+            : l,
+        ),
+      };
+      setDraft(next);
+      onSave(next);
     } catch (e) {
       setGenerationError(e instanceof Error ? e.message : String(e));
     } finally {
