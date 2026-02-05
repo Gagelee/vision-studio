@@ -456,6 +456,10 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                         const displayLookVersions = nonPlaceholderLookVersions.length ? nonPlaceholderLookVersions : lookVersions;
                         const activeLookVersionId = String((look as any).activePreviewVersionId || '').trim();
                         const activeLookUrl = getLookActivePreviewUrl(look, { activeOnly: true });
+                        const boundLookVersions = activeAvatarVersionId
+                          ? displayLookVersions.filter((v: any) => String(v?.metadata?.sourceAvatarVersionId || '') === String(activeAvatarVersionId))
+                          : [];
+                        const showLookVariants = boundLookVersions.length > 1;
                         return (
                           <div
                             key={look.id}
@@ -507,11 +511,11 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                               </div>
                               <p className="text-xs text-zinc-400 leading-relaxed line-clamp-3">{look.description}</p>
 
-	                              {displayLookVersions.length > 1 && (
-	                                <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
-	                                  {displayLookVersions.slice().reverse().map((v: any) => {
-	                                    const isActive = String(v.id) === String(activeLookVersionId);
-	                                    return (
+		                              {showLookVariants && (
+		                                <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
+		                                  {boundLookVersions.slice().reverse().map((v: any) => {
+		                                    const isActive = String(v.id) === String(activeLookVersionId);
+		                                    return (
 	                                      <button
 	                                        key={String(v.id)}
 	                                        onClick={() => handleSelectLookVariant(look.id, String(v.id))}
