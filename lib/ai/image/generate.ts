@@ -31,6 +31,13 @@ export const generateImageFromPrompt = async (req: {
   settings: ModelRuntimeSettings;
   aspectRatio?: string;
   references?: ImageReference[];
+  promptSpec?: any;
+  composePrompt?: boolean;
+  composeSettings?: {
+    model?: string;
+    temperature?: number;
+    maxOutputTokens?: number;
+  };
   strict?: boolean;
   requireAllReferences?: boolean;
 }): Promise<GenerateShotImageResponse> => {
@@ -55,6 +62,9 @@ export const generateImageFromPrompt = async (req: {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         prompt: String(req.prompt || ''),
+        promptSpec: req.promptSpec,
+        composePrompt: Boolean(req.composePrompt),
+        composeSettings: req.composeSettings,
         aspectRatio: req.aspectRatio,
         references: Array.isArray(req.references) ? req.references : [],
         requireAllReferences: Boolean(req.requireAllReferences),

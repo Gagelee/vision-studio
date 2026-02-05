@@ -33,27 +33,17 @@ export const buildShotKeyframePrompt = (args: {
   ].filter(Boolean);
 
   const constraints = [
-    'Output must look like a keyframe from a movie scene (narrative moment mid-action), NOT a poster, NOT concept art, NOT a posed character lineup.',
-    styleGuide ? `Style guide (must follow):\n${styleGuide}` : '',
+    styleGuide ? `Style guide (must follow): ${styleGuide}` : '',
+    'This must look like a keyframe from a movie scene (mid-action), not a poster, not concept art, not a posed lineup.',
     'Follow reference images strictly for identity + environment consistency.',
-    'No text, no subtitles, no watermarks, no logos.',
+    'No text, subtitles, watermarks, or logos.',
   ].filter(Boolean);
 
-  return [
-    'TASK: Generate a single film keyframe (still image).',
-    '',
-    'SCENE:',
-    ...sceneBits,
-    '',
-    'CINEMATOGRAPHY:',
-    ...cinematographyBits,
-    '',
-    'CONSTRAINTS:',
-    ...constraints,
-  ]
-    .map((s) => String(s || '').trimEnd())
-    .filter(Boolean)
-    .join('\n');
+  const sceneLine = sceneBits.join(' ');
+  const cineLine = cinematographyBits.join(' ');
+  const constraintLine = constraints.join(' ');
+
+  return [sceneLine, cineLine, constraintLine].map((s) => String(s || '').trim()).filter(Boolean).join('\n\n');
 };
 
 export const buildShotImagePrompt = (shot: Shot) => {

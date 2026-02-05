@@ -109,6 +109,14 @@ const GEMINI_SCHEMA = {
       ),
     },
   }),
+  promptCompose: schemaObject({
+    required: ['prompt', 'negativePrompt'],
+    propertyOrdering: ['prompt', 'negativePrompt'],
+    properties: {
+      prompt: schemaString(),
+      negativePrompt: schemaString(),
+    },
+  }),
   scaffoldEnvironments: schemaObject({
     required: ['locations'],
     propertyOrdering: ['locations'],
@@ -1093,29 +1101,70 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       }
     });
 
-	    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
-	      if (req.method !== 'POST') return next();
-	        const body = await readJsonBody(req);
+		    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
+		      if (req.method !== 'POST') return next();
+		        const body = await readJsonBody(req);
 
-	        const prompt = String(body?.prompt || '').trim();
-	        const aspectRatio = body?.aspectRatio ? String(body.aspectRatio) : undefined;
-	        const referencesRaw = Array.isArray(body?.references) ? body.references : [];
-	        const requireAllReferences = Boolean(body?.requireAllReferences);
-	        const settings = body?.settings || {};
-	        const provider = String(settings?.provider || 'gemini');
-	        const model = String(settings?.model || 'nano-banana-pro');
-	        const temperature = Number(settings?.temperature ?? 0.6);
+		        const prompt = String(body?.prompt || '').trim();
+		        const promptSpec = body?.promptSpec;
+		        const composePrompt = Boolean(body?.composePrompt);
+		        const composeSettings = body?.composeSettings || {};
+		        const aspectRatio = body?.aspectRatio ? String(body.aspectRatio) : undefined;
+		        const referencesRaw = Array.isArray(body?.references) ? body.references : [];
+		        const requireAllReferences = Boolean(body?.requireAllReferences);
+		        const settings = body?.settings || {};
+		        const provider = String(settings?.provider || 'gemini');
+		        const model = String(settings?.model || 'nano-banana-pro');
+		        const temperature = Number(settings?.temperature ?? 0.6);
 
         if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
 
-        const promptPreview = prompt.slice(0, 120);
+	        let promptUsed = prompt;
+	        let composed: any = null;
+	        const promptPreview = prompt.slice(0, 120);
 
-        try {
-          if (provider === 'gemini' && geminiApiKey) {
-            const usedModel = normalizeGeminiImageModel(model);
-            ensureGeneratedDir();
+	        try {
+	          if (provider === 'gemini' && geminiApiKey) {
+	            const usedModel = normalizeGeminiImageModel(model);
+	            ensureGeneratedDir();
+	
+	            if (composePrompt && promptSpec && typeof promptSpec === 'object') {
+	              try {
+	                const composerModel = String(composeSettings?.model || env?.VISION_PROMPT_COMPOSER_MODEL || 'gemini-3-pro-preview');
+	                const composerTemp = Number.isFinite(Number(composeSettings?.temperature)) ? Number(composeSettings.temperature) : 0.2;
+	                const composerMaxTokens = Number.isFinite(Number(composeSettings?.maxOutputTokens)) ? Number(composeSettings.maxOutputTokens) : 512;
+	                const trimmedSpec = JSON.parse(JSON.stringify(promptSpec));
+	                if (typeof trimmedSpec?.styleGuide === 'string' && trimmedSpec.styleGuide.length > 2000) {
+	                  trimmedSpec.styleGuide = trimmedSpec.styleGuide.slice(0, 2000);
+	                }
+	                const composePromptText =
+	                  `You are a senior cinematographer and prompt engineer.\n` +
+	                  `Compose the BEST single prompt for Gemini image generation (model: ${usedModel}).\n` +
+	                  `Goal: produce a film keyframe (narrative moment mid-action), not a poster, not concept art, not posed.\n` +
+	                  `Write a cohesive prompt (1-3 short paragraphs). No headings like TASK/SCENE. No bullet lists. No JSON inside the prompt.\n` +
+	                  `Include: concrete frame description, camera/lens + aperture + DoF, composition, lighting, mood, and style constraints.\n` +
+	                  `Return ONLY JSON: {"prompt": string, "negativePrompt": string}.\n` +
+	                  `Input spec JSON:\n${JSON.stringify(trimmedSpec)}\n`;
+	                composed = await callGeminiJson({
+	                  apiKey: geminiApiKey,
+	                  model: composerModel,
+	                  temperature: composerTemp,
+	                  maxOutputTokens: composerMaxTokens,
+	                  prompt: composePromptText,
+	                  env,
+	                  responseSchema: GEMINI_SCHEMA.promptCompose,
+	                });
+	                const p = String(composed?.prompt || '').trim();
+	                const n = String(composed?.negativePrompt || '').trim();
+	                if (p) {
+	                  promptUsed = n ? `${p}\n\nNegative: ${n}` : p;
+	                }
+	              } catch (e: any) {
+	                composed = { error: formatFetchError(e) };
+	              }
+	            }
 
-	            const loadReference = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
+		            const loadReference = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
 	              const u = String(url || '').trim();
 	              if (!u) return null;
 
@@ -1228,15 +1277,15 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              throw new Error(`Missing required reference image(s): ${list || 'unknown'}`);
 	            }
 
-		            const out = await callGeminiImage({
-		              apiKey: geminiApiKey,
-		              model: usedModel,
-		              temperature,
-		              prompt,
-		              aspectRatio,
-		              references: loadedRefs,
-		              env,
-		            });
+			            const out = await callGeminiImage({
+			              apiKey: geminiApiKey,
+			              model: usedModel,
+			              temperature,
+			              prompt: promptUsed,
+			              aspectRatio,
+			              references: loadedRefs,
+			              env,
+			            });
 
             const ext =
               out.mimeType === 'image/png'
@@ -1246,30 +1295,32 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   : out.mimeType === 'image/webp'
                     ? 'webp'
                     : 'bin';
-            const hash = crypto
-              .createHash('sha256')
-              .update(`${usedModel}\n${aspectRatio || ''}\n${prompt}`)
-              .digest('hex')
-              .slice(0, 16);
+	            const hash = crypto
+	              .createHash('sha256')
+	              .update(`${usedModel}\n${aspectRatio || ''}\n${promptUsed}`)
+	              .digest('hex')
+	              .slice(0, 16);
             const filename = `${Date.now()}-${hash}.${ext}`;
             fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
-            return sendJson(res, 200, {
-              imageUrl: `/__generated__/${filename}`,
-		              debug: {
-		                transport: 'http',
-		                provider,
-		                model: usedModel,
-                    baseUrl: geminiBaseUrl,
-		                mimeType: out.mimeType,
-		                bytes: out.bytes.length,
-		                promptPreview,
-		                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
-		                requireAllReferences,
-		                missingReferences: missingRefs,
-		              },
-	            });
-	          }
-	        } catch (e: any) {
+	            return sendJson(res, 200, {
+	              imageUrl: `/__generated__/${filename}`,
+			              debug: {
+			                transport: 'http',
+			                provider,
+			                model: usedModel,
+	                    baseUrl: geminiBaseUrl,
+			                mimeType: out.mimeType,
+			                bytes: out.bytes.length,
+			                promptPreview,
+			                promptUsedPreview: String(promptUsed || '').slice(0, 240),
+			                composed,
+			                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
+			                requireAllReferences,
+			                missingReferences: missingRefs,
+			              },
+		            });
+		          }
+		        } catch (e: any) {
           return sendJson(res, 200, {
             imageUrl:
               `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +

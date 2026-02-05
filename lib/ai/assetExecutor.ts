@@ -681,11 +681,52 @@ export const executeAssetJobs = async (args: {
           const story = args.getStoryForRefs?.() || null;
           const shot = story ? resolveShotFromStory(story, job.sequenceId, job.shot.id) || job.shot : job.shot;
           const references = story ? buildShotReferences(story, shot) : [];
+          const loc = story ? (story.locations || []).find((l) => l.id === shot.locationId) : null;
+          const cast = (shot.elements as any)?.[('CASTING' as ElementType)]?.metadata?.characters;
+          const castArr = Array.isArray(cast) ? cast : [];
+          const castNames = story
+            ? castArr
+                .map((c: any) => {
+                  const master = (story.characters || []).find((x) => x.id === String(c?.id || ''));
+                  if (!master) return null;
+                  const activeLookId = String(c?.activeLookId || '');
+                  const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
+                  return `${master.name}${look?.name ? ` (${look.name})` : ''}`;
+                })
+                .filter(Boolean)
+            : [];
+          const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
+          const promptSpec = {
+            kind: 'shot',
+            styleGuide,
+            aspectRatio: args.aspectRatio,
+            environment: loc ? { name: loc.name, description: loc.description, visualStyle: loc.visualStyle } : null,
+            cast: castNames,
+            shot: {
+              id: shot.id,
+              description: shot.description,
+              timeOfDay: shot.timeOfDay,
+              duration: shot.duration,
+              script: String((shot.elements as any)?.SCRIPT?.prompt || '').trim(),
+              camera: String((shot.elements as any)?.CAMERA?.prompt || '').trim(),
+              lighting: String((shot.elements as any)?.LIGHTING?.prompt || '').trim(),
+              audio: String((shot.elements as any)?.AUDIO?.prompt || '').trim(),
+            },
+            requirements: {
+              keyframeNotPoster: true,
+              avoidPosed: true,
+              avoidLookingAtCamera: true,
+              emphasizeCinematicComposition: true,
+            },
+          };
           const out = await generateImageFromPrompt({
             prompt: buildShotPromptWithContext(story, shot),
             settings: args.settings,
             aspectRatio: args.aspectRatio,
             references,
+            promptSpec,
+            composePrompt: true,
+            composeSettings: { model: String((args as any)?.promptComposerModel || '') || 'gemini-3-pro-preview', temperature: 0.2, maxOutputTokens: 512 },
             strict: true,
             requireAllReferences: references.length > 0,
           });
