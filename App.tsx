@@ -336,7 +336,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
             id: `look-${now}-${Math.random().toString(16).slice(2, 8)}`,
             name,
             description,
-            previewUrl: c.avatarUrl || '',
+            previewUrl: '',
+            assetState: { status: 'idle', attempts: 0 },
           };
           return { ...c, looks: [...(c.looks || []), look] };
         }),

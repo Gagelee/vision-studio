@@ -399,12 +399,19 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                             key={look.id}
                             className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex gap-4 hover:border-indigo-500/50 transition-all shadow-xl"
                           >
-                            <div className="w-32 h-40 rounded-xl bg-zinc-800 overflow-hidden shrink-0 border border-white/5">
-                              <img
-                                src={look.previewUrl}
-                                className="w-full h-full object-cover cursor-zoom-in"
-                                onClick={() => look.previewUrl && openLightbox({ url: look.previewUrl, title: `Look: ${draft.name} / ${look.name}` })}
-                              />
+                            <div className="w-32 h-40 rounded-xl bg-zinc-800 overflow-hidden shrink-0 border border-white/5 flex items-center justify-center">
+                              {look.previewUrl ? (
+                                <img
+                                  src={look.previewUrl}
+                                  className="w-full h-full object-cover cursor-zoom-in"
+                                  onClick={() => openLightbox({ url: look.previewUrl, title: `Look: ${draft.name} / ${look.name}` })}
+                                />
+                              ) : (
+                                <div className="flex flex-col items-center justify-center text-zinc-500 text-xs">
+                                  <ImageIcon className="w-5 h-5 mb-1" />
+                                  No look image
+                                </div>
+                              )}
                             </div>
                             <div className="flex-1 flex flex-col">
                               <div className="flex justify-between items-start mb-1">

@@ -2245,6 +2245,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               const description = String(p.description || '').trim();
               if (characterId && name && description) return { type, payload: { characterId, name, description } };
             }
+            return null;
           }
 
           if (type === 'UPDATE_CHARACTER_LOOK') {
