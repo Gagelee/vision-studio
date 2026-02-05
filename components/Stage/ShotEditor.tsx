@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
-import { buildShotImagePrompt } from '../../lib/ai/prompts';
+import { buildShotKeyframePrompt } from '../../lib/ai/prompts';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info } from 'lucide-react';
 import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
@@ -123,20 +123,24 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       }
 
       const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
-      const lines: string[] = [];
-      lines.push(
-        'Generate a cinematic storyboard keyframe (still image).',
-        styleGuide
-          ? `StyleGuide (must follow):\n${styleGuide}`
-          : 'Maintain a cohesive style across the entire project (palette, lighting language, lens feel, rendering style).',
-        'Follow reference images strictly for identity + environment consistency (same characters, same faces, same outfits per look; same environment). Do not drift into a different art style.',
-        'No text, no subtitles, no watermarks, no logos.',
-        '',
-        buildShotImagePrompt(shot),
-      );
-      if (loc) lines.push('', `Environment style: ${loc.visualStyle || ''}`.trim());
+      const castNames = (castArr || [])
+        .map((c: any) => {
+          const master = story?.characters?.find((x) => x.id === String(c?.id || ''));
+          if (!master) return null;
+          const activeLookId = String(c?.activeLookId || '');
+          const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
+          return `${master.name}${look?.name ? ` (${look.name})` : ''}`;
+        })
+        .filter(Boolean) as string[];
 
-      const fullPrompt = lines.filter(Boolean).join('\n');
+      const fullPrompt = buildShotKeyframePrompt({
+        shot,
+        styleGuide,
+        environmentName: loc?.name,
+        environmentStyle: String(loc?.visualStyle || '').trim(),
+        castNames,
+      });
+
       const img = await generateImageFromPrompt({
         prompt: fullPrompt,
         settings,

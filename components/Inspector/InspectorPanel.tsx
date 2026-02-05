@@ -6,7 +6,7 @@ import { ElementControl } from './ElementControl';
 import { Collapsible } from './Collapsible';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
-import { buildShotImagePrompt } from '../../lib/ai/prompts';
+import { buildShotKeyframePrompt } from '../../lib/ai/prompts';
 
 // --- Sub-component for Casting Control ---
 interface CastingControlProps {
@@ -425,20 +425,23 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
           }
       ].filter((part) => part.value);
 
-      const fullImagePrompt = [
-          'Generate a cinematic storyboard keyframe (still image).',
-          styleGuide
-              ? `StyleGuide (must follow):\n${styleGuide}`
-              : 'Maintain a cohesive style across the entire project (palette, lighting language, lens feel, rendering style).',
-          'Follow reference images strictly for identity + environment consistency (same characters, same faces, same outfits per look; same environment). Do not drift into a different art style.',
-          'No text, no subtitles, no watermarks, no logos.',
-          '',
-          buildShotImagePrompt(shot),
-          envStyle ? `Environment style: ${envStyle}` : ''
-      ]
-        .map((s) => String(s || '').trim())
-        .filter(Boolean)
-        .join('\n');
+	      const castNames = castArr
+	        .map((c: any) => {
+	          const master = availableCharacters.find((x) => x.id === String(c?.id || ''));
+	          if (!master) return null;
+	          const activeLookId = String(c?.activeLookId || '');
+	          const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
+	          return `${master.name}${look?.name ? ` (${look.name})` : ''}`;
+	        })
+	        .filter(Boolean) as string[];
+
+	      const fullImagePrompt = buildShotKeyframePrompt({
+	          shot,
+	          styleGuide,
+	          environmentName: contextLocation?.name,
+	          environmentStyle: envStyle,
+	          castNames,
+	      });
 
       return (
         <div className="w-96 flex flex-col h-full bg-white dark:bg-zinc-950 border-l border-zinc-200 dark:border-zinc-800 transition-colors duration-300">

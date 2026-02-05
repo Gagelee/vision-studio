@@ -7,6 +7,7 @@ import {
   buildCharacterLookPrompt,
   buildLocationPreviewPrompt,
   buildShotImagePrompt,
+  buildShotKeyframePrompt,
 } from './prompts';
 
 export type AssetScope = 'all' | 'shots' | 'locations' | 'characters' | 'looks' | 'masterkv';
@@ -626,27 +627,12 @@ export const executeAssetJobs = async (args: {
   };
 
   const buildShotPromptWithContext = (story: Story | null, shot: Shot) => {
-    const lines: string[] = [];
     const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
-    lines.push(
-      'Generate a cinematic storyboard keyframe (still image).',
-      styleGuide ? `StyleGuide (must follow):\n${styleGuide}` : 'Maintain a cohesive style across the entire project (palette, lighting language, lens feel, rendering style).',
-      'Follow the reference images strictly for identity + environment consistency (same characters, same faces, same outfits per look; same environment). Do not drift into a different art style.',
-      'No text, no subtitles, no watermarks, no logos.',
-      '',
-      buildShotImagePrompt(shot),
-    );
-
-    if (story) {
-      const loc = (story.locations || []).find((l) => l.id === shot.locationId);
-      if (loc) {
-        lines.push('', `Environment: ${loc.name}`, `Environment style: ${loc.visualStyle || ''}`.trim());
-      }
-
-      const cast = (shot.elements as any)?.[('CASTING' as ElementType)]?.metadata?.characters;
-      const castArr = Array.isArray(cast) ? cast : [];
-      if (castArr.length) {
-        const castNames = castArr
+    const loc = story ? (story.locations || []).find((l) => l.id === shot.locationId) : null;
+    const cast = (shot.elements as any)?.[('CASTING' as ElementType)]?.metadata?.characters;
+    const castArr = Array.isArray(cast) ? cast : [];
+    const castNames = story
+      ? castArr
           .map((c: any) => {
             const master = (story.characters || []).find((x) => x.id === String(c?.id || ''));
             if (!master) return null;
@@ -654,12 +640,16 @@ export const executeAssetJobs = async (args: {
             const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
             return `${master.name}${look?.name ? ` (${look.name})` : ''}`;
           })
-          .filter(Boolean);
-        if (castNames.length) lines.push('', `Cast: ${castNames.join(', ')}`);
-      }
-    }
+          .filter(Boolean)
+      : [];
 
-    return lines.filter(Boolean).join('\n');
+    return buildShotKeyframePrompt({
+      shot,
+      styleGuide,
+      environmentName: loc?.name,
+      environmentStyle: String(loc?.visualStyle || '').trim(),
+      castNames: castNames as any,
+    });
   };
 
   const worker = async (job: AssetJob) => {
