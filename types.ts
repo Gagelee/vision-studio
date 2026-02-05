@@ -27,6 +27,8 @@ export interface ModelRuntimeSettings {
   baseUrl?: string;
   // Opt-in for agents that can use structured tool/function calling (more reliable than raw JSON).
   useFunctionCalling?: boolean;
+  // Opt-in for streaming director responses (SSE progress).
+  useStreaming?: boolean;
   debug?: {
     enabled: boolean;
     logPrompts: boolean;

@@ -18,7 +18,7 @@ import { DebugPanel } from './components/Debug/DebugPanel';
 import { ImageLightbox } from './components/Overlay/ImageLightbox';
 import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
 import { loadAiSettings, saveAiSettings } from './lib/ai/aiSettingsStorage';
-import { runDirectorCommand, type DirectorCommandResponse } from './lib/ai/agent/direct';
+import { runDirectorCommand, runDirectorCommandStream, type DirectorCommandResponse, type DirectorStreamEvent } from './lib/ai/agent/direct';
 import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
@@ -435,6 +435,10 @@ export default function App() {
   const [productionTarget, setProductionTarget] = useState<{ sequenceId: string; shotId: string } | null>(null);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [isDirectorThinking, setIsDirectorThinking] = useState(false);
+  const [directorStream, setDirectorStream] = useState<null | {
+    status?: string;
+    steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
+  }>(null);
 
   const activeStory = useMemo<Story | null>(() => {
     if (!workspace.activeProjectId) return null;
@@ -1175,6 +1179,12 @@ export default function App() {
 		      const projectId = workspace.activeProjectId;
         const selectionSnapshot = selection;
         setIsDirectorThinking(true);
+        const useStreaming = Boolean((aiSettings.direct as any)?.useStreaming);
+        if (useStreaming) {
+          setDirectorStream({ status: 'Starting…', steps: [] });
+        } else {
+          setDirectorStream(null);
+        }
 
 	    const userEntry: AgentLogEntry = {
 	      id: `u-${Date.now()}`,
@@ -1190,14 +1200,48 @@ export default function App() {
 
         let res: DirectorCommandResponse;
         try {
-          res = await runDirectorCommand({
-            message: msg,
-            selection: selectionSnapshot,
-            story: activeStory,
-            settings: aiSettings.direct,
-            allowSingleFallback: false,
+          if (useStreaming) {
+            res = await runDirectorCommandStream(
+              {
+                message: msg,
+                selection: selectionSnapshot,
+                story: activeStory,
+                settings: aiSettings.direct,
+                allowSingleFallback: false,
+                useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
+              },
+              (ev: DirectorStreamEvent) => {
+                if (ev.event === 'status') {
+                  setDirectorStream((prev) => ({ status: ev.data.message, steps: prev?.steps || [] }));
+                }
+                if (ev.event === 'agent_start') {
+                  setDirectorStream((prev) => ({
+                    status: `Running ${ev.data.agent}…`,
+                    steps: [...(prev?.steps || []), { agent: ev.data.agent, status: 'running' }],
+                  }));
+                }
+                if (ev.event === 'agent_done') {
+                  setDirectorStream((prev) => ({
+                    status: prev?.status,
+                    steps: (prev?.steps || []).map((s) =>
+                      s.agent === ev.data.agent
+                        ? { ...s, ok: ev.data.ok, ms: ev.data.ms, error: ev.data.error, status: ev.data.ok ? 'done' : 'error' }
+                        : s
+                    ),
+                  }));
+                }
+              }
+            );
+          } else {
+            res = await runDirectorCommand({
+              message: msg,
+              selection: selectionSnapshot,
+              story: activeStory,
+              settings: aiSettings.direct,
+              allowSingleFallback: false,
               useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
-          });
+            });
+          }
         } catch (e) {
           const errMsg = isAgentApiError(e)
             ? String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message)
@@ -1233,6 +1277,7 @@ export default function App() {
             addToast('Director request failed. Open Debug (Ctrl/Cmd+Shift+D) for details.', 'info');
           }
           setIsDirectorThinking(false);
+          setDirectorStream(null);
           return;
         }
 
@@ -1257,11 +1302,13 @@ export default function App() {
           setPendingDirectorFallbackArmed(false);
           addToast('Director returned fallback output. Confirm before applying.', 'info');
           setIsDirectorThinking(false);
+          setDirectorStream(null);
           return;
         }
 		
         applyDirectorActions(projectId, activeStory, res.actions);
         setIsDirectorThinking(false);
+        setDirectorStream(null);
 		  };
 
       const retryDirectorAfterFailure = async (allowSingleFallback: boolean) => {
@@ -1272,16 +1319,54 @@ export default function App() {
         const msg = pendingDirectorMultiAgentFailure.message;
         const selectionSnapshot = pendingDirectorMultiAgentFailure.selection;
         setIsDirectorThinking(true);
+        const useStreaming = Boolean((aiSettings.direct as any)?.useStreaming);
+        if (useStreaming) {
+          setDirectorStream({ status: 'Retrying…', steps: [] });
+        } else {
+          setDirectorStream(null);
+        }
 
         try {
-          const res = await runDirectorCommand({
-            message: msg,
-            selection: selectionSnapshot,
-            story: activeStory,
-            settings: aiSettings.direct,
-            allowSingleFallback,
-              useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
-          });
+          const res = useStreaming
+            ? await runDirectorCommandStream(
+                {
+                  message: msg,
+                  selection: selectionSnapshot,
+                  story: activeStory,
+                  settings: aiSettings.direct,
+                  allowSingleFallback,
+                  useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
+                },
+                (ev: DirectorStreamEvent) => {
+                  if (ev.event === 'status') {
+                    setDirectorStream((prev) => ({ status: ev.data.message, steps: prev?.steps || [] }));
+                  }
+                  if (ev.event === 'agent_start') {
+                    setDirectorStream((prev) => ({
+                      status: `Running ${ev.data.agent}…`,
+                      steps: [...(prev?.steps || []), { agent: ev.data.agent, status: 'running' }],
+                    }));
+                  }
+                  if (ev.event === 'agent_done') {
+                    setDirectorStream((prev) => ({
+                      status: prev?.status,
+                      steps: (prev?.steps || []).map((s) =>
+                        s.agent === ev.data.agent
+                          ? { ...s, ok: ev.data.ok, ms: ev.data.ms, error: ev.data.error, status: ev.data.ok ? 'done' : 'error' }
+                          : s
+                      ),
+                    }));
+                  }
+                }
+              )
+            : await runDirectorCommand({
+                message: msg,
+                selection: selectionSnapshot,
+                story: activeStory,
+                settings: aiSettings.direct,
+                allowSingleFallback,
+                useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
+              });
 
           const agentEntry: AgentLogEntry = {
             id: `sys-${Date.now()}`,
@@ -1304,6 +1389,7 @@ export default function App() {
             setPendingDirectorSingleFallbackArmed(false);
             addToast('Director returned fallback output. Confirm before applying.', 'info');
             setIsDirectorThinking(false);
+            setDirectorStream(null);
             return;
           }
 
@@ -1311,6 +1397,7 @@ export default function App() {
           setPendingDirectorMultiAgentFailure(null);
           setPendingDirectorSingleFallbackArmed(false);
           setIsDirectorThinking(false);
+          setDirectorStream(null);
         } catch (e) {
           const errMsg = isAgentApiError(e)
             ? String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message)
@@ -1321,6 +1408,7 @@ export default function App() {
           setPendingDirectorSingleFallbackArmed(false);
           addToast('Director retry failed. Check Debug.', 'info');
           setIsDirectorThinking(false);
+          setDirectorStream(null);
         }
       };
 
@@ -1512,6 +1600,7 @@ export default function App() {
               history={agentHistory}
               onSendMessage={handleDirectorMessage}
               isThinking={isDirectorThinking}
+              stream={directorStream || undefined}
             />
           </div>
         )}
@@ -1525,6 +1614,7 @@ export default function App() {
               history={agentHistory}
               onSendMessage={handleDirectorMessage}
               isThinking={isDirectorThinking}
+              stream={directorStream || undefined}
             />
           </div>
         )}

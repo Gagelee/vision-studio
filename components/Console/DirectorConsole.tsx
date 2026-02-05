@@ -11,10 +11,14 @@ interface DirectorConsoleProps {
   history: AgentLogEntry[];
   onSendMessage: (message: string) => void;
   isThinking?: boolean;
+  stream?: {
+    status?: string;
+    steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
+  };
   variant?: 'default' | 'floating';
 }
 
-export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, history, onSendMessage, isThinking = false, variant = 'default' }) => {
+export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, history, onSendMessage, isThinking = false, stream, variant = 'default' }) => {
   const [input, setInput] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -104,6 +108,29 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                       <ChevronDown className="w-3.5 h-3.5" />
                   </button>
               </div>
+              {stream && (
+                  <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/40">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-2">Live Progress</div>
+                      {stream.status && <div className="text-xs text-zinc-600 dark:text-zinc-300">{stream.status}</div>}
+                      {stream.steps?.length > 0 && (
+                          <details className="mt-2 text-[11px] font-mono text-zinc-500">
+                              <summary className="cursor-pointer select-none hover:text-zinc-700 dark:hover:text-zinc-200">
+                                  Agents ({stream.steps.length})
+                              </summary>
+                              <div className="mt-2 space-y-1">
+                                  {stream.steps.map((s, idx) => (
+                                      <div key={`stream-${idx}`} className="flex items-center justify-between">
+                                          <span>{s.agent}</span>
+                                          <span className={s.status === 'error' ? 'text-rose-500' : s.status === 'done' ? 'text-emerald-500' : 'text-amber-500'}>
+                                              {s.status || 'running'}
+                                          </span>
+                                      </div>
+                                  ))}
+                              </div>
+                          </details>
+                      )}
+                  </div>
+              )}
               <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-zinc-50/50 dark:bg-black/20">
                   {history.length === 0 && (
                       <div className="text-center text-zinc-400 text-sm mt-10 italic">No directives logged yet.</div>
@@ -230,6 +257,11 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                      </button>
                 </div>
             </div>
+            {isThinking && stream?.status && !showHistory && (
+                <div className="px-4 pb-3 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {stream.status}
+                </div>
+            )}
         </div>
       </div>
     </div>

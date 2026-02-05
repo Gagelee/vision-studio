@@ -121,6 +121,16 @@ const ProfileEditor: React.FC<{
               Function calling (strict actions)
             </label>
           )}
+          {Boolean(showFunctionCalling) && (
+            <label className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                checked={Boolean((value as any).useStreaming)}
+                onChange={(e) => onChange({ useStreaming: e.target.checked } as any)}
+              />
+              Stream responses (SSE)
+            </label>
+          )}
           <label className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
             <input
               type="checkbox"

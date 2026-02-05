@@ -25,6 +25,13 @@ export interface DirectorCommandResponse {
   };
 }
 
+export type DirectorStreamEvent =
+  | { event: 'status'; data: { message: string } }
+  | { event: 'agent_start'; data: { agent: string } }
+  | { event: 'agent_done'; data: { agent: string; ok: boolean; ms?: number; error?: string } }
+  | { event: 'result'; data: DirectorCommandResponse }
+  | { event: 'error'; data: { message: string } };
+
 const joinUrl = (baseUrl: string | undefined, pathname: string) => {
   const base = String(baseUrl || '').trim().replace(/\/$/, '');
   return base ? `${base}${pathname}` : pathname;
@@ -62,6 +69,38 @@ const postJson = async <T>(url: string, body: unknown, timeoutMs: number): Promi
     return json;
   } finally {
     clearTimeout(timeout);
+  }
+};
+
+const parseSse = async (res: Response, onEvent: (ev: DirectorStreamEvent) => void) => {
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('Streaming not supported in this environment');
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+      const chunk = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 2);
+      if (!chunk) continue;
+      let eventName = 'message';
+      let dataLine = '';
+      for (const line of chunk.split('\n')) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim();
+        if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+      }
+      if (!dataLine) continue;
+      try {
+        const data = JSON.parse(dataLine);
+        onEvent({ event: eventName as any, data } as DirectorStreamEvent);
+      } catch {
+        // ignore malformed chunk
+      }
+    }
   }
 };
 
@@ -365,4 +404,52 @@ export const runDirectorCommand = async (req: DirectorCommandRequest): Promise<D
     if (isAgentApiError(e)) throw e;
     throw new Error(`HTTP director failed for ${req.settings.provider}/${req.settings.model}: ${e instanceof Error ? e.message : String(e)}`);
   }
+};
+
+export const runDirectorCommandStream = async (
+  req: DirectorCommandRequest,
+  onEvent: (ev: DirectorStreamEvent) => void
+): Promise<DirectorCommandResponse> => {
+  if (req.settings.provider === 'mock') {
+    const res = ruleBased(req);
+    onEvent({ event: 'result', data: res });
+    return res;
+  }
+  const endpoint = joinUrl(req.settings.baseUrl, '/api/agent/direct');
+  addDebugEvent({ level: 'info', scope: 'agent.direct', message: 'POST (stream)', data: { url: endpoint } });
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      message: req.message,
+      selection: req.selection,
+      story: req.story,
+      allowSingleFallback: Boolean(req.allowSingleFallback),
+      useFunctionCalling: Boolean(req.useFunctionCalling ?? (req.settings as any)?.useFunctionCalling),
+      useStreaming: true,
+      settings: {
+        provider: req.settings.provider,
+        model: req.settings.model,
+        temperature: req.settings.temperature,
+        maxOutputTokens: req.settings.maxOutputTokens,
+      },
+    }),
+  });
+  if (!res.ok) {
+    const { text, json } = await readErrorBody(res);
+    throw new AgentApiError({
+      message: `HTTP ${res.status}${text ? `: ${text}` : ''}`,
+      status: res.status,
+      url: endpoint,
+      bodyText: text,
+      bodyJson: json,
+    });
+  }
+  let final: DirectorCommandResponse | null = null;
+  await parseSse(res, (ev) => {
+    if (ev.event === 'result') final = ev.data as DirectorCommandResponse;
+    onEvent(ev);
+  });
+  if (!final) throw new Error('Streaming ended without result');
+  return final;
 };
