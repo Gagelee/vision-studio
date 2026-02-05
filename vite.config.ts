@@ -525,7 +525,7 @@ const parseLooseJsonObject = (raw: string): any | null => {
 };
 
 const resolveGeminiBaseUrl = (env?: Record<string, string>) => {
-  const raw = String(env?.COMPASS_GATEWAY_URL || env?.GATEWAY_URL || env?.GEMINI_BASE_URL || '').trim();
+  const raw = String(env?.GEMINI_BASE_URL || '').trim();
   if (raw) return raw.replace(/\/$/, '');
   return 'https://generativelanguage.googleapis.com/v1beta';
 };
@@ -918,7 +918,7 @@ const getProviderCandidates = (preferred: string, env: Record<string, string>): 
   const unique = [pref, ...all].filter(Boolean) as ModelProvider[];
 
   const hasKey = (p: ModelProvider) => {
-    if (p === 'gemini') return Boolean(env.COMPASS_API_KEY || env.GEMINI_API_KEY);
+    if (p === 'gemini') return Boolean(env.GEMINI_API_KEY);
     if (p === 'openai') return Boolean(env.OPENAI_API_KEY);
     if (p === 'deepseek') return Boolean(env.DEEPSEEK_API_KEY);
     return false;
@@ -1069,10 +1069,8 @@ const callGeminiImage = async (args: {
 };
 
 const agentApiPlugin = (env: Record<string, string>): Plugin => {
-  // Support calling Gemini through internal gateways (e.g. Compass) by setting:
-  // - COMPASS_API_KEY / COMPASS_GATEWAY_URL (or GATEWAY_URL)
-  // Falls back to direct Google Gemini via GEMINI_API_KEY.
-  const geminiApiKey = String(env.COMPASS_API_KEY || env.GEMINI_API_KEY || '').trim();
+  // Standard Google Gemini API key.
+  const geminiApiKey = String(env.GEMINI_API_KEY || '').trim();
   const geminiBaseUrl = resolveGeminiBaseUrl(env);
 
   const applyRoutes = (middlewares: any) => {
@@ -1313,6 +1311,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			                bytes: out.bytes.length,
 			                promptPreview,
 			                promptUsedPreview: String(promptUsed || '').slice(0, 240),
+			                promptUsed: String(promptUsed || '').slice(0, 4000),
 			                composed,
 			                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
 			                requireAllReferences,
@@ -2176,6 +2175,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const provider = String(settings?.provider || 'gemini');
         const model = String(settings?.model || 'gemini-3-pro-preview');
         const temperature = Number(settings?.temperature ?? 0.6);
+        const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
+        const tokenFloor = 4096;
+        const mergeTokenFloor = 8192;
+        const resolvedTokens = Math.max(tokenFloor, Number(maxOutputTokens ?? 0) || 0);
+        const resolvedMergeTokens = Math.max(mergeTokenFloor, Number(maxOutputTokens ?? 0) || 0);
         const stream = Boolean(body?.useStreaming);
 
         if (stream) {
@@ -2680,6 +2684,53 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           });
         };
 
+        const maybeInjectStyleGuide = (actions: any[], msg: string, storyObj: any) => {
+          const text = String(msg || '').toLowerCase();
+          const wantsStyle =
+            /视觉|风格|视觉语言|美术|style|visual|art direction|主视觉|kv|key visual/.test(text);
+          if (!wantsStyle) return actions;
+          const hasStoryStyle = actions.some((a) => {
+            if (a?.type !== 'UPDATE_STORY') return false;
+            const patch = a?.payload?.patch || a?.payload || {};
+            return typeof patch?.styleGuide === 'string' && String(patch.styleGuide || '').trim();
+          });
+          if (hasStoryStyle) return actions;
+
+          let styleCandidate = '';
+          for (const a of actions) {
+            if (a?.type !== 'UPDATE_LOCATION') continue;
+            const p = a?.payload || {};
+            const patch = p?.patch || p;
+            const v = String(patch?.visualStyle || '').trim();
+            if (v) {
+              styleCandidate = v;
+              break;
+            }
+          }
+          if (!styleCandidate) {
+            for (const a of actions) {
+              if (a?.type !== 'UPDATE_ELEMENT') continue;
+              const p = a?.payload || {};
+              const meta = p?.metadata || {};
+              const v = String(meta?.videoPrompt || p?.prompt || '').trim();
+              if (v) {
+                styleCandidate = v;
+                break;
+              }
+            }
+          }
+          if (!styleCandidate) return actions;
+
+          const current = String(storyObj?.styleGuide || '').trim();
+          if (styleCandidate && styleCandidate !== current) {
+            return [
+              ...actions,
+              { type: 'UPDATE_STORY', payload: { patch: { styleGuide: styleCandidate } } },
+            ];
+          }
+          return actions;
+        };
+
 		        const rule = () => {
 		          const raw = message;
 		          const lower = message.toLowerCase();
@@ -2975,7 +3026,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 const meta = getPromptMetaForAgent('direct', agent);
                 emit?.('agent_start', { agent });
                 try {
-                  const out = await callGeminiJson({ apiKey: geminiApiKey, model, temperature, prompt, env, responseSchema });
+                  const out = await callGeminiJson({ apiKey: geminiApiKey, model, temperature, maxOutputTokens: resolvedTokens, prompt, env, responseSchema });
                   teamTrace.push({
                     agent,
                     provider: p,
@@ -3033,6 +3084,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                           apiKey: geminiApiKey,
                           model,
                           temperature,
+                          maxOutputTokens: resolvedTokens,
                           prompt:
                             buildTeamDirectPlannerPrompt({
                               selectionJson,
@@ -3117,6 +3169,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                                 apiKey: geminiApiKey,
                                 model,
                                 temperature,
+                                maxOutputTokens: resolvedTokens,
                                 prompt: prompt + `\n\nIMPORTANT: You MUST call the function \"specialist_response\" exactly once. Do not output JSON text.`,
                                 env,
                                 functionDeclarations: [specialistResponseFunction],
@@ -3183,6 +3236,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                             apiKey: geminiApiKey,
                             model,
                             temperature,
+                            maxOutputTokens: resolvedMergeTokens,
                             prompt:
                               mergePrompt +
                               `\n\nIMPORTANT: You MUST call the function \"director_actions\" exactly once. Do not output JSON text.`,
@@ -3218,7 +3272,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       })()
                     : await call('director.merge', mergePrompt, GEMINI_SCHEMA.directorFinal);
 
-                const actions = normalizeActions(final?.actions);
+                const actions = maybeInjectStyleGuide(normalizeActions(final?.actions), message, story);
                 await replyPromise;
                 const taskCheck = {
                   requested: uniqAgents,
@@ -3287,6 +3341,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                             apiKey: geminiApiKey,
                             model,
                             temperature,
+                            maxOutputTokens: resolvedMergeTokens,
                             prompt:
                               singlePrompt +
                               `\n\nIMPORTANT: You MUST call the function \"director_actions\" exactly once. Do not output JSON text.`,
@@ -3298,6 +3353,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                             apiKey: geminiApiKey,
                             model,
                             temperature,
+                            maxOutputTokens: resolvedMergeTokens,
                             prompt: singlePrompt,
                             env,
                           });
@@ -3331,7 +3387,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			                  responsePreview: JSON.stringify(output).slice(0, 1600),
 			                  multiAgentError: e?.message || String(e),
 			                });
-			                const actions = normalizeActions(output?.actions);
+			                const actions = maybeInjectStyleGuide(normalizeActions(output?.actions), message, story);
 			                await replyPromise;
 			                const response = {
 			                  reply: streamedReply || String(output?.reply || 'OK'),

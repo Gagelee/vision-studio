@@ -23,6 +23,7 @@ import { runDirectorCommand, runDirectorCommandStream, type DirectorCommandRespo
 import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
+import { isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
 import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
 import { IMAGES } from './constants';
 import {
@@ -85,14 +86,52 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
   return actions.reduce<Story>((acc, action) => {
     if (action.type === 'UPDATE_STORY') {
       const patch = action.payload?.patch || action.payload || {};
-      return {
+      let next: Story = {
         ...acc,
         title: typeof patch.title === 'string' ? patch.title : acc.title,
         logline: typeof patch.logline === 'string' ? patch.logline : acc.logline,
         intent: typeof patch.intent === 'string' ? patch.intent : acc.intent,
+        styleGuide: typeof patch.styleGuide === 'string' ? patch.styleGuide : acc.styleGuide,
         keyVisualUrl: typeof patch.keyVisualUrl === 'string' ? patch.keyVisualUrl : acc.keyVisualUrl,
         updatedAt: Date.now(),
       };
+
+      if (typeof patch.keyVisualUrl === 'string') {
+        const url = String(patch.keyVisualUrl || '').trim();
+        if (url) {
+          const now = Date.now();
+          const rand = () => Math.random().toString(16).slice(2, 8);
+          const existing = Array.isArray((acc as any).keyVisualVersions) ? (acc as any).keyVisualVersions : [];
+          const seededBase =
+            !existing.length && acc.keyVisualUrl && String(acc.keyVisualUrl) !== url
+              ? [
+                  {
+                    id: `kv-seed-${now}-${rand()}`,
+                    imageUrl: String(acc.keyVisualUrl),
+                    createdAt: now,
+                    type: isLikelyPlaceholderImageUrl(String(acc.keyVisualUrl)) ? 'placeholder' : 'base',
+                  },
+                ]
+              : [];
+          const baseRaw = existing.length ? existing : seededBase;
+          const isPlaceholder = isLikelyPlaceholderImageUrl(url);
+          const base = isPlaceholder ? baseRaw : baseRaw.filter((v: any) => String(v?.type || '') !== 'placeholder');
+          const id = `kv-${now}-${rand()}`;
+          const versions = [...base, { id, imageUrl: url, createdAt: now, type: base.length ? 'variation' : 'base' }];
+          next = {
+            ...next,
+            keyVisualVersions: versions as any,
+            activeKeyVisualVersionId: id as any,
+            masterKvState: {
+              ...(acc as any).masterKvState,
+              status: isPlaceholder ? ((acc as any).masterKvState?.status || 'idle') : 'done',
+              lastError: isPlaceholder ? 'Active KV is a placeholder; generate a real Master KV.' : '',
+            },
+          };
+        }
+      }
+
+      return next;
     }
 
     if (action.type === 'CREATE_SEQUENCE') {
@@ -444,9 +483,20 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
     }
 
     if (action.type === 'UPDATE_CHARACTER_LOOK') {
-      const characterId = String(action.payload?.characterId || '');
-      const lookId = String(action.payload?.lookId || '');
-      const patch = action.payload?.patch || {};
+      const raw = action.payload || {};
+      let characterId = String(raw?.characterId || '');
+      let lookId = String(raw?.lookId || raw?.id || '');
+      let patch = raw?.patch || {};
+      if ((!patch || typeof patch !== 'object') && (typeof raw?.name === 'string' || typeof raw?.description === 'string')) {
+        patch = {
+          name: typeof raw?.name === 'string' ? raw.name : undefined,
+          description: typeof raw?.description === 'string' ? raw.description : undefined,
+        };
+      }
+      if (!characterId && lookId) {
+        const found = acc.characters.find((c) => (c.looks || []).some((l) => String(l.id) === lookId));
+        if (found) characterId = String(found.id || '');
+      }
       if (!characterId || !lookId) return acc;
       return {
         ...acc,
@@ -1021,7 +1071,7 @@ export default function App() {
       const p: any = a.payload || {};
       if (t === 'UPDATE_STORY') {
         const patch = p.patch || p;
-        const hasAny = ['title', 'logline', 'intent', 'keyVisualUrl'].some((k) => typeof patch?.[k] === 'string');
+        const hasAny = ['title', 'logline', 'intent', 'styleGuide', 'keyVisualUrl'].some((k) => typeof patch?.[k] === 'string');
         return hasAny ? { ok: true } : { ok: false, reason: 'UPDATE_STORY missing patch' };
       }
       if (t === 'NAVIGATE') {
@@ -1067,7 +1117,9 @@ export default function App() {
         return p?.characterId && p?.name && p?.description ? { ok: true } : { ok: false, reason: 'CREATE_CHARACTER_LOOK missing fields' };
       }
       if (t === 'UPDATE_CHARACTER_LOOK') {
-        return p?.characterId && p?.lookId ? { ok: true } : { ok: false, reason: 'UPDATE_CHARACTER_LOOK missing ids' };
+        const lookId = p?.lookId || p?.id;
+        const hasPatch = Boolean(p?.patch || typeof p?.description === 'string' || typeof p?.name === 'string');
+        return lookId && hasPatch ? { ok: true } : { ok: false, reason: 'UPDATE_CHARACTER_LOOK missing ids' };
       }
       if (t === 'GENERATE_SHOT_IMAGE') {
         return p?.sequenceId && p?.shotId ? { ok: true } : { ok: false, reason: 'GENERATE_SHOT_IMAGE missing ids' };
@@ -1107,6 +1159,18 @@ export default function App() {
     const navigateActions = validActions.filter((a) => a.type === 'NAVIGATE');
     const mutationActions = validActions.filter((a) => !a.type.startsWith('GENERATE_') && a.type !== 'NAVIGATE');
     const generateActions = validActions.filter((a) => a.type.startsWith('GENERATE_'));
+    const kvUpdated = mutationActions.some((a) => {
+      if (a.type !== 'UPDATE_STORY') return false;
+      const patch = (a as any)?.payload?.patch || (a as any)?.payload || {};
+      if (typeof patch?.keyVisualUrl !== 'string') return false;
+      return String(patch.keyVisualUrl || '').trim() !== String(story.keyVisualUrl || '').trim();
+    });
+    const styleGuideUpdated = mutationActions.some((a) => {
+      if (a.type !== 'UPDATE_STORY') return false;
+      const patch = (a as any)?.payload?.patch || (a as any)?.payload || {};
+      if (typeof patch?.styleGuide !== 'string') return false;
+      return String(patch.styleGuide || '').trim() !== String((story as any)?.styleGuide || '').trim();
+    });
 
     if (mutationActions.length) {
       updateStoryById(projectId, (prev) => applyActionsToStory(prev, mutationActions));
@@ -1206,10 +1270,18 @@ export default function App() {
     for (const a of mutationActions) {
       if (a.type !== 'UPDATE_CHARACTER_LOOK') continue;
       const payload = (a as any).payload || {};
-      const characterId = String(payload.characterId || '').trim();
-      const lookId = String(payload.lookId || '').trim();
+      let characterId = String(payload.characterId || '').trim();
+      const lookId = String(payload.lookId || payload.id || '').trim();
       const patch = payload.patch || {};
-      const hasVisualChange = typeof patch.description === 'string' || typeof patch.name === 'string';
+      const hasVisualChange =
+        typeof patch.description === 'string' ||
+        typeof patch.name === 'string' ||
+        typeof payload.description === 'string' ||
+        typeof payload.name === 'string';
+      if (!characterId && lookId) {
+        const found = storyAfterUpdates.characters.find((c) => (c.looks || []).some((l) => String(l.id) === lookId));
+        if (found) characterId = String(found.id || '').trim();
+      }
       if (characterId && lookId && hasVisualChange) updatedLooks.push({ characterId, lookId });
     }
     if (updatedLooks.length) {
@@ -1217,7 +1289,20 @@ export default function App() {
       for (const { characterId, lookId } of updatedLooks) {
         const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
         const lk = ch?.looks?.find((x) => x.id === lookId);
-        if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk, styleGuide) });
+        if (!ch || !lk) continue;
+        addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk, styleGuide) });
+      }
+    }
+
+    if (kvUpdated || styleGuideUpdated) {
+      scopeLabel = 'director:kv->all';
+      const jobs = buildAssetJobs(storyAfterUpdates, 'all');
+      for (const j of jobs) {
+        if (j.kind === 'masterkv') addJob(`masterkv`, j);
+        if (j.kind === 'shot') addJob(`shot:${j.sequenceId}:${j.shot.id}`, j);
+        if (j.kind === 'location') addJob(`location:${j.locationId}`, j);
+        if (j.kind === 'character') addJob(`character:${j.characterId}`, j);
+        if (j.kind === 'look') addJob(`look:${j.characterId}:${j.lookId}`, j);
       }
     }
 
@@ -1290,8 +1375,8 @@ export default function App() {
               addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
             }
             if (ev.type === 'success') {
-              storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl);
-              updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl));
+              storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl, ev.meta);
+              updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl, ev.meta));
               addDebugEvent({
                 level: 'info',
                 scope: 'asset.exec',
@@ -1302,8 +1387,10 @@ export default function App() {
                 const characterId = String(ev.job.characterId || '');
                 const ch = storyRef.characters.find((c) => c.id === characterId);
                 if (ch?.looks?.length) {
-                  const ok = window.confirm(`Avatar generated for ${ch.name}. Generate look variants now?`);
-                  if (ok) {
+                  const hasLookJobsInBatch = jobs.some(
+                    (j) => j.kind === 'look' && String((j as any).characterId || '') === characterId,
+                  );
+                  if (!hasLookJobsInBatch) {
                     const styleGuide = (storyRef as any)?.styleGuide;
                     const lookJobs = ch.looks.map((lk) => ({
                       kind: 'look',

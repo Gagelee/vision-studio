@@ -93,7 +93,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
 	              return;
 	            }
 	            if (ev.type === 'success') {
-	              storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl);
+              storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl, ev.meta);
 	              done = ev.done;
 	              setAssetDone(ev.done);
 	              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
