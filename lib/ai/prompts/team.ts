@@ -240,6 +240,11 @@ export const buildTeamDirectPlannerPrompt = (args: { selectionJson: string; stor
     `Rules:\n` +
     `- requestedAgents should be a subset of: ["script_writer","casting_director","editor","environment_director","camera_art"]\n` +
     `- If directive is simple (e.g. "warmer light"), requestedAgents can be [].\n` +
+    `- Use script_writer ONLY for screenplay/dialogue changes (beats, lines, dialogue edits).\n` +
+    `- Use editor for shot description/sequence structure/continuity edits.\n` +
+    `- Use casting_director for character design/looks/identity updates.\n` +
+    `- Use environment_director for set/location/world-building changes.\n` +
+    `- Use camera_art for camera/lighting/audio/video prompt updates.\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +
     `Directive: ${directive}\n`

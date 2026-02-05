@@ -82,20 +82,38 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 
       const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
       const castArr = Array.isArray(cast) ? cast : [];
+      const isLookBoundToAvatar = (look: any, avatarVersionId: string) => {
+        if (!look || !avatarVersionId) return false;
+        const versions = Array.isArray(look.previewVersions) ? look.previewVersions : [];
+        const activeId = String(look.activePreviewVersionId || '').trim();
+        if (!activeId) return false;
+        const hit = versions.find((v: any) => String(v?.id || '') === activeId);
+        return String(hit?.metadata?.sourceAvatarVersionId || '') === String(avatarVersionId);
+      };
+
       for (const c of castArr.slice(0, 4)) {
         const charId = String(c?.id || '');
         if (!charId) continue;
         const activeLookId = String(c?.activeLookId || '');
         const master = story?.characters?.find((x) => x.id === charId);
-        const avatarUrl = master ? getCharacterActiveAvatarUrl(master) : '';
+        const avatarUrl = master ? getCharacterActiveAvatarUrl(master, { activeOnly: true }) : '';
         if (!master || !isDone((master as any).assetState) || !avatarUrl) {
-          throw new Error('Blocked: Character avatar not generated yet. Please generate character avatar(s) first.');
+          throw new Error(`Blocked: Active avatar missing for ${master?.name || charId}. Please select/generate an active avatar variant.`);
         }
         if (activeLookId) {
           const look = master.looks?.find((lk) => lk.id === activeLookId);
-          const lookUrl = look ? getLookActivePreviewUrl(look) : '';
+          const avatarVersionId = String((master as any).activeAvatarVersionId || '').trim();
+          const bound = isLookBoundToAvatar(look, avatarVersionId);
+          const lookUrl = bound ? getLookActivePreviewUrl(look, { activeOnly: true }) : '';
           if (!look || !isDone((look as any).assetState) || !lookUrl) {
-            throw new Error('Blocked: Character look not generated yet. Please generate the look first.');
+            if (!bound) {
+              throw new Error(
+                `Blocked: Look is not bound to the active avatar for ${master.name}${look?.name ? ` (${look.name})` : ''}. Generate a look variant for the current avatar.`
+              );
+            }
+            throw new Error(
+              `Blocked: Active look variant missing for ${master.name}${look?.name ? ` (${look.name})` : ''}. Please select/generate an active look variant.`
+            );
           }
           if (references.length < 6) references.push({ url: lookUrl, label: `character: ${master.name} (${look.name})` });
         } else {
@@ -300,6 +318,27 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                         <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
                             v{versionNumber}
                         </div>
+                        {displayVersions.length > 1 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (displayVersions.length <= 1) return;
+                              const remaining = displayVersions.filter((v) => v.id !== version.id);
+                              const nextActive = isActive ? remaining[remaining.length - 1] : displayVersions.find((v) => v.id === shot.activeVersionId);
+                              if (!nextActive) return;
+                              onUpdateShot({
+                                ...shot,
+                                versions: remaining,
+                                activeVersionId: nextActive.id,
+                                thumbnailUrl: nextActive.imageUrl,
+                              });
+                            }}
+                            className="absolute top-2 right-2 z-10 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-rose-500/80 transition-colors opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto"
+                            title="Delete version"
+                          >
+                            ✕
+                          </button>
+                        )}
                         
                         <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                             <span className="bg-white text-black text-[10px] font-bold px-2 py-1 rounded shadow-lg uppercase tracking-widest">Select</span>

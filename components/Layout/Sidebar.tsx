@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug, BookText } from 'lucide-react';
+import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug, BookText, Loader2 } from 'lucide-react';
 import { Story, SelectionState } from '../../types';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
@@ -13,6 +13,9 @@ interface SidebarProps {
   onOpenAiSettings?: () => void;
   onOpenDebug?: () => void;
   onOpenScript?: () => void;
+  onDeleteSequence?: (id: string) => void;
+  onDeleteLocation?: (id: string) => void;
+  onDeleteCharacter?: (id: string) => void;
   onCreateSequence?: () => void;
   onCreateLocation?: () => void;
   onCreateCharacter?: () => void;
@@ -28,6 +31,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onOpenAiSettings,
     onOpenDebug,
     onOpenScript,
+    onDeleteSequence,
+    onDeleteLocation,
+    onDeleteCharacter,
     onCreateSequence,
     onCreateLocation,
     onCreateCharacter
@@ -133,10 +139,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="px-2 space-y-0.5">
                     {story.sequences.map(seq => {
                         const isActive = (selection.type === 'sequence' && selection.id === seq.id) || (selection.type === 'shot' && selection.parentId === seq.id);
+                        const isSeqLoading = (seq.shots || []).some((s) => s.aiState === 'rendering' || s.assetState?.status === 'running');
                         return (
                              <div 
                                 key={seq.id}
-                                className={`px-3 py-2 rounded-lg flex items-center gap-3 cursor-pointer transition-all border border-transparent ${
+                                className={`group px-3 py-2 rounded-lg flex items-center gap-3 cursor-pointer transition-all border border-transparent ${
                                     isActive
                                     ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white font-medium border-zinc-200 dark:border-zinc-800 shadow-sm' 
                                     : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-900'
@@ -146,7 +153,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 <span className={`text-[10px] font-mono w-4 flex items-center justify-center rounded ${isActive ? 'bg-orange-100 text-[#ee4d2d] dark:bg-orange-500/20 dark:text-orange-400' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400'}`}>
                                     {story.sequences.indexOf(seq) + 1}
                                 </span>
-                                <span className="text-sm truncate">{seq.title}</span>
+                            <span className="text-sm truncate">{seq.title}</span>
+                            <div className="ml-auto flex items-center gap-1">
+                              {onDeleteSequence && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (window.confirm(`Delete sequence "${seq.title}"?`)) onDeleteSequence(seq.id);
+                                  }}
+                                  className="text-zinc-400 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto"
+                                  title="Delete sequence"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                              {isSeqLoading && (
+                                <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
+                              )}
+                            </div>
                              </div>
                         );
                     })}
@@ -170,7 +194,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                      {story.locations.map(loc => (
                          <div 
                             key={loc.id}
-                            className={`px-3 py-1.5 rounded-lg flex items-center gap-2 cursor-pointer transition-colors ${
+                            className={`group px-3 py-1.5 rounded-lg flex items-center gap-2 cursor-pointer transition-colors ${
                                 selection.type === 'location' && selection.id === loc.id 
                                 ? 'bg-orange-50/50 dark:bg-orange-900/10 text-[#ee4d2d] dark:text-orange-400 border border-orange-200/50 dark:border-orange-500/20' 
                                 : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-900 hover:text-zinc-900 dark:hover:text-zinc-200'
@@ -179,6 +203,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
                          >
                             <MapPin className="w-3.5 h-3.5 opacity-70" />
                             <span className="text-sm truncate">{loc.name}</span>
+                            <div className="ml-auto flex items-center gap-1">
+                              {onDeleteLocation && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (window.confirm(`Delete environment "${loc.name}"?`)) onDeleteLocation(loc.id);
+                                  }}
+                                  className="text-zinc-400 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto"
+                                  title="Delete environment"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                              {loc.assetState?.status === 'running' && (
+                                <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
+                              )}
+                            </div>
                          </div>
                      ))}
                  </div>
@@ -201,7 +242,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                      {story.characters.map(char => (
                          <div 
                             key={char.id}
-                            className={`px-3 py-1.5 rounded-lg flex items-center gap-2 cursor-pointer transition-colors ${
+                            className={`group px-3 py-1.5 rounded-lg flex items-center gap-2 cursor-pointer transition-colors ${
                                 selection.type === 'character' && selection.id === char.id 
                                 ? 'bg-indigo-50/50 dark:bg-indigo-900/10 text-indigo-700 dark:text-indigo-400 border border-indigo-200/50 dark:border-indigo-500/20' 
                                 : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-900 hover:text-zinc-900 dark:hover:text-zinc-200'
@@ -218,6 +259,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               }}
                             />
                             <span className="text-sm truncate">{char.name}</span>
+                            <div className="ml-auto flex items-center gap-1">
+                              {onDeleteCharacter && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (window.confirm(`Delete character "${char.name}"?`)) onDeleteCharacter(char.id);
+                                  }}
+                                  className="text-zinc-400 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto"
+                                  title="Delete character"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                              {char.assetState?.status === 'running' && (
+                                <Loader2 className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+                              )}
+                            </div>
                          </div>
                      ))}
                  </div>

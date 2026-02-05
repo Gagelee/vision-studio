@@ -5,7 +5,7 @@ import { Character, CharacterLook, ModelRuntimeSettings, Sequence, Shot } from '
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt } from '../../lib/ai/prompts';
 import { openLightbox } from '../../lib/ui/lightboxStore';
-import { getCharacterActiveAvatarUrl, isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
+import { getCharacterActiveAvatarUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
 
 interface CharacterEditorProps {
   character: Character;
@@ -145,6 +145,14 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
       };
       setDraft(next);
       onSave(next);
+      if (next.looks && next.looks.length) {
+        const ok = window.confirm('Generate look variants for this new avatar?');
+        if (ok) {
+          for (const look of next.looks) {
+            await handleGenerateLook(look, next);
+          }
+        }
+      }
     } catch (e) {
       setGenerationError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -157,32 +165,59 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   const displayAvatarVersions = nonPlaceholderAvatarVersions.length ? nonPlaceholderAvatarVersions : avatarVersions;
   const activeAvatarVersionId = (draft as any).activeAvatarVersionId || displayAvatarVersions[displayAvatarVersions.length - 1]?.id || '';
 
-  const handleSelectAvatarVariant = (versionId: string) => {
-    const v = (avatarVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
-    if (!v?.imageUrl) return;
+  const applyAvatarSelection = (nextVersions: any[], nextActiveId: string) => {
+    const active = nextVersions.find((x: any) => String(x?.id || '') === String(nextActiveId)) || nextVersions[nextVersions.length - 1];
+    if (!active?.imageUrl) return;
+    const nextLooks = (draft.looks || []).map((look) => {
+      const seeded = seedLookPreviewVersions(look);
+      const versions = (look as any).previewVersions || seeded.versions;
+      const match = (versions || []).find((ver: any) => String(ver?.metadata?.sourceAvatarVersionId || '') === String(active.id));
+      if (!match) {
+        return { ...look, previewUrl: '', previewVersions: versions, activePreviewVersionId: '' as any };
+      }
+      return { ...look, previewUrl: String(match.imageUrl), previewVersions: versions, activePreviewVersionId: String(match.id) as any };
+    });
     const next: Character = {
       ...draft,
-      avatarUrl: String(v.imageUrl),
-      avatarVersions,
-      activeAvatarVersionId: String(versionId) as any,
+      avatarUrl: String(active.imageUrl),
+      avatarVersions: nextVersions,
+      activeAvatarVersionId: String(active.id) as any,
+      looks: nextLooks,
     };
     setDraft(next);
     onSave(next);
   };
 
-  const handleGenerateLook = async (look: CharacterLook) => {
+  const handleSelectAvatarVariant = (versionId: string) => {
+    const v = (avatarVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
+    if (!v?.imageUrl) return;
+    applyAvatarSelection(avatarVersions, String(versionId));
+  };
+
+  const handleDeleteAvatarVariant = (versionId: string) => {
+    const versions = (avatarVersions || []).filter((v: any) => String(v?.id || '') !== String(versionId));
+    if (versions.length === 0) return;
+    const nextActiveId =
+      String(activeAvatarVersionId || '') === String(versionId)
+        ? String(versions[versions.length - 1]?.id || '')
+        : String(activeAvatarVersionId || '');
+    applyAvatarSelection(versions, nextActiveId);
+  };
+
+  const handleGenerateLook = async (look: CharacterLook, characterOverride?: Character) => {
     if (!imageSettings || imageSettings.provider === 'mock' || isLocked) return;
     setGenerationError(null);
     setGeneratingLookIds((m) => ({ ...m, [look.id]: true }));
     try {
-      const avatarUrl = getCharacterActiveAvatarUrl(draft);
+      const baseCharacter = characterOverride || draft;
+      const avatarUrl = getCharacterActiveAvatarUrl(baseCharacter, { activeOnly: true });
       if (!avatarUrl || isLikelyPlaceholderImageUrl(avatarUrl)) {
         throw new Error('Blocked: Base character avatar not generated yet. Please generate the avatar first.');
       }
       const refs = [{ url: avatarUrl, label: 'character base avatar' }];
       const out = await generateImageFromPrompt({
         prompt:
-          buildCharacterLookPrompt(draft, look, styleGuide) +
+          buildCharacterLookPrompt(baseCharacter, look, styleGuide) +
           `\n\nKeep the exact same character identity as the reference avatar (same person, same face). Only change wardrobe/makeup/style described for this look.`,
         settings: imageSettings,
         aspectRatio: '1:1',
@@ -196,16 +231,23 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         Array.isArray((look as any).previewVersions) && (look as any).previewVersions.length ? (look as any).previewVersions : seededLook.versions;
       const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
       const newId = `lv-${now}-${Math.random().toString(16).slice(2, 8)}`;
+      const activeAvatarId = String(activeAvatarVersionId || '').trim();
       const next: Character = {
-        ...draft,
-        looks: (draft.looks || []).map((l) =>
+        ...baseCharacter,
+        looks: (baseCharacter.looks || []).map((l) =>
           l.id === look.id
             ? {
                 ...l,
                 previewUrl: out.imageUrl,
                 previewVersions: [
                   ...cleanedBase,
-                  { id: newId, imageUrl: out.imageUrl, createdAt: now, type: cleanedBase.length ? 'variation' : 'base' },
+                  {
+                    id: newId,
+                    imageUrl: out.imageUrl,
+                    createdAt: now,
+                    type: cleanedBase.length ? 'variation' : 'base',
+                    metadata: activeAvatarId ? { sourceAvatarVersionId: activeAvatarId } : undefined,
+                  },
                 ] as any,
                 activePreviewVersionId: newId as any,
                 assetState: {
@@ -234,11 +276,18 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     const versions = (lk as any).previewVersions || seeded.versions;
     const v = (versions || []).find((x: any) => String(x?.id || '') === String(versionId));
     if (!v?.imageUrl) return;
+    const avatarVersionId = String(activeAvatarVersionId || '').trim();
+    const nextVersions = (versions || []).map((ver: any) => {
+      if (String(ver?.id || '') !== String(versionId)) return ver;
+      if (!avatarVersionId) return ver;
+      if (String(ver?.metadata?.sourceAvatarVersionId || '') === avatarVersionId) return ver;
+      return { ...ver, metadata: { ...(ver?.metadata || {}), sourceAvatarVersionId: avatarVersionId } };
+    });
     const next: Character = {
       ...draft,
       looks: (draft.looks || []).map((l) =>
         l.id === lookId
-          ? { ...l, previewUrl: String(v.imageUrl), previewVersions: versions, activePreviewVersionId: String(versionId) as any }
+          ? { ...l, previewUrl: String(v.imageUrl), previewVersions: nextVersions, activePreviewVersionId: String(versionId) as any }
           : l,
       ),
     };
@@ -342,7 +391,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
 	                              <button
 	                                key={String(v.id)}
 	                                onClick={() => handleSelectAvatarVariant(String(v.id))}
-	                                className={`relative w-20 aspect-square rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
+	                                className={`relative group w-20 aspect-square rounded-xl overflow-hidden border-2 shrink-0 transition-all ${
 	                                  isActive ? 'border-emerald-500' : 'border-zinc-800 hover:border-zinc-600'
 	                                }`}
 	                                title={isActive ? 'Active' : 'Set active'}
@@ -359,6 +408,19 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
 	                                >
 	                                  <ZoomIn className="w-3.5 h-3.5" />
 	                                </button>
+                                  {displayAvatarVersions.length > 1 && (
+                                    <button
+                                      type="button"
+                                      className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-black/60 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity"
+                                      title="Delete variant"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteAvatarVariant(String(v.id));
+                                      }}
+                                    >
+                                      ✕
+                                    </button>
+                                  )}
 	                              </button>
 		                            );
 		                          })}
@@ -392,19 +454,19 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                         const lookVersions = (look as any).previewVersions || seeded.versions;
                         const nonPlaceholderLookVersions = (lookVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
                         const displayLookVersions = nonPlaceholderLookVersions.length ? nonPlaceholderLookVersions : lookVersions;
-                        const activeLookVersionId =
-                          (look as any).activePreviewVersionId || displayLookVersions[displayLookVersions.length - 1]?.id || '';
+                        const activeLookVersionId = String((look as any).activePreviewVersionId || '').trim();
+                        const activeLookUrl = getLookActivePreviewUrl(look, { activeOnly: true });
                         return (
                           <div
                             key={look.id}
                             className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex gap-4 hover:border-indigo-500/50 transition-all shadow-xl"
                           >
                             <div className="w-32 h-40 rounded-xl bg-zinc-800 overflow-hidden shrink-0 border border-white/5 flex items-center justify-center">
-                              {look.previewUrl ? (
+                              {activeLookUrl ? (
                                 <img
-                                  src={look.previewUrl}
+                                  src={activeLookUrl}
                                   className="w-full h-full object-cover cursor-zoom-in"
-                                  onClick={() => openLightbox({ url: look.previewUrl, title: `Look: ${draft.name} / ${look.name}` })}
+                                  onClick={() => openLightbox({ url: activeLookUrl, title: `Look: ${draft.name} / ${look.name}` })}
                                 />
                               ) : (
                                 <div className="flex flex-col items-center justify-center text-zinc-500 text-xs">

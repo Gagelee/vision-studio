@@ -532,6 +532,27 @@ const buildGeminiStreamContentUrl = (args: { env?: Record<string, string>; model
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:streamGenerateContent?alt=sse`;
 };
 
+const includesAnyText = (text: string, phrases: string[]) => {
+  const t = String(text || '').toLowerCase();
+  return phrases.some((p) => t.includes(String(p).toLowerCase()));
+};
+
+const adjustRequestedAgents = (requested: string[], selection: any, directive: string) => {
+  const selectionType = String(selection?.type || '');
+  const wantsScript = includesAnyText(directive, ['script', 'screenplay', 'dialogue', '台词', '对白', '剧本', '脚本']);
+  const wantsShotText = includesAnyText(directive, ['shot', 'shots', '镜头', '分镜', 'shot description', '镜头描述']);
+  const wantsCharacterDesign = includesAnyText(directive, ['character', '角色', '人物', 'look', '造型', '定妆', '人设']);
+
+  const set = new Set(requested.filter(Boolean).map((a) => String(a).trim()));
+  if (selectionType === 'character' && !wantsScript) set.delete('script_writer');
+  if (wantsShotText && !wantsScript) {
+    set.delete('script_writer');
+    set.add('editor');
+  }
+  if (wantsCharacterDesign && !wantsScript) set.delete('script_writer');
+  return Array.from(set);
+};
+
 const callGeminiJson = async (args: {
   apiKey: string;
   model: string;
@@ -2180,6 +2201,28 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           }),
         };
 
+        const specialistResponseFunction = {
+          name: 'specialist_response',
+          description: 'Return specialist notes and suggested actions.',
+          parameters: schemaObject({
+            required: ['notes', 'suggestedActions'],
+            propertyOrdering: ['notes', 'suggestedActions'],
+            properties: {
+              notes: schemaString(),
+              suggestedActions: schemaArray(
+                schemaObject({
+                  required: ['type', 'payload'],
+                  propertyOrdering: ['type', 'payload'],
+                  properties: {
+                    type: schemaString(),
+                    payload: schemaFreeformObject(),
+                  },
+                }),
+              ),
+            },
+          }),
+        };
+
         const normalizeActionPayload = (payload: any) => {
           if (!payload || typeof payload !== 'object') return payload;
           const raw = (payload as any)?._raw;
@@ -2845,8 +2888,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             'NAVIGATE',
             'UPDATE_STORY',
             'CREATE_LOCATION',
+            'DELETE_LOCATION',
             'UPDATE_LOCATION',
             'CREATE_CHARACTER',
+            'DELETE_CHARACTER',
             'UPDATE_CHARACTER',
             'CREATE_CHARACTER_LOOK',
             'UPDATE_CHARACTER_LOOK',
@@ -2935,39 +2980,83 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }),
                   GEMINI_SCHEMA.directorPlan,
                 );
-                const requestedAgents = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const requestedAgentsRaw = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const requestedAgents = adjustRequestedAgents(requestedAgentsRaw as any, selection, message);
                 const allowedAgents = new Set(['script_writer', 'casting_director', 'editor', 'environment_director', 'camera_art']);
                 const uniqAgents: string[] = Array.from(
                   new Set(requestedAgents.map((x: any) => String(x || '').trim()).filter((x: string) => allowedAgents.has(x))),
                 );
-	                const focusObj: Record<string, unknown> =
-	                  planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
+                const focusObj: Record<string, unknown> =
+                  planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
 
-	                const specialistJsonByAgent: Record<string, string> = {};
-                  const specialistErrors: Array<{ agent: string; error: string }> = [];
-	                for (const a of uniqAgents.slice(0, 4)) {
-	                  const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
+                const specialistJsonByAgent: Record<string, string> = {};
+                const specialistResultsByAgent: Record<string, any> = {};
+                const specialistErrors: Array<{ agent: string; error: string }> = [];
+                for (const a of uniqAgents.slice(0, 4)) {
+                  const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
                     try {
-	                    const out = await call(
-	                      a,
-	                      buildTeamDirectSpecialistPrompt({
-	                        agent: a as any,
-	                        focus,
-	                        selectionJson,
-	                        storyJson,
-	                        directive: message,
-	                      }),
-	                      GEMINI_SCHEMA.directorSpecialist,
-	                    );
+                      const prompt = buildTeamDirectSpecialistPrompt({
+                        agent: a as any,
+                        focus,
+                        selectionJson,
+                        storyJson,
+                        directive: message,
+                      });
+                      const out = useFunctionCalling
+                        ? await (async () => {
+                            const started = Date.now();
+                            const meta = getPromptMetaForAgent('direct', a);
+                            emit?.('agent_start', { agent: a });
+                            let toolOut: any;
+                            try {
+                              toolOut = await callGeminiToolCall({
+                                apiKey: geminiApiKey,
+                                model,
+                                temperature,
+                                prompt: prompt + `\n\nIMPORTANT: You MUST call the function \"specialist_response\" exactly once. Do not output JSON text.`,
+                                env,
+                                functionDeclarations: [specialistResponseFunction],
+                                allowedFunctionNames: ['specialist_response'],
+                              });
+                            } catch (e: any) {
+                              emit?.('agent_done', { agent: a, ok: false, ms: Date.now() - started, error: formatFetchError(e) });
+                              throw e;
+                            }
+                            teamTrace.push({
+                              agent: a,
+                              provider: p,
+                              model,
+                              ms: Date.now() - started,
+                              ok: true,
+                              promptId: meta?.id,
+                              promptVersion: meta?.version,
+                            });
+                            emit?.('agent_done', { agent: a, ok: true, ms: Date.now() - started });
+                            teamMessages.push({
+                              agent: a,
+                              ok: true,
+                              ms: Date.now() - started,
+                              promptId: meta?.id,
+                              promptVersion: meta?.version,
+                              promptPreview: String(prompt || '').slice(0, 800),
+                              responsePreview: JSON.stringify(toolOut?.args || {}).slice(0, 1600),
+                              toolCall: toolOut?.name,
+                            });
+                            return toolOut?.args || {};
+                          })()
+                        : await call(a, prompt, GEMINI_SCHEMA.directorSpecialist);
                       const suggested = normalizeActions(out?.suggestedActions);
-	                      specialistJsonByAgent[a] = JSON.stringify({ ...(out || {}), suggestedActions: suggested });
+                      const normalized = { ...(out || {}), suggestedActions: suggested };
+                      specialistResultsByAgent[a] = normalized;
+                      specialistJsonByAgent[a] = JSON.stringify(normalized);
                     } catch (e: any) {
                       const err = formatFetchError(e);
                       specialistErrors.push({ agent: a, error: err });
+                      specialistResultsByAgent[a] = { notes: '', suggestedActions: [], error: err };
                       specialistJsonByAgent[a] = JSON.stringify({ notes: '', suggestedActions: [], error: err });
                       continue;
                     }
-	                }
+                }
 
                 emit?.('status', { message: 'Merging…' });
                 const mergePrompt = buildTeamDirectMergePrompt({
@@ -3027,6 +3116,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
                 const actions = normalizeActions(final?.actions);
                 await replyPromise;
+                const taskCheck = {
+                  requested: uniqAgents,
+                  errors: specialistErrors,
+                  empty: uniqAgents.filter((a) => !specialistErrors.find((x) => x.agent === a) && (specialistResultsByAgent[a]?.suggestedActions || []).length === 0),
+                };
                 const response = {
 	                  reply: streamedReply || String(final?.reply || planner?.reply || 'OK'),
 	                  plan: {
@@ -3036,7 +3130,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       { id: mkId('step'), title: 'Director: plan', status: 'done' },
                       ...(uniqAgents.map((a: string) => {
                           const failed = specialistErrors.find((x) => x.agent === a);
-                          return { id: mkId('step'), title: `Specialist: ${a}`, status: failed ? 'error' : 'done' };
+                          const hasActions = (specialistResultsByAgent[a]?.suggestedActions || []).length > 0;
+                          return { id: mkId('step'), title: `Specialist: ${a}`, status: failed || !hasActions ? 'error' : 'done' };
                         }) as any),
                       { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
                     ],
@@ -3052,6 +3147,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                         traceId,
                         mode: useFunctionCalling ? 'multi-agent-fc' : 'multi-agent',
                         specialistErrors,
+                        taskCheck,
                       },
 	                };
 	                return sendResult(response, 200);
@@ -3210,7 +3306,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     directive: message,
                   }),
                 );
-                const requestedAgents = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const requestedAgentsRaw = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const requestedAgents = adjustRequestedAgents(requestedAgentsRaw as any, selection, message);
                 const allowedAgents = new Set(['script_writer', 'casting_director', 'editor', 'environment_director', 'camera_art']);
                 const uniqAgents: string[] = Array.from(
                   new Set(requestedAgents.map((x: any) => String(x || '').trim()).filter((x: string) => allowedAgents.has(x))),
@@ -3219,6 +3316,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
 
                 const specialistJsonByAgent: Record<string, string> = {};
+                const specialistResultsByAgent: Record<string, any> = {};
                 for (const a of uniqAgents.slice(0, 4)) {
                   const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
                   emit?.('status', { message: `Consulting ${a}…` });
@@ -3232,7 +3330,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       directive: message,
                     }),
                   );
-                  specialistJsonByAgent[a] = JSON.stringify(out || {});
+                  const suggested = normalizeActions(out?.suggestedActions);
+                  const normalized = { ...(out || {}), suggestedActions: suggested };
+                  specialistResultsByAgent[a] = normalized;
+                  specialistJsonByAgent[a] = JSON.stringify(normalized);
                 }
 
                 const final = await call(
@@ -3247,6 +3348,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }),
                 );
                 const actions = Array.isArray(final?.actions) ? final.actions : [];
+                const taskCheck = {
+                  requested: uniqAgents,
+                  empty: uniqAgents.filter((a) => (specialistResultsByAgent[a]?.suggestedActions || []).length === 0),
+                };
                 const response = {
                   reply: String(final?.reply || planner?.reply || 'OK'),
                   plan: {
@@ -3254,13 +3359,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
                     steps: [
                       { id: mkId('step'), title: 'Director: plan', status: 'done' },
-                      ...(uniqAgents.map((a: string) => ({ id: mkId('step'), title: `Specialist: ${a}`, status: 'done' })) as any),
+                      ...(uniqAgents.map((a: string) => {
+                        const hasActions = (specialistResultsByAgent[a]?.suggestedActions || []).length > 0;
+                        return { id: mkId('step'), title: `Specialist: ${a}`, status: hasActions ? 'done' : 'error' };
+                      }) as any),
                       { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
                     ],
                     actions,
 	                  },
                   actions,
-                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'multi-agent' },
+                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'multi-agent', taskCheck },
                 };
                 return sendResult(response, 200);
 	              } catch (e: any) {
@@ -3369,7 +3477,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     directive: message,
                   }),
                 );
-                const requestedAgents = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const requestedAgentsRaw = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
+                const requestedAgents = adjustRequestedAgents(requestedAgentsRaw as any, selection, message);
                 const allowedAgents = new Set(['script_writer', 'casting_director', 'editor', 'environment_director', 'camera_art']);
                 const uniqAgents: string[] = Array.from(
                   new Set(requestedAgents.map((x: any) => String(x || '').trim()).filter((x: string) => allowedAgents.has(x))),
@@ -3378,6 +3487,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   planner?.focus && typeof planner.focus === 'object' && !Array.isArray(planner.focus) ? (planner.focus as any) : {};
 
                 const specialistJsonByAgent: Record<string, string> = {};
+                const specialistResultsByAgent: Record<string, any> = {};
                 for (const a of uniqAgents.slice(0, 4)) {
                   const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
                   const out = await call(
@@ -3390,7 +3500,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       directive: message,
                     }),
                   );
-                  specialistJsonByAgent[a] = JSON.stringify(out || {});
+                  const suggested = normalizeActions(out?.suggestedActions);
+                  const normalized = { ...(out || {}), suggestedActions: suggested };
+                  specialistResultsByAgent[a] = normalized;
+                  specialistJsonByAgent[a] = JSON.stringify(normalized);
                 }
 
                 const final = await call(
@@ -3405,6 +3518,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }),
                 );
                 const actions = Array.isArray(final?.actions) ? final.actions : [];
+                const taskCheck = {
+                  requested: uniqAgents,
+                  empty: uniqAgents.filter((a) => (specialistResultsByAgent[a]?.suggestedActions || []).length === 0),
+                };
                 const response = {
                   reply: String(final?.reply || planner?.reply || 'OK'),
                   plan: {
@@ -3412,13 +3529,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
                     steps: [
                       { id: mkId('step'), title: 'Director: plan', status: 'done' },
-                      ...(uniqAgents.map((a: string) => ({ id: mkId('step'), title: `Specialist: ${a}`, status: 'done' })) as any),
+                      ...(uniqAgents.map((a: string) => {
+                        const hasActions = (specialistResultsByAgent[a]?.suggestedActions || []).length > 0;
+                        return { id: mkId('step'), title: `Specialist: ${a}`, status: hasActions ? 'done' : 'error' };
+                      }) as any),
                       { id: mkId('step'), title: 'Director: merge actions', status: 'done' },
                     ],
                     actions,
 	                  },
                   actions,
-                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'multi-agent' },
+                  debug: { transport: 'http', provider: p, model, teamTrace, traceId, mode: 'multi-agent', taskCheck },
                 };
                 return sendResult(response, 200);
 	              } catch (e: any) {

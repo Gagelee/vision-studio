@@ -296,36 +296,49 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
   if (job.kind === 'character') {
     return {
       ...story,
-      characters: (story.characters || []).map((c) =>
-        c.id === job.characterId
-          ? {
-              ...c,
-              avatarUrl: imageUrl,
-              ...(() => {
-                const existing = Array.isArray((c as any).avatarVersions) ? (c as any).avatarVersions : [];
-                const seededBase =
-                  !existing.length && c.avatarUrl && String(c.avatarUrl) !== String(imageUrl)
-                    ? [
-                        {
-                          id: `av-seed-${now}-${rand()}`,
-                          imageUrl: String(c.avatarUrl),
-                          createdAt: (c as any).assetState?.lastAttemptAt || now,
-                          type: isLikelyPlaceholderUrl(String(c.avatarUrl)) ? 'placeholder' : 'base',
-                        },
-                      ]
-                    : [];
-                const baseRaw = existing.length ? existing : seededBase;
-                const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
-                const id = `av-${now}-${rand()}`;
-                return {
-                  avatarVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
-                  activeAvatarVersionId: id,
-                };
-              })(),
-              assetState: bumpState((c as any).assetState, { status: 'done', lastError: '' }),
-            }
-          : c,
-      ),
+      characters: (story.characters || []).map((c) => {
+        if (c.id !== job.characterId) return c;
+        const existing = Array.isArray((c as any).avatarVersions) ? (c as any).avatarVersions : [];
+        const seededBase =
+          !existing.length && c.avatarUrl && String(c.avatarUrl) !== String(imageUrl)
+            ? [
+                {
+                  id: `av-seed-${now}-${rand()}`,
+                  imageUrl: String(c.avatarUrl),
+                  createdAt: (c as any).assetState?.lastAttemptAt || now,
+                  type: isLikelyPlaceholderUrl(String(c.avatarUrl)) ? 'placeholder' : 'base',
+                },
+              ]
+            : [];
+        const baseRaw = existing.length ? existing : seededBase;
+        const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
+        const newId = `av-${now}-${rand()}`;
+        const nextVersions = [
+          ...base,
+          { id: newId, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' },
+        ];
+        const nextLooks = (c.looks || []).map((lk) => {
+          const versions = Array.isArray((lk as any).previewVersions) ? (lk as any).previewVersions : [];
+          const match = versions.find((v: any) => String(v?.metadata?.sourceAvatarVersionId || '') === String(newId));
+          if (!match) {
+            return { ...lk, previewUrl: '', previewVersions: versions, activePreviewVersionId: '' as any };
+          }
+          return {
+            ...lk,
+            previewUrl: String(match.imageUrl),
+            previewVersions: versions,
+            activePreviewVersionId: String(match.id),
+          };
+        });
+        return {
+          ...c,
+          avatarUrl: imageUrl,
+          avatarVersions: nextVersions,
+          activeAvatarVersionId: newId,
+          looks: nextLooks,
+          assetState: bumpState((c as any).assetState, { status: 'done', lastError: '' }),
+        };
+      }),
     };
   }
 
@@ -334,6 +347,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
+        const activeAvatarId = String((c as any).activeAvatarVersionId || '').trim();
         return {
           ...c,
           looks: (c.looks || []).map((lk) =>
@@ -358,7 +372,16 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
                     const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
                     const id = `lv-${now}-${rand()}`;
                     return {
-                      previewVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
+                      previewVersions: [
+                        ...base,
+                        {
+                          id,
+                          imageUrl,
+                          createdAt: now,
+                          type: base.length ? 'variation' : 'base',
+                          metadata: activeAvatarId ? { sourceAvatarVersionId: activeAvatarId } : undefined,
+                        },
+                      ],
                       activePreviewVersionId: id,
                     };
                   })(),
@@ -451,7 +474,7 @@ export const executeAssetJobs = async (args: {
   const isDone = (st: any) => st && st.status === 'done';
   const getMasterOk = (s: Story | null) => {
     if (!s) return false;
-    const kvUrl = getStoryActiveKvUrl(s);
+    const kvUrl = getStoryActiveKvUrl(s, { activeOnly: true });
     if (!kvUrl) return false;
     if (isLikelyPlaceholderImageUrl(kvUrl)) return false;
     const st = (s as any).masterKvState || null;
@@ -472,14 +495,14 @@ export const executeAssetJobs = async (args: {
       const ids = new Set(phaseJobs.filter((j) => j.kind === 'location').map((j: any) => String(j.locationId)));
       return (story.locations || [])
         .filter((l) => ids.has(l.id))
-        .every((l) => isDone((l as any).assetState) && Boolean(getLocationActivePreviewUrl(l)));
+        .every((l) => isDone((l as any).assetState) && Boolean(getLocationActivePreviewUrl(l, { activeOnly: true })));
     }
 
     if (kind === 'character') {
       const ids = new Set(phaseJobs.filter((j) => j.kind === 'character').map((j: any) => String(j.characterId)));
       return (story.characters || [])
         .filter((c) => ids.has(c.id))
-        .every((c) => isDone((c as any).assetState) && Boolean(getCharacterActiveAvatarUrl(c)));
+        .every((c) => isDone((c as any).assetState) && Boolean(getCharacterActiveAvatarUrl(c, { activeOnly: true })));
     }
 
     if (kind === 'look') {
@@ -487,7 +510,7 @@ export const executeAssetJobs = async (args: {
         if (j.kind !== 'look') continue;
         const ch = (story.characters || []).find((c) => c.id === j.characterId);
         const lk = ch?.looks?.find((x) => x.id === j.lookId);
-        if (!lk || !isDone((lk as any).assetState) || !getLookActivePreviewUrl(lk)) return false;
+        if (!lk || !isDone((lk as any).assetState) || !getLookActivePreviewUrl(lk, { activeOnly: true })) return false;
       }
       return true;
     }
@@ -523,28 +546,42 @@ export const executeAssetJobs = async (args: {
     if (job.kind === 'look') {
       const ch = (story.characters || []).find((c) => c.id === job.characterId);
       if (!ch || !isDone((ch as any).assetState)) return 'blocked: character avatar not generated';
-      if (!getCharacterActiveAvatarUrl(ch)) return 'blocked: missing character avatarUrl';
+      if (!getCharacterActiveAvatarUrl(ch, { activeOnly: true })) return `blocked: missing active avatar for character ${ch.name || ch.id}`;
       return null;
     }
 
     // shot
     const shot = resolveShotFromStory(story, job.sequenceId, job.shot.id) || job.shot;
+    if (!shot.locationId) return 'blocked: missing environment on shot';
     const loc = (story.locations || []).find((l) => l.id === shot.locationId);
-    if (!loc || !isDone((loc as any).assetState)) return 'blocked: environment preview not generated';
-    if (!getLocationActivePreviewUrl(loc)) return 'blocked: missing environment previewUrl';
+    if (!loc) return 'blocked: environment not found for shot';
+    if (!isDone((loc as any).assetState)) return 'blocked: environment preview not generated';
+    if (!getLocationActivePreviewUrl(loc, { activeOnly: true })) return `blocked: missing active environment preview for ${loc.name || loc.id}`;
     const cast = (shot.elements as any)?.[('CASTING' as ElementType)]?.metadata?.characters;
     const castArr = Array.isArray(cast) ? cast : [];
+    const isLookBoundToAvatar = (look: any, avatarVersionId: string) => {
+      if (!look || !avatarVersionId) return false;
+      const versions = Array.isArray(look.previewVersions) ? look.previewVersions : [];
+      const activeId = String(look.activePreviewVersionId || '').trim();
+      if (!activeId) return false;
+      const hit = versions.find((v: any) => String(v?.id || '') === activeId);
+      return String(hit?.metadata?.sourceAvatarVersionId || '') === String(avatarVersionId);
+    };
+
     for (const c of castArr.slice(0, 4)) {
       const charId = String(c?.id || '');
       if (!charId) continue;
       const master = (story.characters || []).find((x) => x.id === charId);
       if (!master || !isDone((master as any).assetState)) return 'blocked: cast character avatar not generated';
-      if (!getCharacterActiveAvatarUrl(master)) return 'blocked: missing cast character avatarUrl';
+      if (!getCharacterActiveAvatarUrl(master, { activeOnly: true })) return `blocked: missing active avatar for cast ${master.name || master.id}`;
       const activeLookId = String(c?.activeLookId || '').trim();
       if (activeLookId) {
         const look = master.looks?.find((lk) => lk.id === activeLookId);
         if (!look || !isDone((look as any).assetState)) return 'blocked: cast look not generated';
-        if (!getLookActivePreviewUrl(look)) return 'blocked: missing cast look previewUrl';
+        const avatarVersionId = String((master as any).activeAvatarVersionId || '').trim();
+        const bound = isLookBoundToAvatar(look, avatarVersionId);
+        if (!bound) return `blocked: look not bound to active avatar for ${master.name || master.id} (${look.name || look.id})`;
+        if (!getLookActivePreviewUrl(look, { activeOnly: true })) return `blocked: missing active look for cast ${master.name || master.id} (${look.name || look.id})`;
       }
     }
     return null;
@@ -554,11 +591,20 @@ export const executeAssetJobs = async (args: {
     const refs: ImageReference[] = [];
 
     const loc = (story.locations || []).find((l) => l.id === shot.locationId);
-    const locUrl = loc && isDone((loc as any).assetState) ? getLocationActivePreviewUrl(loc) : '';
+    const locUrl = loc && isDone((loc as any).assetState) ? getLocationActivePreviewUrl(loc, { activeOnly: true }) : '';
     if (locUrl) refs.push({ url: locUrl, label: `environment: ${loc?.name || 'unknown'}` });
 
     const cast = (shot.elements as any)?.[('CASTING' as ElementType)]?.metadata?.characters;
     const castArr = Array.isArray(cast) ? cast : [];
+    const isLookBoundToAvatar = (look: any, avatarVersionId: string) => {
+      if (!look || !avatarVersionId) return false;
+      const versions = Array.isArray(look.previewVersions) ? look.previewVersions : [];
+      const activeId = String(look.activePreviewVersionId || '').trim();
+      if (!activeId) return false;
+      const hit = versions.find((v: any) => String(v?.id || '') === activeId);
+      return String(hit?.metadata?.sourceAvatarVersionId || '') === String(avatarVersionId);
+    };
+
     for (const c of castArr.slice(0, 4)) {
       const charId = String(c?.id || '');
       if (!charId) continue;
@@ -566,8 +612,10 @@ export const executeAssetJobs = async (args: {
       const master = (story.characters || []).find((x) => x.id === charId);
       if (!master || !isDone((master as any).assetState)) continue;
       const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : null;
-      const lookUrl = look && isDone((look as any).assetState) ? getLookActivePreviewUrl(look) : '';
-      const avatarUrl = getCharacterActiveAvatarUrl(master);
+      const avatarVersionId = String((master as any).activeAvatarVersionId || '').trim();
+      const bound = look ? isLookBoundToAvatar(look, avatarVersionId) : false;
+      const lookUrl = bound && look && isDone((look as any).assetState) ? getLookActivePreviewUrl(look, { activeOnly: true }) : '';
+      const avatarUrl = getCharacterActiveAvatarUrl(master, { activeOnly: true });
 
       // Use exactly one reference per character: active look if specified, otherwise base avatar.
       if (lookUrl && refs.length < 6) refs.push({ url: lookUrl, label: `character: ${master.name}${look?.name ? ` (${look.name})` : ''}` });
@@ -677,7 +725,7 @@ export const executeAssetJobs = async (args: {
 	        // look
 	        const story = args.getStoryForRefs?.() || null;
 	        const ch = story ? (story.characters || []).find((c) => c.id === job.characterId) : null;
-	        const avatarUrl = ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch) : '';
+	        const avatarUrl = ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch, { activeOnly: true }) : '';
 	        const refs = avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : [];
 	        const out = await generateImageFromPrompt({
 	          prompt:

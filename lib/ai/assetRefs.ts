@@ -21,6 +21,7 @@ export const pickActiveImageUrl = (args: {
   versionsKey: string;
   activeIdKey: string;
   fallbackUrl?: string;
+  activeOnly?: boolean;
 }): string => {
   const versions = Array.isArray(args.entity?.[args.versionsKey]) ? args.entity[args.versionsKey] : [];
   const activeId = String(args.entity?.[args.activeIdKey] || '').trim();
@@ -32,6 +33,7 @@ export const pickActiveImageUrl = (args: {
       if (url && !isLikelyPlaceholderImageUrl(url)) return url;
     }
   }
+  if (args.activeOnly) return '';
   // Prefer most-recent non-placeholder if present.
   for (let i = versions.length - 1; i >= 0; i--) {
     const v = versions[i];
@@ -47,42 +49,46 @@ export const pickActiveImageUrl = (args: {
   return '';
 };
 
-export const getStoryActiveKvUrl = (story: Story | null | undefined) => {
+export const getStoryActiveKvUrl = (story: Story | null | undefined, opts?: { activeOnly?: boolean }) => {
   if (!story) return '';
   return pickActiveImageUrl({
     entity: story,
     versionsKey: 'keyVisualVersions',
     activeIdKey: 'activeKeyVisualVersionId',
     fallbackUrl: story.keyVisualUrl,
+    activeOnly: opts?.activeOnly,
   });
 };
 
-export const getLocationActivePreviewUrl = (loc: Location | null | undefined) => {
+export const getLocationActivePreviewUrl = (loc: Location | null | undefined, opts?: { activeOnly?: boolean }) => {
   if (!loc) return '';
   return pickActiveImageUrl({
     entity: loc,
     versionsKey: 'previewVersions',
     activeIdKey: 'activePreviewVersionId',
     fallbackUrl: loc.previewUrl,
+    activeOnly: opts?.activeOnly,
   });
 };
 
-export const getCharacterActiveAvatarUrl = (ch: Character | null | undefined) => {
+export const getCharacterActiveAvatarUrl = (ch: Character | null | undefined, opts?: { activeOnly?: boolean }) => {
   if (!ch) return '';
   return pickActiveImageUrl({
     entity: ch,
     versionsKey: 'avatarVersions',
     activeIdKey: 'activeAvatarVersionId',
     fallbackUrl: ch.avatarUrl,
+    activeOnly: opts?.activeOnly,
   });
 };
 
-export const getLookActivePreviewUrl = (lk: CharacterLook | null | undefined) => {
+export const getLookActivePreviewUrl = (lk: CharacterLook | null | undefined, opts?: { activeOnly?: boolean }) => {
   if (!lk) return '';
   return pickActiveImageUrl({
     entity: lk,
     versionsKey: 'previewVersions',
     activeIdKey: 'activePreviewVersionId',
     fallbackUrl: lk.previewUrl,
+    activeOnly: opts?.activeOnly,
   });
 };

@@ -64,6 +64,7 @@ export interface AssetImageVersion {
   imageUrl: string;
   createdAt: number;
   type: string;
+  metadata?: Record<string, any>;
 }
 
 export interface CharacterLook {
@@ -188,8 +189,10 @@ export type AgentActionType =
   | 'NAVIGATE'
   | 'UPDATE_STORY'
   | 'CREATE_LOCATION'
+  | 'DELETE_LOCATION'
   | 'UPDATE_LOCATION'
   | 'CREATE_CHARACTER'
+  | 'DELETE_CHARACTER'
   | 'UPDATE_CHARACTER'
   | 'CREATE_CHARACTER_LOOK'
   | 'UPDATE_CHARACTER_LOOK'

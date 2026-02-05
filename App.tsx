@@ -265,6 +265,20 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       return { ...acc, locations: [...acc.locations, newLoc], updatedAt: Date.now() };
     }
 
+    if (action.type === 'DELETE_LOCATION') {
+      const locationId = String(action.payload?.locationId || '');
+      if (!locationId) return acc;
+      return {
+        ...acc,
+        locations: acc.locations.filter((l) => l.id !== locationId),
+        sequences: acc.sequences.map((seq) => ({
+          ...seq,
+          shots: seq.shots.map((shot) => (shot.locationId === locationId ? { ...shot, locationId: '' } : shot)),
+        })),
+        updatedAt: Date.now(),
+      };
+    }
+
     if (action.type === 'UPDATE_LOCATION') {
       const locationId = String(action.payload?.locationId || '');
       const patch = action.payload?.patch || {};
@@ -299,6 +313,35 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         looks: [],
       };
       return { ...acc, characters: [...acc.characters, newChar], updatedAt: Date.now() };
+    }
+
+    if (action.type === 'DELETE_CHARACTER') {
+      const characterId = String(action.payload?.characterId || '');
+      if (!characterId) return acc;
+      return {
+        ...acc,
+        characters: acc.characters.filter((c) => c.id !== characterId),
+        sequences: acc.sequences.map((seq) => ({
+          ...seq,
+          shots: seq.shots.map((shot) => {
+            const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+            const castArr = Array.isArray(cast) ? cast : [];
+            const nextCast = castArr.filter((c: any) => String(c?.id || '') !== characterId);
+            return {
+              ...shot,
+              elements: {
+                ...shot.elements,
+                [ElementType.CASTING]: {
+                  ...shot.elements[ElementType.CASTING],
+                  metadata: { ...(shot.elements[ElementType.CASTING].metadata || {}), characters: nextCast },
+                  status: 'manual' as const,
+                },
+              },
+            };
+          }),
+        })),
+        updatedAt: Date.now(),
+      };
     }
 
     if (action.type === 'UPDATE_CHARACTER') {
@@ -827,14 +870,51 @@ export default function App() {
     addToast('Character profile updated', 'info');
   };
 
+  const handleDeleteSequence = (id: string) => {
+    updateActiveStory((prev) => ({ ...prev, sequences: prev.sequences.filter((s) => s.id !== id) }));
+    if ((selection.type === 'sequence' && selection.id === id) || (selection.type === 'shot' && selection.parentId === id)) {
+      if (activeStory) setSelection({ type: 'story', id: activeStory.id });
+    }
+    addToast('Sequence removed', 'info');
+  };
+
   const handleDeleteLocation = (id: string) => {
-    updateActiveStory((prev) => ({ ...prev, locations: prev.locations.filter((l) => l.id !== id) }));
+    updateActiveStory((prev) => ({
+      ...prev,
+      locations: prev.locations.filter((l) => l.id !== id),
+      sequences: prev.sequences.map((seq) => ({
+        ...seq,
+        shots: seq.shots.map((shot) => (shot.locationId === id ? { ...shot, locationId: '' } : shot)),
+      })),
+    }));
     if (activeStory) setSelection({ type: 'story', id: activeStory.id });
     addToast('Environment removed', 'info');
   };
 
   const handleDeleteCharacter = (id: string) => {
-    updateActiveStory((prev) => ({ ...prev, characters: prev.characters.filter((c) => c.id !== id) }));
+    updateActiveStory((prev) => ({
+      ...prev,
+      characters: prev.characters.filter((c) => c.id !== id),
+      sequences: prev.sequences.map((seq) => ({
+        ...seq,
+        shots: seq.shots.map((shot) => {
+          const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+          const castArr = Array.isArray(cast) ? cast : [];
+          const nextCast = castArr.filter((c: any) => String(c?.id || '') !== id);
+          return {
+            ...shot,
+            elements: {
+              ...shot.elements,
+              [ElementType.CASTING]: {
+                ...shot.elements[ElementType.CASTING],
+                metadata: { ...(shot.elements[ElementType.CASTING].metadata || {}), characters: nextCast },
+                status: 'manual' as const,
+              },
+            },
+          };
+        }),
+      })),
+    }));
     if (selection.type === 'character' && selection.id === id && activeStory) setSelection({ type: 'story', id: activeStory.id });
     addToast('Character removed from casting', 'info');
   };
@@ -896,11 +976,17 @@ export default function App() {
       if (t === 'CREATE_LOCATION') {
         return { ok: true };
       }
+      if (t === 'DELETE_LOCATION') {
+        return p?.locationId ? { ok: true } : { ok: false, reason: 'DELETE_LOCATION missing id' };
+      }
       if (t === 'UPDATE_LOCATION') {
         return p?.locationId ? { ok: true } : { ok: false, reason: 'UPDATE_LOCATION missing id' };
       }
       if (t === 'CREATE_CHARACTER') {
         return { ok: true };
+      }
+      if (t === 'DELETE_CHARACTER') {
+        return p?.characterId ? { ok: true } : { ok: false, reason: 'DELETE_CHARACTER missing id' };
       }
       if (t === 'UPDATE_CHARACTER') {
         return p?.characterId ? { ok: true } : { ok: false, reason: 'UPDATE_CHARACTER missing id' };
@@ -1122,15 +1208,7 @@ export default function App() {
       addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
       setTimeout(() => {
         let storyRef = storyAfterUpdates;
-        executeAssetJobs({
-          jobs,
-          settings: aiSettings.image,
-          aspectRatio: storyAfterUpdates.aspectRatio,
-          concurrency,
-          getStoryForRefs: () => storyRef,
-          maxAttempts: 3,
-          stopAfterMasterKvFailure: true,
-          onEvent: (ev) => {
+        const handleAssetEvent = (ev: any) => {
             if (ev.type === 'start') {
               storyRef = applyAssetStart(storyRef, ev.job);
               updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
@@ -1145,10 +1223,37 @@ export default function App() {
                 message: 'Success',
                 data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
               });
+              if (ev.job?.kind === 'character') {
+                const characterId = String(ev.job.characterId || '');
+                const ch = storyRef.characters.find((c) => c.id === characterId);
+                if (ch?.looks?.length) {
+                  const ok = window.confirm(`Avatar generated for ${ch.name}. Generate look variants now?`);
+                  if (ok) {
+                    const styleGuide = (storyRef as any)?.styleGuide;
+                    const lookJobs = ch.looks.map((lk) => ({
+                      kind: 'look',
+                      characterId,
+                      lookId: lk.id,
+                      prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+                    }));
+                    executeAssetJobs({
+                      jobs: lookJobs,
+                      settings: aiSettings.image,
+                      aspectRatio: storyRef.aspectRatio,
+                      concurrency,
+                      getStoryForRefs: () => storyRef,
+                      maxAttempts: 3,
+                      stopAfterMasterKvFailure: true,
+                      onEvent: handleAssetEvent,
+                    });
+                  }
+                }
+              }
             }
             if (ev.type === 'blocked') {
               storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
               updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
+              addToast(`Blocked: ${ev.reason}`, 'info');
               addDebugEvent({
                 level: 'warn',
                 scope: 'asset.exec',
@@ -1167,7 +1272,16 @@ export default function App() {
               });
             }
             if (ev.done === ev.total) addToast('Assets generated (director).', 'success');
-          },
+          };
+        executeAssetJobs({
+          jobs,
+          settings: aiSettings.image,
+          aspectRatio: storyAfterUpdates.aspectRatio,
+          concurrency,
+          getStoryForRefs: () => storyRef,
+          maxAttempts: 3,
+          stopAfterMasterKvFailure: true,
+          onEvent: handleAssetEvent,
         }).catch(() => {
           addToast('Asset generation had errors. Check Debug.', 'info');
         });
@@ -1575,6 +1689,9 @@ export default function App() {
           onOpenAiSettings={() => setIsAiSettingsOpen(true)}
           onOpenDebug={() => setIsDebugOpen(true)}
           onOpenScript={() => setIsScriptEditorOpen(true)}
+          onDeleteSequence={handleDeleteSequence}
+          onDeleteLocation={handleDeleteLocation}
+          onDeleteCharacter={handleDeleteCharacter}
           onSelect={handleSelect}
           onCreateLocation={handleCreateLocation}
           onCreateCharacter={handleCreateCharacter}

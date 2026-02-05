@@ -65,19 +65,31 @@ const CastingControl: React.FC<CastingControlProps> = ({ element, availableChara
              <div className="grid grid-cols-1 gap-3">
                 {shotCharacters.map((char: any) => {
                     const masterChar = availableCharacters.find(c => c.id === char.id);
-                    const activeLook = masterChar?.looks.find(l => l.id === char.activeLookId) || masterChar?.looks[0];
+                    const activeLook = masterChar?.looks.find(l => l.id === char.activeLookId);
+                    const activeAvatarId = String((masterChar as any)?.activeAvatarVersionId || '').trim();
+                    const lookVersions = Array.isArray((activeLook as any)?.previewVersions) ? (activeLook as any).previewVersions : [];
+                    const activeLookVersionId = String((activeLook as any)?.activePreviewVersionId || '').trim();
+                    const activeLookVersion = lookVersions.find((v: any) => String(v?.id || '') === activeLookVersionId);
+                    const isLookBound =
+                      Boolean(activeLook) &&
+                      Boolean(activeAvatarId) &&
+                      Boolean(activeLookVersionId) &&
+                      String(activeLookVersion?.metadata?.sourceAvatarVersionId || '') === String(activeAvatarId);
+                    const lookPreviewUrl = isLookBound && activeLook ? getLookActivePreviewUrl(activeLook, { activeOnly: true }) : '';
+                    const avatarPreviewUrl = masterChar ? getCharacterActiveAvatarUrl(masterChar, { activeOnly: true }) : '';
+                    const displayUrl = lookPreviewUrl || avatarPreviewUrl || char.avatarUrl;
                     
                     return (
                         <div key={char.id} className="group bg-zinc-50 dark:bg-zinc-950 p-3 rounded-xl border border-zinc-100 dark:border-zinc-800/50">
                             <div className="flex items-center gap-3 mb-3">
                                 <div className="relative cursor-pointer shrink-0">
                                     <img
-                                      src={activeLook?.previewUrl || char.avatarUrl}
+                                      src={displayUrl}
                                       alt={char.name}
                                       className="w-14 h-14 rounded-xl object-cover ring-2 ring-white dark:ring-zinc-800 shadow-sm cursor-zoom-in"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        const url = activeLook?.previewUrl || char.avatarUrl;
+                                        const url = displayUrl;
                                         if (url) openLightbox({ url, title: `Character: ${char.name}` });
                                       }}
                                     />
@@ -100,31 +112,46 @@ const CastingControl: React.FC<CastingControlProps> = ({ element, availableChara
 	                                        <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-500/10 px-1.5 py-0.5 rounded">Active</span>
 	                                    </div>
                                     <div className="flex items-center gap-1.5 mt-0.5 text-[9px] text-zinc-500 dark:text-zinc-400 truncate leading-tight italic">
-                                        Look: {activeLook?.name || 'Default'}
+                                        Look: {activeLook?.name || 'Default (Avatar)'}
+                                        {activeLook && !isLookBound && (
+                                          <span className="ml-1 text-[9px] font-bold text-purple-500 bg-purple-500/10 px-1.5 py-0.5 rounded">
+                                            Unbound
+                                          </span>
+                                        )}
                                     </div>
                                 </div>
                             </div>
                             
                             {/* Look Selector Switcher */}
-                            {masterChar && masterChar.looks.length > 1 && (
+                            {masterChar && masterChar.looks.length > 0 && (() => {
+                              const boundLooks = masterChar.looks.filter((look) => isLookBoundToAvatar(look, activeAvatarId));
+                              if (!boundLooks.length) {
+                                return (
+                                  <div className="text-[10px] text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2 py-1">
+                                    No look bound to the current avatar. Generate a look variant first.
+                                  </div>
+                                );
+                              }
+                              return (
                                 <div className="flex items-center gap-1.5 p-1 bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-lg overflow-x-auto no-scrollbar">
-                                    {masterChar.looks.map(look => (
-                                        <button 
-                                            key={look.id}
-                                            onClick={() => handleLookSwitch(char.id, look.id)}
-                                            title={look.name}
-                                            className={`shrink-0 flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] font-bold transition-all ${
-                                                char.activeLookId === look.id 
-                                                ? 'bg-indigo-600 text-white' 
-                                                : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-                                            }`}
-                                        >
-                                            <Shirt className="w-2.5 h-2.5" />
-                                            {look.name}
-                                        </button>
-                                    ))}
+                                  {boundLooks.map(look => (
+                                    <button
+                                      key={look.id}
+                                      onClick={() => handleLookSwitch(char.id, look.id)}
+                                      title={look.name}
+                                      className={`shrink-0 flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] font-bold transition-all ${
+                                        char.activeLookId === look.id
+                                          ? 'bg-indigo-600 text-white'
+                                          : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                                      }`}
+                                    >
+                                      <Shirt className="w-2.5 h-2.5" />
+                                      {look.name}
+                                    </button>
+                                  ))}
                                 </div>
-                            )}
+                              );
+                            })()}
                         </div>
                     );
                 })}
@@ -260,15 +287,24 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
       const videoPrompt = String(shot.elements?.[ElementType.CAMERA]?.metadata?.videoPrompt || '').trim();
       const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters || [];
       const castArr = Array.isArray(cast) ? cast : [];
+      const isLookBoundToAvatar = (look: any, avatarVersionId: string) => {
+          if (!look || !avatarVersionId) return false;
+          const versions = Array.isArray(look.previewVersions) ? look.previewVersions : [];
+          const activeId = String(look.activePreviewVersionId || '').trim();
+          if (!activeId) return false;
+          const hit = versions.find((v: any) => String(v?.id || '') === activeId);
+          return String(hit?.metadata?.sourceAvatarVersionId || '') === String(avatarVersionId);
+      };
+
       const referenceAudit = () => {
           const refs: Array<{
               id: string;
               label: string;
               url: string;
-              status: 'ok' | 'missing' | 'placeholder';
+              status: 'ok' | 'missing' | 'placeholder' | 'unbound';
           }> = [];
 
-          const locUrl = contextLocation ? getLocationActivePreviewUrl(contextLocation) : '';
+          const locUrl = contextLocation ? getLocationActivePreviewUrl(contextLocation, { activeOnly: true }) : '';
           refs.push({
               id: `env-${contextLocation?.id || 'none'}`,
               label: `Environment${contextLocation?.name ? `: ${contextLocation.name}` : ''}`,
@@ -292,15 +328,17 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               }
               if (activeLookId) {
                   const look = master.looks?.find((lk) => lk.id === activeLookId);
-                  const lookUrl = look ? getLookActivePreviewUrl(look) : '';
+                  const avatarVersionId = String((master as any).activeAvatarVersionId || '').trim();
+                  const bound = isLookBoundToAvatar(look, avatarVersionId);
+                  const lookUrl = bound ? getLookActivePreviewUrl(look, { activeOnly: true }) : '';
                   refs.push({
                       id: `look-${activeLookId}`,
                       label: `Character: ${master.name}${look?.name ? ` (${look.name})` : ''}`,
                       url: lookUrl,
-                      status: !lookUrl ? 'missing' : isLikelyPlaceholderImageUrl(lookUrl) ? 'placeholder' : 'ok'
+                      status: !lookUrl ? (bound ? 'missing' : 'unbound') : isLikelyPlaceholderImageUrl(lookUrl) ? 'placeholder' : 'ok'
                   });
               } else {
-                  const avatarUrl = getCharacterActiveAvatarUrl(master);
+                  const avatarUrl = getCharacterActiveAvatarUrl(master, { activeOnly: true });
                   refs.push({
                       id: `avatar-${master.id}`,
                       label: `Character: ${master.name} (base)`,
@@ -541,7 +579,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                         <Collapsible
                           title="Image Prompt (Composed)"
                           icon={<Sparkles className="w-3.5 h-3.5" />}
-                          defaultOpen
+                          defaultOpen={false}
                           rightElement={
                             <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded">
                               Full
@@ -687,37 +725,44 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                           }
                         >
                             <div className="px-3 pb-3 space-y-2">
-                                {auditRefs.map((ref) => (
-                                    <div key={ref.id} className="flex items-center gap-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-2">
-                                        <div className="w-10 h-10 rounded-md overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-zinc-900 shrink-0">
-                                            {ref.url ? (
-                                              <img
-                                                src={ref.url}
-                                                alt={ref.label}
-                                                className="w-full h-full object-cover cursor-zoom-in"
-                                                onClick={() => ref.url && openLightbox({ url: ref.url, title: ref.label })}
-                                              />
-                                            ) : null}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <div className="text-[11px] font-bold text-zinc-700 dark:text-zinc-200 truncate">{ref.label}</div>
-                                            <div className="text-[10px] text-zinc-500 truncate">{ref.url || 'Missing reference'}</div>
-                                        </div>
+                                <div>
+                                    <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">Current Shot References</div>
+                                    <div className="space-y-2">
+                                        {auditRefs.map((ref) => (
+                                            <div key={ref.id} className="flex items-center gap-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-2">
+                                                <div className="w-10 h-10 rounded-md overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-zinc-900 shrink-0">
+                                                    {ref.url ? (
+                                                      <img
+                                                        src={ref.url}
+                                                        alt={ref.label}
+                                                        className="w-full h-full object-cover cursor-zoom-in"
+                                                        onClick={() => ref.url && openLightbox({ url: ref.url, title: ref.label })}
+                                                      />
+                                                    ) : null}
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="text-[11px] font-bold text-zinc-700 dark:text-zinc-200 truncate">{ref.label}</div>
+                                                    <div className="text-[10px] text-zinc-500 truncate">{ref.url || 'Missing reference'}</div>
+                                                </div>
                                         <span
                                           className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${
                                             ref.status === 'ok'
                                               ? 'bg-emerald-500/10 text-emerald-500'
                                               : ref.status === 'placeholder'
                                                 ? 'bg-amber-500/10 text-amber-500'
-                                                : 'bg-red-500/10 text-red-500'
+                                                : ref.status === 'unbound'
+                                                  ? 'bg-purple-500/10 text-purple-500'
+                                                  : 'bg-red-500/10 text-red-500'
                                           }`}
                                         >
                                           {ref.status}
                                         </span>
                                     </div>
-                                ))}
+                                        ))}
+                                    </div>
+                                </div>
                                 <div className="text-[10px] text-zinc-500 pt-1">
-                                    Rule: each character contributes exactly one reference (active look or base avatar).
+                                    These references are based on the current shot settings and will be used for new generations.
                                 </div>
                             </div>
                         </Collapsible>

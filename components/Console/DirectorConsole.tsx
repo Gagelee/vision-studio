@@ -210,6 +210,11 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                                   <div className="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 text-[11px] font-mono text-zinc-500 break-words">
                                       Debug: {entry.debug.transport || 'n/a'} / {entry.debug.provider || 'n/a'} / {entry.debug.model || 'n/a'}
                                       {entry.debug.error ? ` | ${entry.debug.error}` : ''}
+                                      {(entry as any)?.debug?.taskCheck && (
+                                        <div className="mt-1 text-[11px] text-amber-600 whitespace-pre-wrap">
+                                          Task Check: {JSON.stringify((entry as any).debug.taskCheck)}
+                                        </div>
+                                      )}
                                   </div>
                               )}
                           </div>

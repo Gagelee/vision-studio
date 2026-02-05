@@ -31,11 +31,17 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `C) UPDATE_LOCATION\n` +
     `   payload: { locationId: string, patch: { name?: string, description?: string, visualStyle?: string, status?: "draft"|"locked" } }\n` +
     `\n` +
+    `C2) DELETE_LOCATION\n` +
+    `   payload: { locationId: string }\n` +
+    `\n` +
     `D) CREATE_CHARACTER\n` +
     `   payload: { name?: string, description?: string }\n` +
     `\n` +
     `E) UPDATE_CHARACTER\n` +
     `   payload: { characterId: string, patch: { name?: string, description?: string, status?: "draft"|"locked" } }\n` +
+    `\n` +
+    `E2) DELETE_CHARACTER\n` +
+    `   payload: { characterId: string }\n` +
     `\n` +
     `F) CREATE_CHARACTER_LOOK\n` +
     `   payload: { characterId: string, name: string, description: string }\n` +
