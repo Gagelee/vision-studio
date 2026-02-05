@@ -342,6 +342,7 @@ export const buildTeamDirectMergePrompt = (args: {
     `    "videoPrompt"?: string,\n` +
     `    "cast"?: Array<{ \"id\": string, \"activeLookId\"?: string }>\n` +
     `  }\n` +
+    `- If a new shot features specific characters, include them in CREATE_SHOT payload (cast or characterId/characterIds). Do NOT leave cast empty unless explicitly an empty/environment-only shot.\n` +
     `- If the user asks to generate storyboard images / 出图 / 渲染, and you create or update shots, include GENERATE_PROJECT_ASSETS with payload.scope=\"shots\" (so newly-created shot IDs don't matter).\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +

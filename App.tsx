@@ -176,7 +176,9 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
             ? action.payload.cast
             : Array.isArray(action.payload?.characterIds)
               ? action.payload.characterIds.map((id: any) => ({ id: String(id || '') }))
-              : null;
+              : action.payload?.characterId
+                ? [{ id: String(action.payload.characterId), activeLookId: action.payload.lookId ? String(action.payload.lookId) : '' }]
+                : null;
           if (castSource) {
             const cast = castSource
               .map((c: any) => ({ id: String(c?.id || ''), activeLookId: c?.activeLookId ? String(c.activeLookId) : '' }))
@@ -1123,6 +1125,27 @@ export default function App() {
     const addJob = (key: string, job: AssetJob) => {
       if (!deduped.has(key)) deduped.set(key, job);
     };
+
+    // Auto-generate storyboard images for newly created shots.
+    const createdShots: Array<{ sequenceId: string; shot: Shot }> = [];
+    if (mutationActions.some((a) => a.type === 'CREATE_SHOT')) {
+      const beforeMap = new Map<string, Set<string>>();
+      for (const seq of story.sequences || []) {
+        beforeMap.set(seq.id, new Set((seq.shots || []).map((s) => s.id)));
+      }
+      for (const seq of storyAfterUpdates.sequences || []) {
+        const before = beforeMap.get(seq.id) || new Set<string>();
+        for (const sh of seq.shots || []) {
+          if (!before.has(sh.id)) createdShots.push({ sequenceId: seq.id, shot: sh });
+        }
+      }
+    }
+
+    if (createdShots.length) {
+      for (const { sequenceId, shot } of createdShots) {
+        addJob(`shot:${sequenceId}:${shot.id}`, { kind: 'shot', sequenceId, shot });
+      }
+    }
 
     let concurrency = 2;
     let scopeLabel = 'director';
