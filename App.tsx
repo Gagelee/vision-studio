@@ -924,6 +924,32 @@ export default function App() {
       }
     }
 
+    // Auto-generate storyboard images when director updates shot description/time/location.
+    const updatedShotIds: Array<{ sequenceId?: string; shotId: string }> = [];
+    for (const a of mutationActions) {
+      if (a.type !== 'UPDATE_SHOT') continue;
+      const payload = (a as any).payload || {};
+      const patch = payload?.patch || {};
+      const hasVisualChange =
+        typeof patch.description === 'string' ||
+        typeof patch.timeOfDay === 'string' ||
+        typeof patch.locationId === 'string' ||
+        typeof patch.duration === 'number';
+      if (!hasVisualChange) continue;
+      const shotId = String(payload.shotId || '');
+      if (!shotId) continue;
+      const sequenceId = payload.sequenceId ? String(payload.sequenceId) : undefined;
+      updatedShotIds.push({ sequenceId, shotId });
+    }
+    if (updatedShotIds.length) {
+      for (const { sequenceId, shotId } of updatedShotIds) {
+        let seq = sequenceId ? storyAfterUpdates.sequences.find((s) => s.id === sequenceId) : undefined;
+        if (!seq) seq = storyAfterUpdates.sequences.find((s) => s.shots.some((sh) => sh.id === shotId));
+        const shot = seq?.shots.find((s) => s.id === shotId);
+        if (seq && shot) addJob(`shot:${seq.id}:${shotId}`, { kind: 'shot', sequenceId: seq.id, shot });
+      }
+    }
+
     if (!generateActions.length && deduped.size === 0) return;
 
     for (const a of generateActions) {
