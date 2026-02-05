@@ -3021,16 +3021,69 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 }
               };
 
-	              try {
-	                const planner = await call(
-                  'director.plan',
-                  buildTeamDirectPlannerPrompt({
-                    selectionJson,
-                    storyJson,
-                    directive: message,
-                  }),
-                  GEMINI_SCHEMA.directorPlan,
-                );
+              try {
+                const planner = useFunctionCalling
+                  ? await (async () => {
+                      const started = Date.now();
+                      const meta = getPromptMetaForAgent('direct', 'director.plan');
+                      emit?.('agent_start', { agent: 'director.plan' });
+                      let toolOut: any;
+                      try {
+                        toolOut = await callGeminiToolCall({
+                          apiKey: geminiApiKey,
+                          model,
+                          temperature,
+                          prompt:
+                            buildTeamDirectPlannerPrompt({
+                              selectionJson,
+                              storyJson,
+                              directive: message,
+                            }) + `\n\nIMPORTANT: You MUST call the function \"plan_response\" exactly once. Do not output JSON text.`,
+                          env,
+                          functionDeclarations: [
+                            {
+                              name: 'plan_response',
+                              description: 'Return planner selection of agents to consult and focus areas.',
+                              parameters: GEMINI_SCHEMA.directorPlan,
+                            },
+                          ],
+                          allowedFunctionNames: ['plan_response'],
+                        });
+                      } catch (e: any) {
+                        emit?.('agent_done', { agent: 'director.plan', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
+                        throw e;
+                      }
+                      teamTrace.push({
+                        agent: 'director.plan',
+                        provider: p,
+                        model,
+                        ms: Date.now() - started,
+                        ok: true,
+                        promptId: meta?.id,
+                        promptVersion: meta?.version,
+                      });
+                      emit?.('agent_done', { agent: 'director.plan', ok: true, ms: Date.now() - started });
+                      teamMessages.push({
+                        agent: 'director.plan',
+                        ok: true,
+                        ms: Date.now() - started,
+                        promptId: meta?.id,
+                        promptVersion: meta?.version,
+                        promptPreview: String(buildTeamDirectPlannerPrompt({ selectionJson, storyJson, directive: message }) || '').slice(0, 800),
+                        responsePreview: JSON.stringify(toolOut?.args || {}).slice(0, 1600),
+                        toolCall: toolOut?.name,
+                      });
+                      return toolOut?.args || {};
+                    })()
+                  : await call(
+                      'director.plan',
+                      buildTeamDirectPlannerPrompt({
+                        selectionJson,
+                        storyJson,
+                        directive: message,
+                      }),
+                      GEMINI_SCHEMA.directorPlan,
+                    );
                 const requestedAgentsRaw = Array.isArray(planner?.requestedAgents) ? planner.requestedAgents : [];
                 const requestedAgents = adjustRequestedAgents(requestedAgentsRaw as any, selection, message);
                 const allowedAgents = new Set(['script_writer', 'casting_director', 'editor', 'environment_director', 'camera_art']);
