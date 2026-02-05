@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
 import { buildShotImagePrompt } from '../../lib/ai/prompts';
-import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info } from 'lucide-react';
 import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
@@ -30,7 +30,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   onToggleImmersive,
   imageSettings,
 }) => {
-  const allVersions = Array.isArray(shot.versions) ? shot.versions : [];
+  const allVersions = Array.isArray(shot.versions) ? shot.versions.filter(Boolean) : [];
   const nonPlaceholderVersions = allVersions.filter((v) => String(v?.type || '') !== 'placeholder');
   const displayVersions = nonPlaceholderVersions.length ? nonPlaceholderVersions : allVersions;
   const activeVersion =
@@ -38,6 +38,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const [isHistoryOpen, setIsHistoryOpen] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [versionInfo, setVersionInfo] = useState<ShotVersion | null>(null);
 
   const handleVersionSelect = (versionId: string) => {
     const version = shot.versions.find(v => v.id === versionId);
@@ -135,14 +136,25 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       );
       if (loc) lines.push('', `Environment style: ${loc.visualStyle || ''}`.trim());
 
+      const fullPrompt = lines.filter(Boolean).join('\n');
       const img = await generateImageFromPrompt({
-        prompt: lines.filter(Boolean).join('\n'),
+        prompt: fullPrompt,
         settings,
         aspectRatio,
         references,
         strict: true,
         requireAllReferences: references.length > 0,
       });
+      const versionMeta = {
+        prompt: fullPrompt,
+        references,
+        settings: {
+          provider: settings.provider,
+          model: settings.model,
+          temperature: settings.temperature,
+        },
+        aspectRatio,
+      };
 
       const now = Date.now();
       const existing = Array.isArray(shot.versions) ? shot.versions : [];
@@ -153,7 +165,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         const base = existing[0];
         onUpdateShot({
           ...shot,
-          versions: [{ ...base, imageUrl: img.imageUrl, createdAt: now, type: 'base' }],
+          versions: [{ ...base, imageUrl: img.imageUrl, createdAt: now, type: 'base', metadata: versionMeta }],
           activeVersionId: base.id,
           thumbnailUrl: img.imageUrl,
         });
@@ -166,6 +178,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         imageUrl: img.imageUrl,
         createdAt: now,
         type: baseList.length ? 'variation' : 'base',
+        metadata: versionMeta,
       };
 
       onUpdateShot({
@@ -318,6 +331,18 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                         <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
                             v{versionNumber}
                         </div>
+                        {version.metadata && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setVersionInfo(version);
+                            }}
+                            className="absolute top-2 right-10 z-10 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-indigo-500/80 transition-colors"
+                            title="View generation details"
+                          >
+                            <Info className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {displayVersions.length > 1 && (
                           <button
                             onClick={(e) => {
@@ -355,6 +380,64 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
           </div>
         )}
       </div>
+      {versionInfo && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[60]" onClick={() => setVersionInfo(null)}>
+          <div
+            className="w-[720px] max-w-[90vw] max-h-[80vh] overflow-hidden bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800 bg-zinc-900/60">
+              <div className="text-xs font-bold uppercase tracking-wider text-zinc-400">Generation Details</div>
+              <button
+                className="px-2 py-1 text-xs font-bold text-zinc-400 hover:text-white"
+                onClick={() => setVersionInfo(null)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="p-5 space-y-4 overflow-y-auto max-h-[70vh] custom-scrollbar">
+              <div className="text-xs text-zinc-500">
+                Version: <span className="text-zinc-200">{versionInfo.id}</span>
+              </div>
+              {versionInfo.metadata?.settings && (
+                <div className="text-xs text-zinc-400">
+                  Model: <span className="text-zinc-200">{versionInfo.metadata.settings.provider}/{versionInfo.metadata.settings.model}</span>
+                  {typeof versionInfo.metadata.settings.temperature === 'number' && (
+                    <span className="ml-3 text-zinc-500">Temp: {versionInfo.metadata.settings.temperature}</span>
+                  )}
+                </div>
+              )}
+              {versionInfo.metadata?.references?.length ? (
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-2">References</div>
+                  <div className="flex gap-3 overflow-x-auto no-scrollbar">
+                    {versionInfo.metadata.references.map((ref, i) => (
+                      <div key={`${ref.url}-${i}`} className="w-24 shrink-0">
+                        <div className="w-24 h-16 rounded-lg overflow-hidden border border-zinc-800 bg-zinc-900">
+                          <img
+                            src={ref.url}
+                            className="w-full h-full object-cover cursor-zoom-in"
+                            onClick={() => openLightbox({ url: ref.url, title: ref.label || 'Reference' })}
+                          />
+                        </div>
+                        <div className="mt-1 text-[10px] text-zinc-500 line-clamp-2">{ref.label || ref.url}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {versionInfo.metadata?.prompt && (
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-2">Prompt</div>
+                  <pre className="text-[11px] text-zinc-200 whitespace-pre-wrap bg-zinc-900/60 border border-zinc-800 rounded-xl p-3">
+                    {versionInfo.metadata.prompt}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
