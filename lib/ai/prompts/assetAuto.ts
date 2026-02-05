@@ -1,6 +1,7 @@
 import type { Character, CharacterLook, Location } from '../../../types';
 
-const baseRules = () => `No text. No watermark. No logos. Cinematic, high-quality.`;
+const baseRulesCinematic = () => `No text. No watermark. No logos. Cinematic, high-quality.`;
+const baseRulesReference = () => `No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.`;
 
 const styleBlock = (styleGuide?: string) => {
   const s = String(styleGuide || '').trim();
@@ -13,7 +14,7 @@ export const buildMasterKeyVisualPrompt = (args: { intent?: string; logline?: st
   const logline = String(args.logline || '').trim();
   const styleGuide = String((args as any)?.styleGuide || '').trim();
   return (
-    `Master Key Visual (KV) for a film project. ${baseRules()}\n` +
+    `Master Key Visual (KV) for a film project. ${baseRulesCinematic()}\n` +
     `High-level goal: a single iconic, consistent visual constitution that all assets should follow.\n` +
     (styleGuide ? styleBlock(styleGuide) : '') +
     `Style requirements: cohesive palette, consistent lens language, cinematic lighting. Avoid drastic style shifts.\n` +
@@ -24,7 +25,7 @@ export const buildMasterKeyVisualPrompt = (args: { intent?: string; logline?: st
 
 export const buildLocationPreviewPrompt = (loc: Location, styleGuide?: string) => {
   return (
-    `Cinematic environment concept art. ${baseRules()}\n` +
+    `Cinematic environment concept art. ${baseRulesCinematic()}\n` +
     styleBlock(styleGuide) +
     `Name: ${loc.name}\n` +
     `Description: ${loc.description}\n` +
@@ -34,7 +35,7 @@ export const buildLocationPreviewPrompt = (loc: Location, styleGuide?: string) =
 
 export const buildCharacterAvatarPrompt = (ch: Character, styleGuide?: string) => {
   return (
-    `Character reference sheet (clean, standard, consistent). ${baseRules()}\n` +
+    `Character reference sheet (clean, standard, consistent). ${baseRulesReference()}\n` +
     styleBlock(styleGuide) +
     `Format: 2x2 model sheet on a plain light/neutral background, consistent scale.\n` +
     `Views: front face (neutral), 3/4 face, profile, full-body front. Same exact person across all views.\n` +
@@ -49,10 +50,13 @@ export const buildCharacterAvatarPrompt = (ch: Character, styleGuide?: string) =
 
 export const buildCharacterLookPrompt = (ch: Character, look: CharacterLook, styleGuide?: string) => {
   return (
-    `Character look reference sheet (clean, consistent identity). ${baseRules()}\n` +
-    styleBlock(styleGuide) +
-    `Format: full-body front (preferred), neutral background, sharp focus.\n` +
-    `Identity: MUST match the provided base avatar reference exactly (same person, same face).\n` +
+    `Character LOOK reference sheet (wardrobe/state), clean identity lock. ${baseRulesReference()}\n` +
+    (styleGuide ? `StyleGuide (apply ONLY to rendering medium/brushwork/palette; keep neutral studio lighting):\n${String(styleGuide).trim()}\n` : '') +
+    `Format: 2x2 model sheet on a plain light/neutral background, consistent scale.\n` +
+    `Views: full-body front, full-body 3/4, profile, head-and-shoulders close-up.\n` +
+    `Identity lock: MUST match the provided base avatar reference exactly (same person, same face).\n` +
+    `This LOOK must be a meaningful visual state change: wardrobe/hair/makeup/accessories and/or facial/physical state (e.g., injured, tired, beard, wet hair). Not a change of location or time-of-day.\n` +
+    `Avoid atmosphere: no dramatic lighting, no environment, no cinematic staging. This is for accurate reference.\n` +
     `Do NOT change facial structure, age, ethnicity, eye/hair color unless explicitly required by LookDescription.\n` +
     `Character: ${ch.name}\n` +
     `CharacterDescription: ${ch.description}\n` +

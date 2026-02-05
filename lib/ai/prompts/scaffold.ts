@@ -33,6 +33,7 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `- duration is seconds (integer 2-8)\n` +
     `- Keep JSON VALID. If too long, reduce counts/verbosity.\n` +
     `- Maintain strong continuity: same character identity across looks; same environment logic across shots.\n` +
+    `- LOOKS: Only create a character look when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- The "videoPrompt" MUST be production-ready and self-contained.\n` +
     `\n` +
     `Intent: ${intent}\n` +

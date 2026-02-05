@@ -87,7 +87,10 @@ export const buildTeamScaffoldCastingDirectorPrompt = (args: { directorBriefJson
     `}\n` +
     `Rules:\n` +
     `- Keep identity anchors stable across looks (face, hair, body type, signature details).\n` +
-    `- Produce 2-4 looks per character when appropriate.\n` +
+    `- Only create a LOOK when it represents a meaningful visual state change: different wardrobe/hair/makeup/accessories and/or facial/physical state (injured, tired, beard, wet hair, etc.).\n` +
+    `- Do NOT create looks just because the scene/location/time changes.\n` +
+    `- Produce 1-3 looks per character when appropriate; fewer is better than redundant looks.\n` +
+    `- Look descriptions must be reference-ready (wardrobe + hair + makeup + notable state), not scene staging or atmosphere.\n` +
     `- Ensure all character descriptions are compatible with director style bible (rendering style, tone).\n` +
     `DirectorBrief: ${brief}\n`
   );
