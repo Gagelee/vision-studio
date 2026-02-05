@@ -889,8 +889,6 @@ export default function App() {
       if (nextSel?.type && nextSel?.id) setSelection(nextSel);
     }
 
-    if (!generateActions.length) return;
-
     const storyAfterUpdates = mutationActions.length ? applyActionsToStory(story, mutationActions) : story;
 
     const deduped = new Map<string, AssetJob>();
@@ -900,6 +898,33 @@ export default function App() {
 
     let concurrency = 2;
     let scopeLabel = 'director';
+
+    // Auto-generate look images for newly created looks (director-created) to avoid avatar fallback.
+    if (mutationActions.some((a) => a.type === 'CREATE_CHARACTER_LOOK')) {
+      const beforeMap = new Map<string, Set<string>>();
+      for (const ch of story.characters || []) {
+        beforeMap.set(
+          ch.id,
+          new Set((ch.looks || []).map((lk) => String(lk.id)))
+        );
+      }
+      const styleGuide = (storyAfterUpdates as any)?.styleGuide;
+      for (const ch of storyAfterUpdates.characters || []) {
+        const prev = beforeMap.get(ch.id) || new Set<string>();
+        for (const lk of ch.looks || []) {
+          const lookId = String(lk.id || '');
+          if (!lookId || prev.has(lookId)) continue;
+          addJob(`look:${ch.id}:${lookId}`, {
+            kind: 'look',
+            characterId: ch.id,
+            lookId,
+            prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+          });
+        }
+      }
+    }
+
+    if (!generateActions.length && deduped.size === 0) return;
 
     for (const a of generateActions) {
       const payload = (a as any).payload || {};
@@ -948,7 +973,7 @@ export default function App() {
         const lookId = String(payload.lookId || '');
         const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
         const lk = ch?.looks?.find((x) => x.id === lookId);
-        if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk) });
+        if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk, (storyAfterUpdates as any)?.styleGuide) });
         continue;
       }
     }
