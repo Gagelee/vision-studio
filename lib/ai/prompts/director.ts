@@ -23,7 +23,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `   payload: { type: "story"|"location"|"character"|"sequence"|"shot", id: string, parentId?: string }\n` +
     `\n` +
     `A) UPDATE_STORY\n` +
-    `   payload: { patch: { title?: string, logline?: string, intent?: string, keyVisualUrl?: string } }\n` +
+    `   payload: { patch: { title?: string, logline?: string, intent?: string, styleGuide?: string, keyVisualUrl?: string } }\n` +
     `\n` +
     `B) CREATE_LOCATION\n` +
     `   payload: { name?: string, description?: string, visualStyle?: string }\n` +
@@ -99,6 +99,8 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- For "video prompt" requests, put the production-ready prompt into UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.videoPrompt=string).\n` +
     `- Keep the action list short (1-5 actions). For bulk generation, use GENERATE_PROJECT_ASSETS.\n` +
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
+    `- For global visual language/style changes, update UPDATE_STORY.patch.styleGuide (concise style bible).\n` +
+    `- For UPDATE_CHARACTER_LOOK, you MUST include characterId + lookId and put changes under patch (do NOT use a top-level id).\n` +
     `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +
     `- Only create a new LOOK when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- Look descriptions must be reference-ready (clean wardrobe/state details), not scene staging or atmosphere.\n` +

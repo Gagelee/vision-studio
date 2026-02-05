@@ -21,7 +21,7 @@ export type AssetJob =
 
 export type AssetJobEvent =
   | { type: 'start'; job: AssetJob; done: number; total: number }
-  | { type: 'success'; job: AssetJob; done: number; total: number; imageUrl: string; debug?: any }
+  | { type: 'success'; job: AssetJob; done: number; total: number; imageUrl: string; debug?: any; meta?: any }
   | { type: 'error'; job: AssetJob; done: number; total: number; error: string }
   | { type: 'blocked'; job: AssetJob; done: number; total: number; reason: string };
 
@@ -214,7 +214,7 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
   };
 };
 
-export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string): Story => {
+export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, meta?: any): Story => {
   const now = Date.now();
   const rand = () => Math.random().toString(16).slice(2, 8);
   const isLikelyPlaceholderUrl = (u: string) => {
@@ -410,7 +410,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
           // If we only had a placeholder base, replace it and keep the same id so selection stays stable.
           if (!isNewPlaceholder && existing.length === 1 && cleaned.length === 0 && existing[0]) {
             const base = existing[0];
-            const nextVersions = [{ ...base, imageUrl, createdAt: now, type: 'base' }];
+            const nextVersions = [{ ...base, imageUrl, createdAt: now, type: 'base', metadata: meta || base.metadata }];
             return {
               ...s,
               versions: nextVersions,
@@ -424,7 +424,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string):
 
           const baseList = cleaned.length ? cleaned : existing;
           const id = `v-${now}-${rand()}`;
-          const nextVersions = [...baseList, { id, imageUrl, createdAt: now, type: baseList.length ? 'variation' : 'base' }];
+          const nextVersions = [...baseList, { id, imageUrl, createdAt: now, type: baseList.length ? 'variation' : 'base', metadata: meta }];
           return {
             ...s,
             versions: nextVersions,
@@ -730,7 +730,17 @@ export const executeAssetJobs = async (args: {
             strict: true,
             requireAllReferences: references.length > 0,
           });
-          return { imageUrl: out.imageUrl, debug: out.debug };
+          const meta = {
+            prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || buildShotPromptWithContext(story, shot) || '').trim(),
+            references: references.map((r) => ({ url: r.url, label: r.label })),
+            settings: {
+              provider: args.settings.provider,
+              model: args.settings.model,
+              temperature: args.settings.temperature,
+            },
+            aspectRatio: args.aspectRatio,
+          };
+          return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }
 
         if (job.kind === 'location') {
@@ -775,7 +785,7 @@ export const executeAssetJobs = async (args: {
         try {
           const out = await attemptOnce();
           done += 1;
-          args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug });
+          args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug, meta: out.meta });
           return;
         } catch (e) {
           lastErr = e;
