@@ -29,6 +29,8 @@ export type DirectorStreamEvent =
   | { event: 'status'; data: { message: string } }
   | { event: 'agent_start'; data: { agent: string } }
   | { event: 'agent_done'; data: { agent: string; ok: boolean; ms?: number; error?: string } }
+  | { event: 'reply_delta'; data: { delta: string } }
+  | { event: 'reply_done'; data: { text: string } }
   | { event: 'result'; data: DirectorCommandResponse }
   | { event: 'error'; data: { message: string } };
 

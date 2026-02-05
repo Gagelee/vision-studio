@@ -46,6 +46,8 @@ export const getDefaultAiSettings = (): AiSettings => ({
     ...getDefaultModelSettings(),
     model: 'gemini-3-pro-preview',
     temperature: 0.5,
+    useFunctionCalling: true,
+    useStreaming: true,
   },
   image: {
     ...getDefaultModelSettings(),

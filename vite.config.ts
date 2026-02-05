@@ -527,6 +527,11 @@ const buildGeminiGenerateContentUrl = (args: { env?: Record<string, string>; mod
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:generateContent`;
 };
 
+const buildGeminiStreamContentUrl = (args: { env?: Record<string, string>; model: string }) => {
+  const baseUrl = resolveGeminiBaseUrl(args.env);
+  return `${baseUrl}/models/${encodeURIComponent(args.model)}:streamGenerateContent?alt=sse`;
+};
+
 const callGeminiJson = async (args: {
   apiKey: string;
   model: string;
@@ -742,6 +747,84 @@ const callGeminiToolCall = async (args: {
     throw new Error(`Gemini: missing functionCall. Preview: ${String(preview || JSON.stringify(data)).slice(0, 240)}`);
   }
   return { name: String(call.name), args: call.args ?? {}, raw: data };
+};
+
+const callGeminiStreamText = async (args: {
+  apiKey: string;
+  model: string;
+  temperature: number;
+  maxOutputTokens?: number;
+  prompt: string;
+  env?: Record<string, string>;
+  onDelta: (delta: string) => void;
+}): Promise<string> => {
+  const url = buildGeminiStreamContentUrl({ env: args.env, model: args.model });
+  const maxAttempts = Math.max(1, Math.min(3, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 2)));
+  const geminiDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
+  let full = '';
+
+  const res = await withRetries(
+    async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120_000);
+      try {
+        const init: any = {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': args.apiKey },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: args.prompt }] }],
+            generationConfig: {
+              temperature: args.temperature,
+              maxOutputTokens: args.maxOutputTokens ?? 512,
+            },
+          }),
+        };
+        if (geminiDispatcher) init.dispatcher = geminiDispatcher;
+        const res = await fetch(url, init);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          const err: any = new Error(`Gemini HTTP ${res.status}${text ? `: ${text}` : ''}`);
+          err.status = res.status;
+          err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
+          throw err;
+        }
+        return res;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    { label: `gemini.stream:${args.model}`, maxAttempts },
+  );
+
+  const reader = res.body?.getReader();
+  if (!reader) return full;
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line.startsWith('data:')) continue;
+      const raw = line.slice(5).trim();
+      if (!raw || raw === '[DONE]') continue;
+      try {
+        const payload = JSON.parse(raw);
+        const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (typeof text === 'string' && text) {
+          full += text;
+          args.onDelta(text);
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+  }
+  return full;
 };
 
 const callOpenAICompatibleJson = async (args: {
@@ -2733,6 +2816,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           let lastError: any = null;
           const selectionJson = JSON.stringify(selection || {});
           const storyJson = story ? JSON.stringify(summarizeStoryForPrompt(story)) : '{}';
+          let streamedReply = '';
+          const replyPrompt =
+            `You are the DIRECTOR. Reply to the user in 1-3 concise sentences. No JSON.\n` +
+            `Directive: ${message}\n` +
+            `Selection: ${selectionJson}\n` +
+            `Story: ${storyJson}\n`;
+          if (stream && provider === 'gemini' && geminiApiKey) {
+            emit?.('status', { message: 'Streaming reply…' });
+          }
+          const replyPromise =
+            stream && provider === 'gemini' && geminiApiKey
+              ? callGeminiStreamText({
+                  apiKey: geminiApiKey,
+                  model,
+                  temperature: Math.min(0.8, Math.max(0.2, temperature)),
+                  prompt: replyPrompt,
+                  env,
+                  onDelta: (delta) => emit?.('reply_delta', { delta }),
+                })
+                  .then((text) => {
+                    streamedReply = String(text || '').trim();
+                    if (streamedReply) emit?.('reply_done', { text: streamedReply });
+                  })
+                  .catch(() => {})
+              : Promise.resolve();
           const allowedActionsText = [
             'NAVIGATE',
             'UPDATE_STORY',
@@ -2918,8 +3026,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     : await call('director.merge', mergePrompt, GEMINI_SCHEMA.directorFinal);
 
                 const actions = normalizeActions(final?.actions);
-	                const response = {
-	                  reply: String(final?.reply || planner?.reply || 'OK'),
+                await replyPromise;
+                const response = {
+	                  reply: streamedReply || String(final?.reply || planner?.reply || 'OK'),
 	                  plan: {
 	                    id: mkId('plan'),
 	                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
@@ -3023,8 +3132,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			                  multiAgentError: e?.message || String(e),
 			                });
 			                const actions = normalizeActions(output?.actions);
+			                await replyPromise;
 			                const response = {
-			                  reply: String(output?.reply || 'OK'),
+			                  reply: streamedReply || String(output?.reply || 'OK'),
                   plan: {
                     id: mkId('plan'),
                     summary: 'Generated structured actions (Gemini, single-call fallback).',

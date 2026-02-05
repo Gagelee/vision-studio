@@ -236,6 +236,9 @@ export interface AgentLogEntry {
     type: string;
     actions?: AgentAction[];
     planId?: string;
+    applied?: number;
+    dropped?: number;
+    droppedActions?: AgentAction[];
   };
   debug?: any;
 }

@@ -437,6 +437,7 @@ export default function App() {
   const [isDirectorThinking, setIsDirectorThinking] = useState(false);
   const [directorStream, setDirectorStream] = useState<null | {
     status?: string;
+    reply?: string;
     steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
   }>(null);
 
@@ -876,7 +877,7 @@ export default function App() {
   const applyDirectorActions = (projectId: string, story: Story, actions: AgentAction[]) => {
     if (!actions.length) {
       addToast('No changes applied', 'info');
-      return;
+      return { applied: 0, dropped: 0, droppedActions: [] as AgentAction[] };
     }
 
     const validateAction = (a: AgentAction): { ok: boolean; reason?: string } => {
@@ -954,7 +955,7 @@ export default function App() {
     if (!validActions.length) {
       addToast('Director actions were invalid (missing payload).', 'info');
       addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Dropped invalid actions', data: { actions } });
-      return;
+      return { applied: 0, dropped: invalid.length, droppedActions: invalid };
     }
 
     if (invalid.length) {
@@ -1057,7 +1058,9 @@ export default function App() {
       }
     }
 
-    if (!generateActions.length && deduped.size === 0) return;
+    if (!generateActions.length && deduped.size === 0) {
+      return { applied: validActions.length, dropped: invalid.length, droppedActions: invalid };
+    }
 
     for (const a of generateActions) {
       const payload = (a as any).payload || {};
@@ -1170,6 +1173,7 @@ export default function App() {
     } else if (jobs.length) {
       addToast('Asset generation requested, but Image Provider is Mock.', 'info');
     }
+    return { applied: validActions.length, dropped: invalid.length, droppedActions: invalid };
   };
 
   // ----- Director Console -----
@@ -1212,22 +1216,38 @@ export default function App() {
               },
               (ev: DirectorStreamEvent) => {
                 if (ev.event === 'status') {
-                  setDirectorStream((prev) => ({ status: ev.data.message, steps: prev?.steps || [] }));
+                  setDirectorStream((prev) => ({ status: ev.data.message, reply: prev?.reply, steps: prev?.steps || [] }));
                 }
                 if (ev.event === 'agent_start') {
                   setDirectorStream((prev) => ({
                     status: `Running ${ev.data.agent}…`,
+                    reply: prev?.reply,
                     steps: [...(prev?.steps || []), { agent: ev.data.agent, status: 'running' }],
                   }));
                 }
                 if (ev.event === 'agent_done') {
                   setDirectorStream((prev) => ({
                     status: prev?.status,
+                    reply: prev?.reply,
                     steps: (prev?.steps || []).map((s) =>
                       s.agent === ev.data.agent
                         ? { ...s, ok: ev.data.ok, ms: ev.data.ms, error: ev.data.error, status: ev.data.ok ? 'done' : 'error' }
                         : s
                     ),
+                  }));
+                }
+                if (ev.event === 'reply_delta') {
+                  setDirectorStream((prev) => ({
+                    status: prev?.status,
+                    reply: `${prev?.reply || ''}${ev.data.delta || ''}`,
+                    steps: prev?.steps || [],
+                  }));
+                }
+                if (ev.event === 'reply_done') {
+                  setDirectorStream((prev) => ({
+                    status: prev?.status,
+                    reply: ev.data.text || prev?.reply,
+                    steps: prev?.steps || [],
                   }));
                 }
               }
@@ -1283,14 +1303,15 @@ export default function App() {
 
         const isFallback = res.debug?.transport === 'rule' && aiSettings.direct.provider !== 'mock';
 
-	    const agentEntry: AgentLogEntry = {
-	      id: `a-${Date.now()}`,
-	      role: 'agent',
-	      content: res.reply,
-	      timestamp: Date.now(),
-	      actionDetails: { type: isFallback ? 'DIRECTOR_FALLBACK_PENDING' : 'DIRECTOR_COMMAND', actions: res.actions, planId: res.plan.id },
-	      debug: res.debug,
-	    };
+        const agentEntryId = `a-${Date.now()}`;
+        const agentEntry: AgentLogEntry = {
+          id: agentEntryId,
+          role: 'agent',
+          content: res.reply,
+          timestamp: Date.now(),
+          actionDetails: { type: isFallback ? 'DIRECTOR_FALLBACK_PENDING' : 'DIRECTOR_COMMAND', actions: res.actions, planId: res.plan.id },
+          debug: res.debug,
+        };
 
 		    setAgentHistoryByProject((prev) => ({
 		      ...prev,
@@ -1306,7 +1327,25 @@ export default function App() {
           return;
         }
 		
-        applyDirectorActions(projectId, activeStory, res.actions);
+        const exec = applyDirectorActions(projectId, activeStory, res.actions);
+        if (exec) {
+          setAgentHistoryByProject((prev) => ({
+            ...prev,
+            [projectId]: (prev[projectId] || []).map((entry) =>
+              entry.id === agentEntryId
+                ? {
+                    ...entry,
+                    actionDetails: {
+                      ...entry.actionDetails,
+                      applied: exec.applied,
+                      dropped: exec.dropped,
+                      droppedActions: exec.droppedActions,
+                    },
+                  }
+                : entry
+            ),
+          }));
+        }
         setIsDirectorThinking(false);
         setDirectorStream(null);
 		  };
@@ -1339,22 +1378,38 @@ export default function App() {
                 },
                 (ev: DirectorStreamEvent) => {
                   if (ev.event === 'status') {
-                    setDirectorStream((prev) => ({ status: ev.data.message, steps: prev?.steps || [] }));
+                    setDirectorStream((prev) => ({ status: ev.data.message, reply: prev?.reply, steps: prev?.steps || [] }));
                   }
                   if (ev.event === 'agent_start') {
                     setDirectorStream((prev) => ({
                       status: `Running ${ev.data.agent}…`,
+                      reply: prev?.reply,
                       steps: [...(prev?.steps || []), { agent: ev.data.agent, status: 'running' }],
                     }));
                   }
                   if (ev.event === 'agent_done') {
                     setDirectorStream((prev) => ({
                       status: prev?.status,
+                      reply: prev?.reply,
                       steps: (prev?.steps || []).map((s) =>
                         s.agent === ev.data.agent
                           ? { ...s, ok: ev.data.ok, ms: ev.data.ms, error: ev.data.error, status: ev.data.ok ? 'done' : 'error' }
                           : s
                       ),
+                    }));
+                  }
+                  if (ev.event === 'reply_delta') {
+                    setDirectorStream((prev) => ({
+                      status: prev?.status,
+                      reply: `${prev?.reply || ''}${ev.data.delta || ''}`,
+                      steps: prev?.steps || [],
+                    }));
+                  }
+                  if (ev.event === 'reply_done') {
+                    setDirectorStream((prev) => ({
+                      status: prev?.status,
+                      reply: ev.data.text || prev?.reply,
+                      steps: prev?.steps || [],
                     }));
                   }
                 }
@@ -1368,8 +1423,9 @@ export default function App() {
                 useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
               });
 
+          const agentEntryId = `sys-${Date.now()}`;
           const agentEntry: AgentLogEntry = {
-            id: `sys-${Date.now()}`,
+            id: agentEntryId,
             role: 'system',
             content: `Director retry (${allowSingleFallback ? 'single-call fallback enabled' : 'multi-agent only'}) succeeded.`,
             timestamp: Date.now(),
@@ -1393,7 +1449,25 @@ export default function App() {
             return;
           }
 
-          applyDirectorActions(projectId, activeStory, res.actions);
+          const exec = applyDirectorActions(projectId, activeStory, res.actions);
+          if (exec) {
+            setAgentHistoryByProject((prev) => ({
+              ...prev,
+              [projectId]: (prev[projectId] || []).map((entry) =>
+                entry.id === agentEntryId
+                  ? {
+                      ...entry,
+                      actionDetails: {
+                        ...entry.actionDetails,
+                        applied: exec.applied,
+                        dropped: exec.dropped,
+                        droppedActions: exec.droppedActions,
+                      },
+                    }
+                  : entry
+              ),
+            }));
+          }
           setPendingDirectorMultiAgentFailure(null);
           setPendingDirectorSingleFallbackArmed(false);
           setIsDirectorThinking(false);

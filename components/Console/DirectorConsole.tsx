@@ -13,6 +13,7 @@ interface DirectorConsoleProps {
   isThinking?: boolean;
   stream?: {
     status?: string;
+    reply?: string;
     steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
   };
   variant?: 'default' | 'floating';
@@ -112,6 +113,11 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                   <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/40">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-2">Live Progress</div>
                       {stream.status && <div className="text-xs text-zinc-600 dark:text-zinc-300">{stream.status}</div>}
+                      {stream.reply && (
+                          <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">
+                              {stream.reply}
+                          </div>
+                      )}
                       {stream.steps?.length > 0 && (
                           <details className="mt-2 text-[11px] font-mono text-zinc-500">
                               <summary className="cursor-pointer select-none hover:text-zinc-700 dark:hover:text-zinc-200">
@@ -149,6 +155,21 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                               {entry.actionDetails && (
                                   <div className="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 text-xs font-mono text-zinc-500">
                                       Executed: {entry.actionDetails.type}
+                                      {typeof entry.actionDetails.applied === 'number' && typeof entry.actionDetails.dropped === 'number' && (
+                                        <div className="mt-1">
+                                          Applied: {entry.actionDetails.applied} · Dropped: {entry.actionDetails.dropped}
+                                        </div>
+                                      )}
+                                      {entry.actionDetails.droppedActions?.length ? (
+                                        <details className="mt-1">
+                                          <summary className="cursor-pointer select-none hover:text-zinc-700 dark:hover:text-zinc-200">
+                                            Dropped actions ({entry.actionDetails.droppedActions.length})
+                                          </summary>
+                                          <pre className="mt-1 text-[11px] whitespace-pre-wrap break-words">
+                                            {JSON.stringify(entry.actionDetails.droppedActions, null, 2)}
+                                          </pre>
+                                        </details>
+                                      ) : null}
                                   </div>
                               )}
                               {(entry as any)?.debug?.teamMessages?.length > 0 && (
