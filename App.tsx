@@ -874,9 +874,61 @@ export default function App() {
       return;
     }
 
-    const navigateActions = actions.filter((a) => a.type === 'NAVIGATE');
-    const mutationActions = actions.filter((a) => !a.type.startsWith('GENERATE_') && a.type !== 'NAVIGATE');
-    const generateActions = actions.filter((a) => a.type.startsWith('GENERATE_'));
+    const validateAction = (a: AgentAction): { ok: boolean; reason?: string } => {
+      const t = a.type;
+      const p: any = a.payload || {};
+      if (t === 'NAVIGATE') {
+        return p?.type && p?.id ? { ok: true } : { ok: false, reason: 'NAVIGATE missing payload' };
+      }
+      if (t === 'CREATE_SHOT') {
+        return p?.sequenceId ? { ok: true } : { ok: false, reason: 'CREATE_SHOT missing sequenceId' };
+      }
+      if (t === 'UPDATE_SHOT') {
+        return p?.shotId ? { ok: true } : { ok: false, reason: 'UPDATE_SHOT missing shotId' };
+      }
+      if (t === 'UPDATE_ELEMENT') {
+        return p?.shotId && p?.sequenceId && p?.elementType ? { ok: true } : { ok: false, reason: 'UPDATE_ELEMENT missing ids' };
+      }
+      if (t === 'SET_CAST') {
+        return p?.shotId && p?.sequenceId ? { ok: true } : { ok: false, reason: 'SET_CAST missing ids' };
+      }
+      if (t === 'CREATE_CHARACTER_LOOK') {
+        return p?.characterId && p?.name && p?.description ? { ok: true } : { ok: false, reason: 'CREATE_CHARACTER_LOOK missing fields' };
+      }
+      if (t === 'UPDATE_CHARACTER_LOOK') {
+        return p?.characterId && p?.lookId ? { ok: true } : { ok: false, reason: 'UPDATE_CHARACTER_LOOK missing ids' };
+      }
+      if (t === 'GENERATE_SHOT_IMAGE') {
+        return p?.sequenceId && p?.shotId ? { ok: true } : { ok: false, reason: 'GENERATE_SHOT_IMAGE missing ids' };
+      }
+      if (t === 'GENERATE_LOCATION_PREVIEW') {
+        return p?.locationId ? { ok: true } : { ok: false, reason: 'GENERATE_LOCATION_PREVIEW missing id' };
+      }
+      if (t === 'GENERATE_CHARACTER_AVATAR') {
+        return p?.characterId ? { ok: true } : { ok: false, reason: 'GENERATE_CHARACTER_AVATAR missing id' };
+      }
+      if (t === 'GENERATE_CHARACTER_LOOK') {
+        return p?.characterId && p?.lookId ? { ok: true } : { ok: false, reason: 'GENERATE_CHARACTER_LOOK missing ids' };
+      }
+      return { ok: true };
+    };
+
+    const invalid: AgentAction[] = [];
+    const validActions = actions.filter((a) => {
+      const v = validateAction(a);
+      if (!v.ok) invalid.push(a);
+      return v.ok;
+    });
+
+    if (!validActions.length) {
+      addToast('Director actions were invalid (missing payload).', 'info');
+      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Dropped invalid actions', data: { actions } });
+      return;
+    }
+
+    const navigateActions = validActions.filter((a) => a.type === 'NAVIGATE');
+    const mutationActions = validActions.filter((a) => !a.type.startsWith('GENERATE_') && a.type !== 'NAVIGATE');
+    const generateActions = validActions.filter((a) => a.type.startsWith('GENERATE_'));
 
     if (mutationActions.length) {
       updateStoryById(projectId, (prev) => applyActionsToStory(prev, mutationActions));

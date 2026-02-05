@@ -2288,6 +2288,37 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             return { type, payload: p };
           }
 
+          if (type === 'UPDATE_SHOT') {
+            const p: any = payloadRaw || {};
+            const shotId = String(p?.shotId || '').trim();
+            if (!shotId) return null;
+            return { type, payload: p };
+          }
+
+          if (type === 'CREATE_SHOT') {
+            const p: any = payloadRaw || {};
+            const sequenceId = String(p?.sequenceId || '').trim();
+            if (!sequenceId) return null;
+            return { type, payload: p };
+          }
+
+          if (type === 'UPDATE_ELEMENT') {
+            const p: any = payloadRaw || {};
+            const shotId = String(p?.shotId || '').trim();
+            const sequenceId = String(p?.sequenceId || '').trim();
+            const elementType = String(p?.elementType || '').trim();
+            if (!shotId || !sequenceId || !elementType) return null;
+            return { type, payload: p };
+          }
+
+          if (type === 'SET_CAST') {
+            const p: any = payloadRaw || {};
+            const shotId = String(p?.shotId || '').trim();
+            const sequenceId = String(p?.sequenceId || '').trim();
+            if (!shotId || !sequenceId) return null;
+            return { type, payload: p };
+          }
+
           if (payloadRaw && typeof payloadRaw === 'object') return { type, payload: payloadRaw };
           return { type, ...(payloadRaw !== undefined ? { payload: payloadRaw } : {}) };
         };
