@@ -2304,6 +2304,117 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             return { type, payload: p };
           }
 
+          if (type === 'UPDATE_LOCATION' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const locationId = String(p.locationId || p.id || '').trim();
+            if (locationId) {
+              const patch: any = p.patch && typeof p.patch === 'object' ? { ...p.patch } : {};
+              if (typeof p.name === 'string') patch.name = p.name;
+              if (typeof p.description === 'string') patch.description = p.description;
+              if (typeof p.visualStyle === 'string') patch.visualStyle = p.visualStyle;
+              if (typeof p.status === 'string') patch.status = p.status;
+              return { type, payload: { locationId, patch } };
+            }
+            return { type, payload: p };
+          }
+
+          if (type === 'UPDATE_STORY' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const patch: any = p.patch && typeof p.patch === 'object' ? { ...p.patch } : {};
+            if (typeof p.title === 'string') patch.title = p.title;
+            if (typeof p.logline === 'string') patch.logline = p.logline;
+            if (typeof p.intent === 'string') patch.intent = p.intent;
+            if (typeof p.keyVisualUrl === 'string') patch.keyVisualUrl = p.keyVisualUrl;
+            return { type, payload: { patch } };
+          }
+
+          if (type === 'NAVIGATE' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const navType = String(p.type || p.targetType || '').trim();
+            const id = String(p.id || p.targetId || '').trim();
+            if (navType && id) return { type, payload: { type: navType, id } };
+            return { type, payload: p };
+          }
+
+          if (type === 'CREATE_LOCATION' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            if (p._raw && typeof p._raw === 'string') {
+              const parsed = parseLooseJsonObject(p._raw);
+              if (parsed && typeof parsed === 'object') return { type, payload: parsed };
+            }
+            return { type, payload: p };
+          }
+
+          if (type === 'CREATE_CHARACTER' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            if (p._raw && typeof p._raw === 'string') {
+              const parsed = parseLooseJsonObject(p._raw);
+              if (parsed && typeof parsed === 'object') return { type, payload: parsed };
+            }
+            return { type, payload: p };
+          }
+
+          if (type === 'CREATE_SHOT' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const sequenceId = String(p.sequenceId || p.parentId || '').trim();
+            if (sequenceId) return { type, payload: { ...p, sequenceId } };
+            return { type, payload: p };
+          }
+
+          if (type === 'DELETE_SHOT' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const sequenceId = String(p.sequenceId || p.parentId || '').trim();
+            const shotId = String(p.shotId || p.id || '').trim();
+            if (sequenceId && shotId) return { type, payload: { sequenceId, shotId } };
+            return { type, payload: p };
+          }
+
+          if (type === 'MOVE_SHOT' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const sequenceId = String(p.sequenceId || p.parentId || '').trim();
+            const shotId = String(p.shotId || p.id || '').trim();
+            if (sequenceId && shotId) return { type, payload: { ...p, sequenceId, shotId } };
+            return { type, payload: p };
+          }
+
+          if (type === 'SET_CAST' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const sequenceId = String(p.sequenceId || p.parentId || '').trim();
+            const shotId = String(p.shotId || p.id || '').trim();
+            if (sequenceId && shotId) return { type, payload: { ...p, sequenceId, shotId } };
+            return { type, payload: p };
+          }
+
+          if (type === 'GENERATE_CHARACTER_AVATAR' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const characterId = String(p.characterId || p.id || '').trim();
+            if (characterId) return { type, payload: { characterId } };
+            return { type, payload: p };
+          }
+
+          if (type === 'GENERATE_CHARACTER_LOOK' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const characterId = String(p.characterId || p.parentId || '').trim();
+            const lookId = String(p.lookId || p.id || '').trim();
+            if (characterId && lookId) return { type, payload: { characterId, lookId } };
+            return { type, payload: p };
+          }
+
+          if (type === 'GENERATE_LOCATION_PREVIEW' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const locationId = String(p.locationId || p.id || '').trim();
+            if (locationId) return { type, payload: { locationId } };
+            return { type, payload: p };
+          }
+
+          if (type === 'GENERATE_SHOT_IMAGE' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const sequenceId = String(p.sequenceId || p.parentId || '').trim();
+            const shotId = String(p.shotId || p.id || '').trim();
+            if (sequenceId && shotId) return { type, payload: { sequenceId, shotId } };
+            return { type, payload: p };
+          }
+
           if (type === 'UPDATE_SHOT') {
             const p: any = payloadRaw || {};
             const shotId = String(p?.shotId || '').trim();

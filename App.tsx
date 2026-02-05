@@ -878,11 +878,34 @@ export default function App() {
     const validateAction = (a: AgentAction): { ok: boolean; reason?: string } => {
       const t = a.type;
       const p: any = a.payload || {};
+      if (t === 'UPDATE_STORY') {
+        const patch = p.patch || p;
+        const hasAny = ['title', 'logline', 'intent', 'keyVisualUrl'].some((k) => typeof patch?.[k] === 'string');
+        return hasAny ? { ok: true } : { ok: false, reason: 'UPDATE_STORY missing patch' };
+      }
       if (t === 'NAVIGATE') {
         return p?.type && p?.id ? { ok: true } : { ok: false, reason: 'NAVIGATE missing payload' };
       }
+      if (t === 'CREATE_LOCATION') {
+        return { ok: true };
+      }
+      if (t === 'UPDATE_LOCATION') {
+        return p?.locationId ? { ok: true } : { ok: false, reason: 'UPDATE_LOCATION missing id' };
+      }
+      if (t === 'CREATE_CHARACTER') {
+        return { ok: true };
+      }
+      if (t === 'UPDATE_CHARACTER') {
+        return p?.characterId ? { ok: true } : { ok: false, reason: 'UPDATE_CHARACTER missing id' };
+      }
       if (t === 'CREATE_SHOT') {
         return p?.sequenceId ? { ok: true } : { ok: false, reason: 'CREATE_SHOT missing sequenceId' };
+      }
+      if (t === 'DELETE_SHOT') {
+        return p?.sequenceId && p?.shotId ? { ok: true } : { ok: false, reason: 'DELETE_SHOT missing ids' };
+      }
+      if (t === 'MOVE_SHOT') {
+        return p?.sequenceId && p?.shotId ? { ok: true } : { ok: false, reason: 'MOVE_SHOT missing ids' };
       }
       if (t === 'UPDATE_SHOT') {
         return p?.shotId ? { ok: true } : { ok: false, reason: 'UPDATE_SHOT missing shotId' };
@@ -911,6 +934,9 @@ export default function App() {
       if (t === 'GENERATE_CHARACTER_LOOK') {
         return p?.characterId && p?.lookId ? { ok: true } : { ok: false, reason: 'GENERATE_CHARACTER_LOOK missing ids' };
       }
+      if (t === 'GENERATE_PROJECT_ASSETS') {
+        return { ok: true };
+      }
       return { ok: true };
     };
 
@@ -925,6 +951,10 @@ export default function App() {
       addToast('Director actions were invalid (missing payload).', 'info');
       addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Dropped invalid actions', data: { actions } });
       return;
+    }
+
+    if (invalid.length) {
+      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Some actions dropped', data: { invalid } });
     }
 
     const navigateActions = validActions.filter((a) => a.type === 'NAVIGATE');
