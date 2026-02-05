@@ -434,6 +434,7 @@ export default function App() {
   const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
   const [productionTarget, setProductionTarget] = useState<{ sequenceId: string; shotId: string } | null>(null);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  const [isDirectorThinking, setIsDirectorThinking] = useState(false);
 
   const activeStory = useMemo<Story | null>(() => {
     if (!workspace.activeProjectId) return null;
@@ -1121,8 +1122,9 @@ export default function App() {
 
 		  const handleDirectorMessage = async (msg: string) => {
 		    if (!activeStory || !workspace.activeProjectId) return;
-	      const projectId = workspace.activeProjectId;
+		      const projectId = workspace.activeProjectId;
         const selectionSnapshot = selection;
+        setIsDirectorThinking(true);
 
 	    const userEntry: AgentLogEntry = {
 	      id: `u-${Date.now()}`,
@@ -1138,15 +1140,15 @@ export default function App() {
 
         let res: DirectorCommandResponse;
         try {
-	          res = await runDirectorCommand({
-	            message: msg,
-	            selection: selectionSnapshot,
-	            story: activeStory,
-	            settings: aiSettings.direct,
-	            allowSingleFallback: false,
+          res = await runDirectorCommand({
+            message: msg,
+            selection: selectionSnapshot,
+            story: activeStory,
+            settings: aiSettings.direct,
+            allowSingleFallback: false,
               useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
-	          });
-	        } catch (e) {
+          });
+        } catch (e) {
           const errMsg = isAgentApiError(e)
             ? String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message)
             : e instanceof Error
@@ -1180,6 +1182,7 @@ export default function App() {
           } else {
             addToast('Director request failed. Open Debug (Ctrl/Cmd+Shift+D) for details.', 'info');
           }
+          setIsDirectorThinking(false);
           return;
         }
 
@@ -1203,10 +1206,12 @@ export default function App() {
           setPendingDirectorFallback({ projectId, res });
           setPendingDirectorFallbackArmed(false);
           addToast('Director returned fallback output. Confirm before applying.', 'info');
+          setIsDirectorThinking(false);
           return;
         }
 		
         applyDirectorActions(projectId, activeStory, res.actions);
+        setIsDirectorThinking(false);
 		  };
 
       const retryDirectorAfterFailure = async (allowSingleFallback: boolean) => {
@@ -1216,16 +1221,17 @@ export default function App() {
         const projectId = pendingDirectorMultiAgentFailure.projectId;
         const msg = pendingDirectorMultiAgentFailure.message;
         const selectionSnapshot = pendingDirectorMultiAgentFailure.selection;
+        setIsDirectorThinking(true);
 
         try {
-	          const res = await runDirectorCommand({
-	            message: msg,
-	            selection: selectionSnapshot,
-	            story: activeStory,
-	            settings: aiSettings.direct,
-	            allowSingleFallback,
+          const res = await runDirectorCommand({
+            message: msg,
+            selection: selectionSnapshot,
+            story: activeStory,
+            settings: aiSettings.direct,
+            allowSingleFallback,
               useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
-	          });
+          });
 
           const agentEntry: AgentLogEntry = {
             id: `sys-${Date.now()}`,
@@ -1247,12 +1253,14 @@ export default function App() {
             setPendingDirectorMultiAgentFailure(null);
             setPendingDirectorSingleFallbackArmed(false);
             addToast('Director returned fallback output. Confirm before applying.', 'info');
+            setIsDirectorThinking(false);
             return;
           }
 
           applyDirectorActions(projectId, activeStory, res.actions);
           setPendingDirectorMultiAgentFailure(null);
           setPendingDirectorSingleFallbackArmed(false);
+          setIsDirectorThinking(false);
         } catch (e) {
           const errMsg = isAgentApiError(e)
             ? String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message)
@@ -1262,6 +1270,7 @@ export default function App() {
           setPendingDirectorMultiAgentFailure((prev) => (prev ? { ...prev, error: errMsg, details: isAgentApiError(e) ? e.bodyJson : prev.details } : prev));
           setPendingDirectorSingleFallbackArmed(false);
           addToast('Director retry failed. Check Debug.', 'info');
+          setIsDirectorThinking(false);
         }
       };
 
@@ -1452,6 +1461,7 @@ export default function App() {
               }}
               history={agentHistory}
               onSendMessage={handleDirectorMessage}
+              isThinking={isDirectorThinking}
             />
           </div>
         )}
@@ -1464,6 +1474,7 @@ export default function App() {
               context={{ type: 'shot', label: 'Cinema Mode', id: 'cinema' }}
               history={agentHistory}
               onSendMessage={handleDirectorMessage}
+              isThinking={isDirectorThinking}
             />
           </div>
         )}

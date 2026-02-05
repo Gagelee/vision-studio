@@ -10,13 +10,13 @@ interface DirectorConsoleProps {
   };
   history: AgentLogEntry[];
   onSendMessage: (message: string) => void;
+  isThinking?: boolean;
   variant?: 'default' | 'floating';
 }
 
-export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, history, onSendMessage, variant = 'default' }) => {
+export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, history, onSendMessage, isThinking = false, variant = 'default' }) => {
   const [input, setInput] = useState('');
   const [showHistory, setShowHistory] = useState(false);
-  const [isThinking, setIsThinking] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom
@@ -30,13 +30,9 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
     e.preventDefault();
     if (!input.trim()) return;
     
-    setIsThinking(true);
     onSendMessage(input);
     setInput('');
     setShowHistory(true); // Auto-open history on send
-    
-    // Simulate thinking end (in real app, this is controlled by parent state)
-    setTimeout(() => setIsThinking(false), 1500);
   };
 
   const handleChipClick = (text: string) => {
@@ -128,6 +124,40 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                                       Executed: {entry.actionDetails.type}
                                   </div>
                               )}
+                              {(entry as any)?.debug?.teamMessages?.length > 0 && (
+                                  <details className="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 text-[11px] font-mono text-zinc-500">
+                                      <summary className="cursor-pointer select-none hover:text-zinc-700 dark:hover:text-zinc-200">
+                                          Agent Discussion ({(entry as any).debug.teamMessages.length})
+                                      </summary>
+                                      <div className="mt-2 space-y-2">
+                                          {(entry as any).debug.teamMessages.map((m: any, idx: number) => (
+                                              <div key={`${entry.id}-m-${idx}`} className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-2">
+                                                  <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-400">
+                                                      <span>{m.agent || 'agent'}</span>
+                                                      <span className={m.ok ? 'text-emerald-500' : 'text-rose-500'}>
+                                                          {m.ok ? 'ok' : 'error'}
+                                                      </span>
+                                                  </div>
+                                                  {m.promptPreview && (
+                                                      <div className="mt-1 text-[11px] text-zinc-500 whitespace-pre-wrap">
+                                                          <span className="text-zinc-400">Prompt:</span> {String(m.promptPreview)}
+                                                      </div>
+                                                  )}
+                                                  {m.responsePreview && (
+                                                      <div className="mt-1 text-[11px] text-zinc-500 whitespace-pre-wrap">
+                                                          <span className="text-zinc-400">Response:</span> {String(m.responsePreview)}
+                                                      </div>
+                                                  )}
+                                                  {m.error && (
+                                                      <div className="mt-1 text-[11px] text-rose-500 whitespace-pre-wrap">
+                                                          Error: {String(m.error)}
+                                                      </div>
+                                                  )}
+                                              </div>
+                                          ))}
+                                      </div>
+                                  </details>
+                              )}
                               {entry.debug && (
                                   <div className="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 text-[11px] font-mono text-zinc-500 break-words">
                                       Debug: {entry.debug.transport || 'n/a'} / {entry.debug.provider || 'n/a'} / {entry.debug.model || 'n/a'}
@@ -159,6 +189,11 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
         </div>
 
         <div className={`max-w-4xl mx-auto relative rounded-2xl bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 transition-all ${config.borderAccent}`}>
+            {isThinking && (
+                <div className="absolute top-0 left-0 right-0 h-0.5 overflow-hidden rounded-t-2xl">
+                    <div className="h-full w-full animate-pulse bg-gradient-to-r from-indigo-500 via-emerald-400 to-indigo-500" />
+                </div>
+            )}
             <div className="flex items-center px-2">
                 <div className={`p-3 ${isThinking ? 'animate-pulse text-amber-500' : 'text-zinc-400'}`}>
                     {isThinking ? <Cpu className="w-5 h-5" /> : <Sparkles className="w-5 h-5" />}
