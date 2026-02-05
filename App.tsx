@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle, Info, X } from 'lucide-react';
 import { Sidebar } from './components/Layout/Sidebar';
+import { ScriptEditorModal } from './components/Stage/ScriptEditorModal';
 import { DirectorConsole } from './components/Console/DirectorConsole';
 import { InspectorPanel } from './components/Inspector/InspectorPanel';
 import { MasterPlayer } from './components/Player/MasterPlayer';
@@ -434,6 +435,7 @@ export default function App() {
   const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
   const [productionTarget, setProductionTarget] = useState<{ sequenceId: string; shotId: string } | null>(null);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  const [isScriptEditorOpen, setIsScriptEditorOpen] = useState(false);
   const [isDirectorThinking, setIsDirectorThinking] = useState(false);
   const [directorStream, setDirectorStream] = useState<null | {
     status?: string;
@@ -1572,6 +1574,7 @@ export default function App() {
           }}
           onOpenAiSettings={() => setIsAiSettingsOpen(true)}
           onOpenDebug={() => setIsDebugOpen(true)}
+          onOpenScript={() => setIsScriptEditorOpen(true)}
           onSelect={handleSelect}
           onCreateLocation={handleCreateLocation}
           onCreateCharacter={handleCreateCharacter}
@@ -1729,6 +1732,14 @@ export default function App() {
             addToast('AI settings saved', 'success');
           }}
           onClose={() => setIsAiSettingsOpen(false)}
+        />
+      )}
+
+      {isScriptEditorOpen && (
+        <ScriptEditorModal
+          story={activeStory}
+          onClose={() => setIsScriptEditorOpen(false)}
+          onUpdateShot={handleShotUpdate}
         />
       )}
 

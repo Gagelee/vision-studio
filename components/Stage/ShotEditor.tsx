@@ -98,7 +98,6 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             throw new Error('Blocked: Character look not generated yet. Please generate the look first.');
           }
           if (references.length < 6) references.push({ url: lookUrl, label: `character: ${master.name} (${look.name})` });
-          if (references.length < 6) references.push({ url: avatarUrl, label: `character: ${master.name} (base)` });
         } else {
           if (references.length < 6) references.push({ url: avatarUrl, label: `character: ${master.name} (base)` });
         }

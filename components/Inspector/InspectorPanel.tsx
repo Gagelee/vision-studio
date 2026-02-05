@@ -5,6 +5,8 @@ import { Shot, Sequence, Location, ElementType, Character, DialogueLine, Directo
 import { ElementControl } from './ElementControl';
 import { Collapsible } from './Collapsible';
 import { openLightbox } from '../../lib/ui/lightboxStore';
+import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
+import { buildShotImagePrompt } from '../../lib/ai/prompts';
 
 // --- Sub-component for Casting Control ---
 interface CastingControlProps {
@@ -227,6 +229,23 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
           });
       };
 
+      const handleElementMetadataChange = (elType: ElementType, patch: Record<string, any>) => {
+          onShotUpdate({
+              ...shot,
+              elements: {
+                  ...shot.elements,
+                  [elType]: {
+                      ...shot.elements[elType],
+                      metadata: {
+                          ...(shot.elements[elType]?.metadata || {}),
+                          ...patch
+                      },
+                      status: 'manual'
+                  }
+              }
+          });
+      };
+
       const handleSyncKV = () => {
           setIsSyncing(true);
           setTimeout(() => {
@@ -235,6 +254,145 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               setIsSyncing(false);
           }, 1500);
       };
+
+      const styleGuide = String(masterStyle || '').trim();
+      const envStyle = String(contextLocation?.visualStyle || '').trim();
+      const videoPrompt = String(shot.elements?.[ElementType.CAMERA]?.metadata?.videoPrompt || '').trim();
+      const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters || [];
+      const castArr = Array.isArray(cast) ? cast : [];
+      const referenceAudit = () => {
+          const refs: Array<{
+              id: string;
+              label: string;
+              url: string;
+              status: 'ok' | 'missing' | 'placeholder';
+          }> = [];
+
+          const locUrl = contextLocation ? getLocationActivePreviewUrl(contextLocation) : '';
+          refs.push({
+              id: `env-${contextLocation?.id || 'none'}`,
+              label: `Environment${contextLocation?.name ? `: ${contextLocation.name}` : ''}`,
+              url: locUrl,
+              status: !locUrl ? 'missing' : isLikelyPlaceholderImageUrl(locUrl) ? 'placeholder' : 'ok'
+          });
+
+          for (const c of castArr.slice(0, 6)) {
+              const charId = String(c?.id || '');
+              if (!charId) continue;
+              const master = availableCharacters.find((x) => x.id === charId);
+              const activeLookId = String(c?.activeLookId || '').trim();
+              if (!master) {
+                  refs.push({
+                      id: `char-${charId}`,
+                      label: `Character: ${charId}`,
+                      url: '',
+                      status: 'missing'
+                  });
+                  continue;
+              }
+              if (activeLookId) {
+                  const look = master.looks?.find((lk) => lk.id === activeLookId);
+                  const lookUrl = look ? getLookActivePreviewUrl(look) : '';
+                  refs.push({
+                      id: `look-${activeLookId}`,
+                      label: `Character: ${master.name}${look?.name ? ` (${look.name})` : ''}`,
+                      url: lookUrl,
+                      status: !lookUrl ? 'missing' : isLikelyPlaceholderImageUrl(lookUrl) ? 'placeholder' : 'ok'
+                  });
+              } else {
+                  const avatarUrl = getCharacterActiveAvatarUrl(master);
+                  refs.push({
+                      id: `avatar-${master.id}`,
+                      label: `Character: ${master.name} (base)`,
+                      url: avatarUrl,
+                      status: !avatarUrl ? 'missing' : isLikelyPlaceholderImageUrl(avatarUrl) ? 'placeholder' : 'ok'
+                  });
+              }
+          }
+
+          return refs;
+      };
+      const auditRefs = referenceAudit();
+
+      const imagePromptParts = [
+          {
+              key: 'system',
+              label: 'System',
+              value: 'Generate a cinematic storyboard keyframe (still image).',
+              badgeClass: 'bg-zinc-100 text-zinc-700 border-zinc-200 dark:bg-zinc-800/60 dark:text-zinc-200 dark:border-zinc-700'
+          },
+          {
+              key: 'style',
+              label: 'Style Guide',
+              value: styleGuide
+                  ? `StyleGuide (must follow):\n${styleGuide}`
+                  : 'Maintain a cohesive style across the entire project (palette, lighting language, lens feel, rendering style).',
+              badgeClass: 'bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-200 dark:border-indigo-500/30'
+          },
+          {
+              key: 'consistency',
+              label: 'Consistency',
+              value: 'Follow reference images strictly for identity + environment consistency (same characters, same faces, same outfits per look; same environment). Do not drift into a different art style.',
+              badgeClass: 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:border-emerald-500/30'
+          },
+          {
+              key: 'safety',
+              label: 'Constraints',
+              value: 'No text, no subtitles, no watermarks, no logos.',
+              badgeClass: 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:border-amber-500/30'
+          },
+          {
+              key: 'description',
+              label: 'Description',
+              value: String(shot.description || '').trim(),
+              badgeClass: 'bg-sky-100 text-sky-700 border-sky-200 dark:bg-sky-500/10 dark:text-sky-200 dark:border-sky-500/30'
+          },
+          {
+              key: 'time',
+              label: 'Time',
+              value: shot.timeOfDay ? `Time: ${shot.timeOfDay}` : '',
+              badgeClass: 'bg-purple-100 text-purple-700 border-purple-200 dark:bg-purple-500/10 dark:text-purple-200 dark:border-purple-500/30'
+          },
+          {
+              key: 'camera',
+              label: 'Camera',
+              value: shot.elements?.[ElementType.CAMERA]?.prompt ? `Camera: ${shot.elements?.[ElementType.CAMERA]?.prompt}` : '',
+              badgeClass: 'bg-cyan-100 text-cyan-700 border-cyan-200 dark:bg-cyan-500/10 dark:text-cyan-200 dark:border-cyan-500/30'
+          },
+          {
+              key: 'lighting',
+              label: 'Lighting',
+              value: shot.elements?.[ElementType.LIGHTING]?.prompt ? `Lighting: ${shot.elements?.[ElementType.LIGHTING]?.prompt}` : '',
+              badgeClass: 'bg-yellow-100 text-yellow-700 border-yellow-200 dark:bg-yellow-500/10 dark:text-yellow-200 dark:border-yellow-500/30'
+          },
+          {
+              key: 'audio',
+              label: 'Audio',
+              value: shot.elements?.[ElementType.AUDIO]?.prompt ? `Audio: ${shot.elements?.[ElementType.AUDIO]?.prompt}` : '',
+              badgeClass: 'bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:border-rose-500/30'
+          },
+          {
+              key: 'environment',
+              label: 'Environment Style',
+              value: envStyle ? `Environment style: ${envStyle}` : '',
+              badgeClass: 'bg-lime-100 text-lime-700 border-lime-200 dark:bg-lime-500/10 dark:text-lime-200 dark:border-lime-500/30'
+          }
+      ].filter((part) => part.value);
+
+      const fullImagePrompt = [
+          'Generate a cinematic storyboard keyframe (still image).',
+          styleGuide
+              ? `StyleGuide (must follow):\n${styleGuide}`
+              : 'Maintain a cohesive style across the entire project (palette, lighting language, lens feel, rendering style).',
+          'Follow reference images strictly for identity + environment consistency (same characters, same faces, same outfits per look; same environment). Do not drift into a different art style.',
+          'No text, no subtitles, no watermarks, no logos.',
+          '',
+          buildShotImagePrompt(shot),
+          envStyle ? `Environment style: ${envStyle}` : ''
+      ]
+        .map((s) => String(s || '').trim())
+        .filter(Boolean)
+        .join('\n');
 
       return (
         <div className="w-96 flex flex-col h-full bg-white dark:bg-zinc-950 border-l border-zinc-200 dark:border-zinc-800 transition-colors duration-300">
@@ -371,6 +529,199 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                         colorTheme="zinc"
                         className="mt-3"
                     />
+                </div>
+
+                <div>
+                    <div className="flex items-center gap-2 mb-3 px-1">
+                        <div className="w-1 h-3 bg-emerald-500 rounded-full"></div>
+                        <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 uppercase tracking-wider">Prompts</h3>
+                    </div>
+
+                    <div className="bg-white dark:bg-zinc-900/50 rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden shadow-sm">
+                        <Collapsible
+                          title="Image Prompt (Composed)"
+                          icon={<Sparkles className="w-3.5 h-3.5" />}
+                          defaultOpen
+                          rightElement={
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                              Full
+                            </span>
+                          }
+                        >
+                            <div className="px-3 pb-3 space-y-3">
+                                <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Full Prompt</span>
+                                        <button
+                                          onClick={() => navigator.clipboard?.writeText(fullImagePrompt)}
+                                          className="text-[9px] font-bold text-zinc-500 hover:text-emerald-600 transition-colors"
+                                        >
+                                          Copy
+                                        </button>
+                                    </div>
+                                    <pre className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed font-mono text-zinc-700 dark:text-zinc-200">
+                                      {fullImagePrompt || 'No prompt composed yet.'}
+                                    </pre>
+                                </div>
+
+                                <div className="space-y-2">
+                                    {imagePromptParts.map((part) => (
+                                        <div key={part.key} className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-2">
+                                            <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest ${part.badgeClass}`}>
+                                                {part.label}
+                                            </span>
+                                            <pre className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-700 dark:text-zinc-300">
+                                                {part.value}
+                                            </pre>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="pt-2 grid grid-cols-1 gap-3">
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Description</label>
+                                        <textarea
+                                          value={shot.description || ''}
+                                          onChange={(e) => onShotUpdate({ ...shot, description: e.target.value })}
+                                          rows={3}
+                                          className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Time / Context</label>
+                                        <input
+                                          value={shot.timeOfDay || ''}
+                                          onChange={(e) => onShotUpdate({ ...shot, timeOfDay: e.target.value })}
+                                          className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Camera</label>
+                                        <textarea
+                                          value={shot.elements?.[ElementType.CAMERA]?.prompt || ''}
+                                          onChange={(e) => handleElementChange(ElementType.CAMERA, e.target.value)}
+                                          rows={2}
+                                          className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Lighting</label>
+                                        <textarea
+                                          value={shot.elements?.[ElementType.LIGHTING]?.prompt || ''}
+                                          onChange={(e) => handleElementChange(ElementType.LIGHTING, e.target.value)}
+                                          rows={2}
+                                          className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Audio</label>
+                                        <textarea
+                                          value={shot.elements?.[ElementType.AUDIO]?.prompt || ''}
+                                          onChange={(e) => handleElementChange(ElementType.AUDIO, e.target.value)}
+                                          rows={2}
+                                          className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                        />
+                                    </div>
+                                    <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-2 text-[10px] text-zinc-500">
+                                        Environment style is sourced from the selected Environment. Edit it in the Environment panel.
+                                    </div>
+                                </div>
+                            </div>
+                        </Collapsible>
+
+                        <Collapsible
+                          title="Video Prompt"
+                          icon={<Film className="w-3.5 h-3.5" />}
+                          defaultOpen={false}
+                          rightElement={
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-purple-500 bg-purple-500/10 px-1.5 py-0.5 rounded">
+                              Editable
+                            </span>
+                          }
+                        >
+                            <div className="px-3 pb-3 space-y-3">
+                                <div>
+                                    <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Video Prompt (Full)</label>
+                                    <textarea
+                                      value={videoPrompt}
+                                      onChange={(e) => handleElementMetadataChange(ElementType.CAMERA, { videoPrompt: e.target.value })}
+                                      rows={6}
+                                      placeholder="Paste or author the full production-ready video prompt here."
+                                      className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                    />
+                                </div>
+                                <div className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-2">
+                                    <div className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-2">Composed Inputs</div>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        <span className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-widest bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-200">Description</span>
+                                        <span className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-widest bg-cyan-100 text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-200">Camera</span>
+                                        <span className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-widest bg-yellow-100 text-yellow-700 dark:bg-yellow-500/10 dark:text-yellow-200">Lighting</span>
+                                        <span className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-widest bg-indigo-100 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-200">Style Guide</span>
+                                        {envStyle && (
+                                            <span className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-widest bg-lime-100 text-lime-700 dark:bg-lime-500/10 dark:text-lime-200">Environment</span>
+                                        )}
+                                    </div>
+                                    <p className="mt-2 text-[10px] text-zinc-500">
+                                        These inputs are often combined when producing the final video prompt. Keep them consistent if you edit manually.
+                                    </p>
+                                </div>
+                            </div>
+                        </Collapsible>
+                    </div>
+                </div>
+
+                <div>
+                    <div className="flex items-center gap-2 mb-3 px-1">
+                        <div className="w-1 h-3 bg-orange-500 rounded-full"></div>
+                        <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 uppercase tracking-wider">Reference Audit</h3>
+                    </div>
+                    <div className="bg-white dark:bg-zinc-900/50 rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden shadow-sm">
+                        <Collapsible
+                          title="Storyboard Reference Images"
+                          icon={<Link className="w-3.5 h-3.5" />}
+                          defaultOpen={false}
+                          rightElement={
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-orange-500 bg-orange-500/10 px-1.5 py-0.5 rounded">
+                              {auditRefs.filter((r) => r.status === 'ok').length}/{auditRefs.length}
+                            </span>
+                          }
+                        >
+                            <div className="px-3 pb-3 space-y-2">
+                                {auditRefs.map((ref) => (
+                                    <div key={ref.id} className="flex items-center gap-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-2">
+                                        <div className="w-10 h-10 rounded-md overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-zinc-900 shrink-0">
+                                            {ref.url ? (
+                                              <img
+                                                src={ref.url}
+                                                alt={ref.label}
+                                                className="w-full h-full object-cover cursor-zoom-in"
+                                                onClick={() => ref.url && openLightbox({ url: ref.url, title: ref.label })}
+                                              />
+                                            ) : null}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-[11px] font-bold text-zinc-700 dark:text-zinc-200 truncate">{ref.label}</div>
+                                            <div className="text-[10px] text-zinc-500 truncate">{ref.url || 'Missing reference'}</div>
+                                        </div>
+                                        <span
+                                          className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${
+                                            ref.status === 'ok'
+                                              ? 'bg-emerald-500/10 text-emerald-500'
+                                              : ref.status === 'placeholder'
+                                                ? 'bg-amber-500/10 text-amber-500'
+                                                : 'bg-red-500/10 text-red-500'
+                                          }`}
+                                        >
+                                          {ref.status}
+                                        </span>
+                                    </div>
+                                ))}
+                                <div className="text-[10px] text-zinc-500 pt-1">
+                                    Rule: each character contributes exactly one reference (active look or base avatar).
+                                </div>
+                            </div>
+                        </Collapsible>
+                    </div>
                 </div>
             </div>
         </div>

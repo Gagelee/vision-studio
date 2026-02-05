@@ -569,10 +569,9 @@ export const executeAssetJobs = async (args: {
       const lookUrl = look && isDone((look as any).assetState) ? getLookActivePreviewUrl(look) : '';
       const avatarUrl = getCharacterActiveAvatarUrl(master);
 
-      // Try to include both look + avatar for stronger identity lock, but keep within the API cap (6 refs).
-      // Preference: look first, then avatar; otherwise avatar only.
+      // Use exactly one reference per character: active look if specified, otherwise base avatar.
       if (lookUrl && refs.length < 6) refs.push({ url: lookUrl, label: `character: ${master.name}${look?.name ? ` (${look.name})` : ''}` });
-      if (avatarUrl && refs.length < 6) refs.push({ url: avatarUrl, label: `character: ${master.name} (base)` });
+      if (!lookUrl && avatarUrl && refs.length < 6) refs.push({ url: avatarUrl, label: `character: ${master.name} (base)` });
     }
 
     return refs;

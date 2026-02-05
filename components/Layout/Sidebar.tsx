@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug } from 'lucide-react';
+import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug, BookText } from 'lucide-react';
 import { Story, SelectionState } from '../../types';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
@@ -12,6 +12,7 @@ interface SidebarProps {
   onBackToLibrary?: () => void;
   onOpenAiSettings?: () => void;
   onOpenDebug?: () => void;
+  onOpenScript?: () => void;
   onCreateSequence?: () => void;
   onCreateLocation?: () => void;
   onCreateCharacter?: () => void;
@@ -26,6 +27,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onBackToLibrary,
     onOpenAiSettings,
     onOpenDebug,
+    onOpenScript,
     onCreateSequence,
     onCreateLocation,
     onCreateCharacter
@@ -66,6 +68,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               title="Debug (Cmd/Ctrl+Shift+D)"
             >
               <Bug className="w-4 h-4" />
+            </button>
+          )}
+          {onOpenScript && (
+            <button
+              onClick={onOpenScript}
+              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              title="Script Editor"
+            >
+              <BookText className="w-4 h-4" />
             </button>
           )}
           <button 
