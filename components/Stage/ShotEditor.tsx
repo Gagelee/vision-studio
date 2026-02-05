@@ -348,6 +348,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               if (displayVersions.length <= 1) return;
+                              if (!window.confirm('Delete this shot variant?')) return;
                               const remaining = displayVersions.filter((v) => v.id !== version.id);
                               const nextActive = isActive ? remaining[remaining.length - 1] : displayVersions.find((v) => v.id === shot.activeVersionId);
                               if (!nextActive) return;

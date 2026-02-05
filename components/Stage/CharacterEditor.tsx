@@ -90,6 +90,9 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   };
 
   const handleRemoveLook = (id: string) => {
+    const target = draft.looks.find((l) => l.id === id);
+    const label = target?.name ? `"${target.name}"` : 'this look';
+    if (!window.confirm(`Delete ${label}?`)) return;
     const next = { ...draft, looks: draft.looks.filter(l => l.id !== id) };
     setDraft(next);
     onSave(next);
@@ -195,6 +198,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   };
 
   const handleDeleteAvatarVariant = (versionId: string) => {
+    if (!window.confirm('Delete this avatar variant?')) return;
     const versions = (avatarVersions || []).filter((v: any) => String(v?.id || '') !== String(versionId));
     if (versions.length === 0) return;
     const nextActiveId =

@@ -109,6 +109,16 @@ export interface ShotVersion {
   imageUrl: string;
   createdAt: number;
   type: string;
+  metadata?: {
+    prompt?: string;
+    references?: Array<{ url: string; label?: string }>;
+    settings?: {
+      provider?: string;
+      model?: string;
+      temperature?: number;
+    };
+    aspectRatio?: string;
+  };
 }
 
 export interface DialogueLine {
