@@ -23,6 +23,14 @@ const CastingControl: React.FC<CastingControlProps> = ({ element, availableChara
 
   const shotCharacters = element.metadata?.characters || [];
   const shotCharIds = new Set(shotCharacters.map((c: any) => c.id));
+  const isLookBoundToAvatar = (look: any, avatarVersionId: string) => {
+      if (!look || !avatarVersionId) return false;
+      const versions = Array.isArray(look.previewVersions) ? look.previewVersions : [];
+      const activeId = String(look.activePreviewVersionId || '').trim();
+      if (!activeId) return false;
+      const hit = versions.find((v: any) => String(v?.id || '') === activeId);
+      return String(hit?.metadata?.sourceAvatarVersionId || '') === String(avatarVersionId);
+  };
 
   const toggleCharacter = (char: Character) => {
       if (shotCharIds.has(char.id)) {
