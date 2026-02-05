@@ -124,11 +124,18 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       const sequenceId = String(action.payload?.sequenceId || '');
       if (!sequenceId) return acc;
       const afterShotId = action.payload?.afterShotId ? String(action.payload.afterShotId) : undefined;
+      const rawDuration = action.payload?.duration;
+      const normalizedDuration =
+        typeof rawDuration === 'number' && Number.isFinite(rawDuration)
+          ? rawDuration > 60
+            ? Math.round(rawDuration / 1000)
+            : Math.round(rawDuration)
+          : undefined;
       const init = {
         locationId: action.payload?.locationId ? String(action.payload.locationId) : undefined,
         timeOfDay: action.payload?.timeOfDay ? String(action.payload.timeOfDay) : undefined,
         description: action.payload?.description ? String(action.payload.description) : undefined,
-        duration: typeof action.payload?.duration === 'number' ? action.payload.duration : undefined,
+        duration: normalizedDuration,
       };
       return {
         ...acc,
@@ -146,6 +153,15 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
           patchPrompt(ElementType.CAMERA, 'camera');
           patchPrompt(ElementType.LIGHTING, 'lighting');
           patchPrompt(ElementType.AUDIO, 'audio');
+          if (typeof action.payload?.visualStyle === 'string' && action.payload.visualStyle.trim()) {
+            const v = String(action.payload.visualStyle).trim();
+            (newShot.elements as any)[ElementType.CAMERA] = {
+              ...(newShot.elements as any)[ElementType.CAMERA],
+              prompt: v,
+              status: 'manual',
+              metadata: { ...((newShot.elements as any)[ElementType.CAMERA]?.metadata || {}), videoPrompt: v },
+            };
+          }
           if (typeof action.payload?.videoPrompt === 'string') {
             const v = String(action.payload.videoPrompt || '').trim();
             if (v) {
@@ -156,8 +172,13 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
               };
             }
           }
-          if (Array.isArray(action.payload?.cast)) {
-            const cast = action.payload.cast
+          const castSource = Array.isArray(action.payload?.cast)
+            ? action.payload.cast
+            : Array.isArray(action.payload?.characterIds)
+              ? action.payload.characterIds.map((id: any) => ({ id: String(id || '') }))
+              : null;
+          if (castSource) {
+            const cast = castSource
               .map((c: any) => ({ id: String(c?.id || ''), activeLookId: c?.activeLookId ? String(c.activeLookId) : '' }))
               .filter((c: any) => c.id);
             (newShot.elements as any)[ElementType.CASTING] = {
