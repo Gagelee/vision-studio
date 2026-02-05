@@ -42,7 +42,7 @@ const ProfileEditor: React.FC<{
   value: ModelRuntimeSettings;
   onChange: (patch: Partial<ModelRuntimeSettings>) => void;
   showFunctionCalling?: boolean;
-}> = ({ title, value, onChange }) => {
+}> = ({ title, value, onChange, showFunctionCalling }) => {
   return (
     <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
       <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20">
