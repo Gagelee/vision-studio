@@ -1003,6 +1003,26 @@ export default function App() {
       }
     }
 
+    // Auto-generate look images when look descriptions are updated.
+    const updatedLooks: Array<{ characterId: string; lookId: string }> = [];
+    for (const a of mutationActions) {
+      if (a.type !== 'UPDATE_CHARACTER_LOOK') continue;
+      const payload = (a as any).payload || {};
+      const characterId = String(payload.characterId || '').trim();
+      const lookId = String(payload.lookId || '').trim();
+      const patch = payload.patch || {};
+      const hasVisualChange = typeof patch.description === 'string' || typeof patch.name === 'string';
+      if (characterId && lookId && hasVisualChange) updatedLooks.push({ characterId, lookId });
+    }
+    if (updatedLooks.length) {
+      const styleGuide = (storyAfterUpdates as any)?.styleGuide;
+      for (const { characterId, lookId } of updatedLooks) {
+        const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
+        const lk = ch?.looks?.find((x) => x.id === lookId);
+        if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk, styleGuide) });
+      }
+    }
+
     if (!generateActions.length && deduped.size === 0) return;
 
     for (const a of generateActions) {

@@ -2274,6 +2274,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   return { type, payload: { characterId, lookId, patch } };
                 }
               }
+              const characterId = String(p.characterId || p.parentId || selectedCharacterId || '').trim();
+              const lookId = String(p.lookId || p.id || '').trim();
+              if (characterId && lookId) {
+                const patch: any = p.patch && typeof p.patch === 'object' ? { ...p.patch } : {};
+                if (typeof p.name === 'string') patch.name = p.name;
+                if (typeof p.description === 'string') patch.description = p.description;
+                return { type, payload: { characterId, lookId, patch } };
+              }
               return { type, payload: p };
             }
           }
@@ -2284,6 +2292,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               const selType = String(selection?.type || '');
               const selSeqId = selType === 'sequence' ? String(selection?.id || '') : selType === 'shot' ? String(selection?.parentId || '') : '';
               return { type, payload: { shotId: String(p.id), sequenceId: selSeqId || String(p.sequenceId || ''), patch: { description: p.description } } };
+            }
+            return { type, payload: p };
+          }
+
+          if (type === 'UPDATE_CHARACTER' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            if (!p.characterId && typeof p.id === 'string') {
+              return { type, payload: { characterId: String(p.id), patch: { name: p.name, description: p.description, status: p.status } } };
             }
             return { type, payload: p };
           }
