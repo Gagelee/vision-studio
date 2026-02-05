@@ -35,6 +35,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const displayVersions = nonPlaceholderVersions.length ? nonPlaceholderVersions : allVersions;
   const activeVersion =
     displayVersions.find((v) => v.id === shot.activeVersionId) || displayVersions[displayVersions.length - 1] || null;
+  const isPlaceholderActive = String(activeVersion?.type || '') === 'placeholder';
   const [isHistoryOpen, setIsHistoryOpen] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
@@ -274,14 +275,21 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
-	                {activeVersion ? (
-	                    <img 
-	                        src={activeVersion.imageUrl} 
-	                        alt={`Shot ${shot.sequence} - Version ${activeVersion.id}`}
-	                        className="w-full h-full object-contain bg-black cursor-zoom-in"
-	                        onClick={() => activeVersion?.imageUrl && openLightbox({ url: activeVersion.imageUrl, title: `Shot #${shot.sequence}` })}
-	                    />
-	                ) : (
+                {activeVersion ? (
+                    isPlaceholderActive ? (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
+                        <MonitorPlay className="w-14 h-14 opacity-50" />
+                        <span>Placeholder</span>
+                      </div>
+                    ) : (
+                      <img 
+                          src={activeVersion.imageUrl} 
+                          alt={`Shot ${shot.sequence} - Version ${activeVersion.id}`}
+                          className="w-full h-full object-contain bg-black cursor-zoom-in"
+                          onClick={() => activeVersion?.imageUrl && openLightbox({ url: activeVersion.imageUrl, title: `Shot #${shot.sequence}` })}
+                      />
+                    )
+                ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
                         <MonitorPlay className="w-12 h-12 opacity-50" />
                         <span>No generated footage</span>
@@ -328,7 +336,9 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 <div className="p-3 rounded-full bg-zinc-900 group-hover:bg-indigo-500/20 transition-colors">
                     <RefreshCw className={`w-6 h-6 ${isGenerating ? 'animate-spin' : 'group-hover:animate-spin'}`} />
                 </div>
-                <span className="text-xs font-bold uppercase tracking-wide">{isGenerating ? 'Generating...' : 'Generate Variant'}</span>
+                <span className="text-xs font-bold uppercase tracking-wide">
+                  {isGenerating ? 'Generating...' : isPlaceholderActive ? 'Generate' : 'Generate Variant'}
+                </span>
             </button>
 
             {/* Version List */}
@@ -341,15 +351,21 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                         onClick={(e) => { e.stopPropagation(); handleVersionSelect(version.id); }}
                         className={`relative flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden border-2 cursor-pointer transition-all group shadow-lg ${isActive ? 'border-indigo-500 ring-4 ring-indigo-500/10' : 'border-zinc-800 hover:border-zinc-600'}`}
                     >
-	                        <img
-	                          src={version.imageUrl}
-	                          className="w-full h-full object-cover cursor-zoom-in"
-	                          loading="lazy"
-	                          onClick={(e) => {
-	                            e.stopPropagation();
-	                            openLightbox({ url: version.imageUrl, title: `Shot #${shot.sequence} (${version.id})` });
-	                          }}
-	                        />
+                        {String(version.type || '') === 'placeholder' ? (
+                          <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-600">
+                            <MonitorPlay className="w-8 h-8 opacity-60" />
+                          </div>
+                        ) : (
+                          <img
+                            src={version.imageUrl}
+                            className="w-full h-full object-cover cursor-zoom-in"
+                            loading="lazy"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openLightbox({ url: version.imageUrl, title: `Shot #${shot.sequence} (${version.id})` });
+                            }}
+                          />
+                        )}
                         
                         <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
                             v{versionNumber}
