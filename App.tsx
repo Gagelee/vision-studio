@@ -135,6 +135,37 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         sequences: acc.sequences.map((seq) => {
           if (seq.id !== sequenceId) return seq;
           const newShot = createBlankShot(acc, seq, init);
+          const patchPrompt = (el: ElementType, promptKey: string) => {
+            const val = action.payload?.[promptKey];
+            if (typeof val !== 'string') return;
+            const nextPrompt = String(val).trim();
+            if (!nextPrompt) return;
+            (newShot.elements as any)[el] = { ...(newShot.elements as any)[el], prompt: nextPrompt, status: 'manual' };
+          };
+          patchPrompt(ElementType.SCRIPT, 'script');
+          patchPrompt(ElementType.CAMERA, 'camera');
+          patchPrompt(ElementType.LIGHTING, 'lighting');
+          patchPrompt(ElementType.AUDIO, 'audio');
+          if (typeof action.payload?.videoPrompt === 'string') {
+            const v = String(action.payload.videoPrompt || '').trim();
+            if (v) {
+              (newShot.elements as any)[ElementType.CAMERA] = {
+                ...(newShot.elements as any)[ElementType.CAMERA],
+                metadata: { ...((newShot.elements as any)[ElementType.CAMERA]?.metadata || {}), videoPrompt: v },
+                status: 'manual',
+              };
+            }
+          }
+          if (Array.isArray(action.payload?.cast)) {
+            const cast = action.payload.cast
+              .map((c: any) => ({ id: String(c?.id || ''), activeLookId: c?.activeLookId ? String(c.activeLookId) : '' }))
+              .filter((c: any) => c.id);
+            (newShot.elements as any)[ElementType.CASTING] = {
+              ...(newShot.elements as any)[ElementType.CASTING],
+              status: 'manual',
+              metadata: { ...((newShot.elements as any)[ElementType.CASTING]?.metadata || {}), characters: cast },
+            };
+          }
           const shots = seq.shots.slice();
           let insertAt = shots.length;
           if (afterShotId) {

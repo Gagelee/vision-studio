@@ -325,6 +325,24 @@ export const buildTeamDirectMergePrompt = (args: {
     `Rules:\n` +
     `- Use IDs that exist in the Story JSON.\n` +
     `- Keep actions 0-6.\n` +
+    `- Do NOT output unknown payload fields. If you need to change environment style, use UPDATE_LOCATION.\n` +
+    `- When creating shots, prefer a single well-specified shot rather than many vague ones.\n` +
+    `- CREATE_SHOT payload schema (recommended):\n` +
+    `  {\n` +
+    `    "sequenceId": string,\n` +
+    `    "afterShotId"?: string,\n` +
+    `    "locationId"?: string,\n` +
+    `    "timeOfDay"?: string,\n` +
+    `    "duration"?: number,\n` +
+    `    "description"?: string,\n` +
+    `    "script"?: string,\n` +
+    `    "camera"?: string,\n` +
+    `    "lighting"?: string,\n` +
+    `    "audio"?: string,\n` +
+    `    "videoPrompt"?: string,\n` +
+    `    "cast"?: Array<{ \"id\": string, \"activeLookId\"?: string }>\n` +
+    `  }\n` +
+    `- If the user asks to generate storyboard images / 出图 / 渲染, and you create or update shots, include GENERATE_PROJECT_ASSETS with payload.scope=\"shots\" (so newly-created shot IDs don't matter).\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +
     `Directive: ${directive}\n` +
