@@ -60,7 +60,7 @@ function createBlankShot(
   const thumb = IMAGES.SHOT_WIDE;
 
   return {
-    id: `shot-${now}`,
+    id: `shot-${now}-${Math.random().toString(16).slice(2, 8)}`,
     sequence: shotNumber,
     locationId: init?.locationId || fallbackLocationId,
     timeOfDay: init?.timeOfDay || 'Day',
@@ -1330,6 +1330,12 @@ export default function App() {
 		      const projectId = workspace.activeProjectId;
         const selectionSnapshot = selection;
         setIsDirectorThinking(true);
+        addDebugEvent({
+          level: 'info',
+          scope: 'agent.direct',
+          message: 'Request',
+          data: { message: msg, selection: selectionSnapshot, storyId: activeStory.id },
+        });
         const useStreaming = Boolean((aiSettings.direct as any)?.useStreaming);
         if (useStreaming) {
           setDirectorStream({ status: 'Starting…', steps: [] });
@@ -1409,6 +1415,7 @@ export default function App() {
               useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
             });
           }
+          addDebugEvent({ level: 'info', scope: 'agent.direct', message: 'Response', data: res });
         } catch (e) {
           const errMsg = isAgentApiError(e)
             ? String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message)
