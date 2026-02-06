@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:homework": "bash scripts/dev-homework-gemini.sh",
     "build": "vite build",
     "test": "vitest run",
     "preview": "vite preview",

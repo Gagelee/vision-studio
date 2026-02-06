@@ -525,7 +525,7 @@ const parseLooseJsonObject = (raw: string): any | null => {
 };
 
 const resolveGeminiBaseUrl = (env?: Record<string, string>) => {
-  const raw = String(env?.COMPASS_GATEWAY_URL || env?.GATEWAY_URL || env?.GEMINI_BASE_URL || '').trim();
+  const raw = String(env?.GEMINI_BASE_URL || '').trim();
   if (raw) return raw.replace(/\/$/, '');
   return 'https://generativelanguage.googleapis.com/v1beta';
 };
@@ -918,7 +918,7 @@ const getProviderCandidates = (preferred: string, env: Record<string, string>): 
   const unique = [pref, ...all].filter(Boolean) as ModelProvider[];
 
   const hasKey = (p: ModelProvider) => {
-    if (p === 'gemini') return Boolean(env.COMPASS_API_KEY || env.GEMINI_API_KEY);
+    if (p === 'gemini') return Boolean(env.GEMINI_API_KEY);
     if (p === 'openai') return Boolean(env.OPENAI_API_KEY);
     if (p === 'deepseek') return Boolean(env.DEEPSEEK_API_KEY);
     return false;
@@ -1143,10 +1143,8 @@ const callGeminiImage = async (args: {
 };
 
 const agentApiPlugin = (env: Record<string, string>): Plugin => {
-  // Support calling Gemini through internal gateways (e.g. Compass) by setting:
-  // - COMPASS_API_KEY / COMPASS_GATEWAY_URL (or GATEWAY_URL)
-  // Falls back to direct Google Gemini via GEMINI_API_KEY.
-  const geminiApiKey = String(env.COMPASS_API_KEY || env.GEMINI_API_KEY || '').trim();
+  // Standard Google Gemini API key.
+  const geminiApiKey = String(env.GEMINI_API_KEY || '').trim();
   const geminiBaseUrl = resolveGeminiBaseUrl(env);
 
   const applyRoutes = (middlewares: any) => {
