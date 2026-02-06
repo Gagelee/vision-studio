@@ -63,6 +63,7 @@ export const scaffoldProjectStream = async (
       model: req.settings.model,
       temperature: req.settings.temperature,
       maxOutputTokens: req.settings.maxOutputTokens,
+      useFunctionCalling: Boolean((req.settings as any)?.useFunctionCalling),
     },
     plannerSettings: req.plannerSettings
       ? {
@@ -271,6 +272,7 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
           model: req.settings.model,
           temperature: req.settings.temperature,
           maxOutputTokens: req.settings.maxOutputTokens,
+          useFunctionCalling: Boolean((req.settings as any)?.useFunctionCalling),
         },
         plannerSettings: req.plannerSettings
           ? {

@@ -36,6 +36,7 @@ export const buildShotKeyframePrompt = (args: {
     styleGuide ? `Style guide (must follow): ${styleGuide}` : '',
     'This must look like a keyframe from a movie scene (mid-action), not a poster, not concept art, not a posed lineup.',
     'Follow reference images strictly for identity + environment consistency.',
+    'Output format must be a single cinematic frame. Even if references are model sheets/contact sheets/multi-panel boards (e.g., 2x2), extract identity cues only and DO NOT reproduce collage, split panels, grids, or tiled layouts.',
     'No text, subtitles, watermarks, or logos.',
   ].filter(Boolean);
 

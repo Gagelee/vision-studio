@@ -941,55 +941,129 @@ const normalizeGeminiImageModel = (model: string) => {
   return m;
 };
 
-const summarizeStoryForPrompt = (story: any) => {
+const summarizeStoryForPrompt = (story: any, selection?: any) => {
   if (!story || typeof story !== 'object') return null;
   const trim = (v: any, n: number) => String(v || '').slice(0, n);
   const safeArr = (v: any) => (Array.isArray(v) ? v : []);
 
-  const locations = safeArr(story.locations).slice(0, 30).map((l: any) => ({
+  const locations = safeArr(story.locations).slice(0, 12).map((l: any) => ({
     id: String(l?.id || ''),
-    name: trim(l?.name, 60),
-    description: trim(l?.description, 120),
-    visualStyle: trim(l?.visualStyle, 80),
+    name: trim(l?.name, 48),
+    description: trim(l?.description, 90),
   }));
 
-  const characters = safeArr(story.characters).slice(0, 30).map((c: any) => ({
+  const characters = safeArr(story.characters).slice(0, 12).map((c: any) => ({
     id: String(c?.id || ''),
-    name: trim(c?.name, 60),
-    description: trim(c?.description, 140),
+    name: trim(c?.name, 48),
+    description: trim(c?.description, 100),
     looks: safeArr(c?.looks)
-      .slice(0, 10)
-      .map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 60), description: trim(lk?.description, 140) })),
+      .slice(0, 4)
+      .map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 40), description: trim(lk?.description, 80) })),
   }));
 
-  const sequences = safeArr(story.sequences).slice(0, 20).map((s: any) => ({
+  const sequences = safeArr(story.sequences).slice(0, 8).map((s: any) => ({
     id: String(s?.id || ''),
-    title: trim(s?.title, 80),
+    title: trim(s?.title, 60),
     shots: safeArr(s?.shots)
-      .slice(0, 20)
+      .slice(0, 8)
       .map((sh: any) => ({
         id: String(sh?.id || ''),
         sequence: Number(sh?.sequence || 0),
         locationId: String(sh?.locationId || ''),
-        description: trim(sh?.description, 120),
+        timeOfDay: trim(sh?.timeOfDay, 20),
+        description: trim(sh?.description, 80),
       })),
   }));
 
+  const selType = String(selection?.type || '');
+  const selId = String(selection?.id || '');
+  const selParentId = String(selection?.parentId || '');
+  let selectedContext: any = undefined;
+  if (selType === 'shot' && selId) {
+    const seq = safeArr(story.sequences).find((s: any) => String(s?.id || '') === selParentId);
+    const shot = safeArr(seq?.shots).find((sh: any) => String(sh?.id || '') === selId);
+    selectedContext = shot
+      ? {
+          type: 'shot',
+          sequenceId: String(seq?.id || ''),
+          shot: {
+            id: String(shot?.id || ''),
+            locationId: String(shot?.locationId || ''),
+            timeOfDay: trim(shot?.timeOfDay, 20),
+            description: trim(shot?.description, 140),
+          },
+        }
+      : undefined;
+  } else if (selType === 'character' && selId) {
+    const ch = safeArr(story.characters).find((c: any) => String(c?.id || '') === selId);
+    selectedContext = ch
+      ? {
+          type: 'character',
+          character: {
+            id: String(ch?.id || ''),
+            name: trim(ch?.name, 48),
+            description: trim(ch?.description, 120),
+            looks: safeArr(ch?.looks).slice(0, 8).map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 40) })),
+          },
+        }
+      : undefined;
+  } else if (selType === 'location' && selId) {
+    const loc = safeArr(story.locations).find((l: any) => String(l?.id || '') === selId);
+    selectedContext = loc
+      ? {
+          type: 'location',
+          location: {
+            id: String(loc?.id || ''),
+            name: trim(loc?.name, 48),
+            description: trim(loc?.description, 120),
+          },
+        }
+      : undefined;
+  }
+
   return {
     id: String(story.id || ''),
-    title: trim(story.title, 120),
-    logline: trim(story.logline, 220),
-    intent: trim(story.intent, 220),
+    title: trim(story.title, 90),
+    logline: trim(story.logline, 140),
+    intent: trim(story.intent, 140),
     aspectRatio: String(story.aspectRatio || ''),
     counts: {
       locations: safeArr(story.locations).length,
       characters: safeArr(story.characters).length,
       sequences: safeArr(story.sequences).length,
     },
+    selectedContext,
     locations,
     characters,
     sequences,
   };
+};
+
+const summarizeStoryForSpecialistPrompt = (summary: any, agent: string) => {
+  if (!summary || typeof summary !== 'object') return summary;
+  const base = {
+    id: summary.id,
+    title: summary.title,
+    logline: summary.logline,
+    intent: summary.intent,
+    aspectRatio: summary.aspectRatio,
+    counts: summary.counts,
+    selectedContext: summary.selectedContext,
+  };
+
+  if (agent === 'script_writer') {
+    return { ...base, characters: summary.characters, sequences: summary.sequences };
+  }
+  if (agent === 'casting_director') {
+    return { ...base, characters: summary.characters };
+  }
+  if (agent === 'environment_director') {
+    return { ...base, locations: summary.locations, sequences: summary.sequences };
+  }
+  if (agent === 'camera_art' || agent === 'editor') {
+    return { ...base, locations: summary.locations, characters: summary.characters, sequences: summary.sequences };
+  }
+  return summary;
 };
 
 const callGeminiImage = async (args: {
@@ -2962,32 +3036,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           const attemptedProviders: string[] = [];
           let lastError: any = null;
           const selectionJson = JSON.stringify(selection || {});
-          const storyJson = story ? JSON.stringify(summarizeStoryForPrompt(story)) : '{}';
-          let streamedReply = '';
-          const replyPrompt =
-            `You are the DIRECTOR. Reply to the user in 1-3 concise sentences. No JSON.\n` +
-            `Directive: ${message}\n` +
-            `Selection: ${selectionJson}\n` +
-            `Story: ${storyJson}\n`;
-          if (stream && provider === 'gemini' && geminiApiKey) {
-            emit?.('status', { message: 'Streaming reply…' });
-          }
-          const replyPromise =
-            stream && provider === 'gemini' && geminiApiKey
-              ? callGeminiStreamText({
-                  apiKey: geminiApiKey,
-                  model,
-                  temperature: Math.min(0.8, Math.max(0.2, temperature)),
-                  prompt: replyPrompt,
-                  env,
-                  onDelta: (delta) => emit?.('reply_delta', { delta }),
-                })
-                  .then((text) => {
-                    streamedReply = String(text || '').trim();
-                    if (streamedReply) emit?.('reply_done', { text: streamedReply });
-                  })
-                  .catch(() => {})
-              : Promise.resolve();
+          const storySummary = story ? summarizeStoryForPrompt(story, selection) : null;
+          const storyJson = storySummary ? JSON.stringify(storySummary) : '{}';
           const allowedActionsText = [
             'NAVIGATE',
             'UPDATE_STORY',
@@ -3013,9 +3063,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             'GENERATE_LOCATION_PREVIEW',
             'GENERATE_CHARACTER_AVATAR',
             'GENERATE_CHARACTER_LOOK',
-          ]
-            .map((t) => `- ${t}`)
-            .join('\n');
+          ].join(', ');
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
@@ -3153,11 +3201,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 for (const a of uniqAgents.slice(0, 4)) {
                   const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
                     try {
+                      const specialistStoryJson = JSON.stringify(
+                        summarizeStoryForSpecialistPrompt(storySummary, a as string) || storySummary || {},
+                      );
                       const prompt = buildTeamDirectSpecialistPrompt({
                         agent: a as any,
                         focus,
                         selectionJson,
-                        storyJson,
+                        storyJson: specialistStoryJson,
                         directive: message,
                       });
                       const out = useFunctionCalling
@@ -3197,7 +3248,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                               ms: Date.now() - started,
                               promptId: meta?.id,
                               promptVersion: meta?.version,
-                              promptPreview: String(prompt || '').slice(0, 800),
+                              promptPreview: String(prompt || '').slice(0, 600),
                               responsePreview: JSON.stringify(toolOut?.args || {}).slice(0, 1600),
                               toolCall: toolOut?.name,
                             });
@@ -3274,15 +3325,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       })()
                     : await call('director.merge', mergePrompt, GEMINI_SCHEMA.directorFinal);
 
-                const actions = maybeInjectStyleGuide(normalizeActions(final?.actions), message, story);
-                await replyPromise;
-                const taskCheck = {
+	                const actions = maybeInjectStyleGuide(normalizeActions(final?.actions), message, story);
+	                const taskCheck = {
                   requested: uniqAgents,
                   errors: specialistErrors,
                   empty: uniqAgents.filter((a) => !specialistErrors.find((x) => x.agent === a) && (specialistResultsByAgent[a]?.suggestedActions || []).length === 0),
                 };
                 const response = {
-	                  reply: streamedReply || String(final?.reply || planner?.reply || 'OK'),
+		                  reply: String(final?.reply || planner?.reply || 'OK'),
 	                  plan: {
 	                    id: mkId('plan'),
 	                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
@@ -3385,14 +3435,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                      storyJson: story ? storyJson : undefined,
 		                      directive: message,
 		                    }),
-		                  ).slice(0, 800),
+		                  ).slice(0, 600),
 			                  responsePreview: JSON.stringify(output).slice(0, 1600),
 			                  multiAgentError: e?.message || String(e),
 			                });
 			                const actions = maybeInjectStyleGuide(normalizeActions(output?.actions), message, story);
-			                await replyPromise;
 			                const response = {
-			                  reply: streamedReply || String(output?.reply || 'OK'),
+			                  reply: String(output?.reply || 'OK'),
                   plan: {
                     id: mkId('plan'),
                     summary: 'Generated structured actions (Gemini, single-call fallback).',
@@ -3482,13 +3531,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 for (const a of uniqAgents.slice(0, 4)) {
                   const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
                   emit?.('status', { message: `Consulting ${a}…` });
+                  const specialistStoryJson = JSON.stringify(
+                    summarizeStoryForSpecialistPrompt(storySummary, a as string) || storySummary || {},
+                  );
                   const out = await call(
                     a,
                     buildTeamDirectSpecialistPrompt({
                       agent: a as any,
                       focus,
                       selectionJson,
-                      storyJson,
+                      storyJson: specialistStoryJson,
                       directive: message,
                     }),
                   );
@@ -3652,13 +3704,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 const specialistResultsByAgent: Record<string, any> = {};
                 for (const a of uniqAgents.slice(0, 4)) {
                   const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
+                  const specialistStoryJson = JSON.stringify(
+                    summarizeStoryForSpecialistPrompt(storySummary, a as string) || storySummary || {},
+                  );
                   const out = await call(
                     a,
                     buildTeamDirectSpecialistPrompt({
                       agent: a as any,
                       focus,
                       selectionJson,
-                      storyJson,
+                      storyJson: specialistStoryJson,
                       directive: message,
                     }),
                   );

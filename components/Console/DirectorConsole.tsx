@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, ArrowUp, Zap, Terminal, ChevronUp, ChevronDown, Cpu, MessageSquare, Mic, X, Hash } from 'lucide-react';
+import { Sparkles, ArrowUp, ChevronUp, ChevronDown, Cpu, ImagePlus } from 'lucide-react';
 import { AgentLogEntry } from '../../types';
 
 interface DirectorConsoleProps {
@@ -9,7 +9,7 @@ interface DirectorConsoleProps {
     id: string;
   };
   history: AgentLogEntry[];
-  onSendMessage: (message: string) => void;
+  onSendMessage: (message: string, attachments?: File[]) => void;
   isThinking?: boolean;
   stream?: {
     status?: string;
@@ -17,12 +17,26 @@ interface DirectorConsoleProps {
     steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
   };
   variant?: 'default' | 'floating';
+  workflowMode?: 'auto' | 'interaction';
+  onWorkflowModeChange?: (mode: 'auto' | 'interaction') => void;
 }
 
-export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, history, onSendMessage, isThinking = false, stream, variant = 'default' }) => {
+export const DirectorConsole: React.FC<DirectorConsoleProps> = ({
+  context,
+  history,
+  onSendMessage,
+  isThinking = false,
+  stream,
+  variant = 'default',
+  workflowMode = 'auto',
+  onWorkflowModeChange,
+}) => {
   const [input, setInput] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const [attachments, setAttachments] = useState<File[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const maxAttachments = 4;
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -33,15 +47,25 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() && attachments.length === 0) return;
     
-    onSendMessage(input);
+    onSendMessage(input, attachments);
     setInput('');
+    setAttachments([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setShowHistory(true); // Auto-open history on send
   };
 
   const handleChipClick = (text: string) => {
     setInput(text);
+  };
+
+  const handleAttach = (files: FileList | null) => {
+    if (!files?.length) return;
+    const picked = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (!picked.length) return;
+    setAttachments((prev) => [...prev, ...picked].slice(0, maxAttachments));
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // Dynamic config
@@ -81,6 +105,33 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                 <div className={`p-3 ${isThinking ? 'animate-pulse text-amber-500' : 'text-white/50'}`}>
                     <Sparkles className="w-5 h-5" />
                 </div>
+                <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => handleAttach(e.target.files)}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                    className="p-2 text-white/60 hover:text-white disabled:opacity-30"
+                    disabled={attachments.length >= maxAttachments}
+                    title="Attach images"
+                >
+                    <ImagePlus className="w-4 h-4" />
+                </button>
+                {onWorkflowModeChange && (
+                  <button
+                    type="button"
+                    onClick={() => onWorkflowModeChange(workflowMode === 'interaction' ? 'auto' : 'interaction')}
+                    className="px-2 py-1 rounded-md border border-white/15 text-[10px] text-white/70 hover:text-white"
+                    title="Toggle workflow mode"
+                  >
+                    {workflowMode === 'interaction' ? 'Interaction' : 'Auto'}
+                  </button>
+                )}
                 <input 
                     autoFocus
                     className="flex-1 bg-transparent text-white placeholder-white/30 text-lg font-medium focus:outline-none px-2"
@@ -88,10 +139,19 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                 />
-                <button type="submit" disabled={!input} className="p-2 bg-white text-black rounded-xl hover:opacity-90 disabled:opacity-0 transition-opacity">
+                <button
+                  type="submit"
+                  disabled={(!input.trim() && attachments.length === 0) || isThinking}
+                  className="p-2 bg-white text-black rounded-xl hover:opacity-90 disabled:opacity-0 transition-opacity"
+                >
                     <ArrowUp className="w-5 h-5" />
                 </button>
            </form>
+           {attachments.length > 0 && (
+            <div className="px-3 pb-2 text-[11px] text-white/70">
+              Attached: {attachments.map((f) => f.name).join(', ')}
+            </div>
+           )}
         </div>
       );
   }
@@ -233,6 +293,20 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                 <span className={config.accent}>{context.type} Context</span>
                 <span className="opacity-50">|</span>
                 <span className="max-w-[150px] truncate">{context.label}</span>
+                {onWorkflowModeChange && (
+                  <button
+                    type="button"
+                    onClick={() => onWorkflowModeChange(workflowMode === 'interaction' ? 'auto' : 'interaction')}
+                    className={`ml-2 px-2 py-0.5 rounded-md border text-[10px] font-mono ${
+                      workflowMode === 'interaction'
+                        ? 'bg-amber-500/20 border-amber-500/30 text-amber-300'
+                        : 'bg-zinc-800 border-zinc-700 text-zinc-300'
+                    }`}
+                    title="Toggle workflow mode"
+                  >
+                    {workflowMode}
+                  </button>
+                )}
                 {!showHistory && history.length > 0 && (
                     <button onClick={() => setShowHistory(true)} className="ml-2 hover:text-white text-zinc-400 transition-colors">
                         <ChevronUp className="w-3 h-3" />
@@ -252,6 +326,14 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                     {isThinking ? <Cpu className="w-5 h-5" /> : <Sparkles className="w-5 h-5" />}
                 </div>
                 <form onSubmit={handleSubmit} className="flex-1">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => handleAttach(e.target.files)}
+                    />
                     <input 
                         className="w-full bg-transparent py-4 text-sm font-medium text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 focus:outline-none"
                         placeholder={config.placeholder}
@@ -260,6 +342,15 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                     />
                 </form>
                 <div className="flex items-center gap-2 pr-2">
+                     <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={attachments.length >= maxAttachments || isThinking}
+                        className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-500 hover:text-indigo-500 disabled:opacity-30"
+                        title="Attach images"
+                     >
+                        <ImagePlus className="w-4 h-4" />
+                     </button>
                      {!input && (
                         <div className="hidden md:flex items-center gap-1.5">
                             {config.chips.map(chip => (
@@ -275,7 +366,7 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                      )}
                      <div className="w-px h-5 bg-zinc-200 dark:bg-zinc-800 mx-1"></div>
                      <button 
-                        disabled={!input || isThinking}
+                        disabled={(!input.trim() && attachments.length === 0) || isThinking}
                         onClick={handleSubmit}
                         className="p-2 bg-zinc-900 dark:bg-white text-white dark:text-black rounded-lg hover:opacity-90 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
                      >
@@ -283,6 +374,21 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({ context, histo
                      </button>
                 </div>
             </div>
+            {attachments.length > 0 && (
+                <div className="px-4 pb-3 flex flex-wrap gap-2">
+                    {attachments.map((f, idx) => (
+                      <button
+                        key={`${f.name}-${idx}`}
+                        type="button"
+                        onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                        className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-[10px] text-zinc-600 dark:text-zinc-300"
+                        title="Remove attachment"
+                      >
+                        {f.name}
+                      </button>
+                    ))}
+                </div>
+            )}
             {isThinking && stream?.status && !showHistory && (
                 <div className="px-4 pb-3 text-[11px] text-zinc-500 dark:text-zinc-400">
                     {stream.status}

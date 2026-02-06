@@ -244,7 +244,36 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
   }
 
   const wantsGenerate = includesAny(msg, ['generate', 'render', 'asset', 'assets', 'image', 'images', '出图', '生成', '渲染', '资产', '缩略图']);
-  if (wantsGenerate) {
+  const wantsKvProposalGenerate = includesAny(msg, [
+    'update kv',
+    'regenerate kv',
+    'generate kv',
+    'master kv',
+    'key visual',
+    '主kv',
+    '主视觉',
+  ]);
+  const wantsKvAccept = includesAny(msg, ['accept kv', 'accept', '采用', '确认', '同意', '更新资产']);
+  const wantsKvDiscard = includesAny(msg, ['discard kv', 'discard', 'reject', '拒绝', '放弃', '丢弃']);
+  const wantsKvRetry = includesAny(msg, ['retry kv', 'retry', '重新生成kv', '重试kv', '重试']);
+
+  if (wantsKvRetry) {
+    actions.push({ type: 'DISCARD_KV_PROPOSAL', payload: {} as any });
+    actions.push({ type: 'GENERATE_MASTER_KV_PROPOSAL', payload: { reason: 'retry' } as any });
+    notes.push('kv proposal: retry');
+  } else if (wantsKvAccept) {
+    actions.push({ type: 'ACCEPT_KV_PROPOSAL', payload: { updateAssets: true } as any });
+    notes.push('kv proposal: accept');
+  } else if (wantsKvDiscard) {
+    actions.push({ type: 'DISCARD_KV_PROPOSAL', payload: {} as any });
+    notes.push('kv proposal: discard');
+  } else if (wantsKvProposalGenerate) {
+    actions.push({ type: 'GENERATE_MASTER_KV_PROPOSAL', payload: { reason: 'director_request' } as any });
+    notes.push('kv proposal: generate');
+  }
+
+  const hasKvProposalControl = wantsKvProposalGenerate || wantsKvAccept || wantsKvDiscard || wantsKvRetry;
+  if (wantsGenerate && !hasKvProposalControl) {
     if (req.selection.type === 'shot') {
       const shotId = req.selection.id;
       const sequenceId = req.selection.parentId || '';

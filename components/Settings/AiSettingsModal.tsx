@@ -42,7 +42,8 @@ const ProfileEditor: React.FC<{
   value: ModelRuntimeSettings;
   onChange: (patch: Partial<ModelRuntimeSettings>) => void;
   showFunctionCalling?: boolean;
-}> = ({ title, value, onChange, showFunctionCalling }) => {
+  showWorkflowMode?: boolean;
+}> = ({ title, value, onChange, showFunctionCalling, showWorkflowMode }) => {
   return (
     <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
       <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20">
@@ -108,6 +109,20 @@ const ProfileEditor: React.FC<{
               placeholder="(optional) e.g. http://localhost:8787"
             />
           </label>
+
+          {Boolean(showWorkflowMode) && (
+            <label className="space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Workflow Mode</div>
+              <select
+                value={String((value as any).workflowMode || 'auto')}
+                onChange={(e) => onChange({ workflowMode: e.target.value as any })}
+                className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-sm"
+              >
+                <option value="auto">Auto (single-turn execute)</option>
+                <option value="interaction">Interaction (confirm before generate)</option>
+              </select>
+            </label>
+          )}
         </div>
 
         <div className="flex items-center gap-6 pt-2">
@@ -220,6 +235,7 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ settings, onSa
             value={draft.direct}
             onChange={(patch) => setDraft((prev) => updateProfile(prev, 'direct', patch))}
             showFunctionCalling
+            showWorkflowMode
           />
 
           <ProfileEditor
