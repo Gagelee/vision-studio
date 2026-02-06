@@ -1,5 +1,5 @@
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle, Info, X } from 'lucide-react';
 import { Sidebar } from './components/Layout/Sidebar';
 import { ScriptEditorModal } from './components/Stage/ScriptEditorModal';
@@ -64,6 +64,88 @@ interface PendingInteractionGeneration {
 }
 
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
+const STALE_GENERATION_MAX_AGE_MS = 5 * 60_000;
+
+const recoverAssetStateIfStale = (state: any, now: number, fallbackTs: number): { next: any; fixed: boolean } => {
+  if (!state) return { next: state, fixed: false };
+  const status = String(state.status || '').toLowerCase();
+  if (status !== 'queued' && status !== 'running') return { next: state, fixed: false };
+  const ts = typeof state.lastAttemptAt === 'number' ? state.lastAttemptAt : fallbackTs;
+  if (!ts || now - ts < STALE_GENERATION_MAX_AGE_MS) return { next: state, fixed: false };
+  return {
+    next: {
+      ...state,
+      status: 'error',
+      lastAttemptAt: ts,
+      lastError: String(state.lastError || 'Recovered from stale generation state. Please retry generation.'),
+    },
+    fixed: true,
+  };
+};
+
+const recoverStoryStaleGenerationStates = (story: Story, now: number): { next: Story; fixedCount: number } => {
+  const fallbackTs =
+    (typeof story.updatedAt === 'number' && story.updatedAt) ||
+    (typeof story.createdAt === 'number' && story.createdAt) ||
+    now;
+  let fixedCount = 0;
+
+  const master = recoverAssetStateIfStale((story as any).masterKvState, now, fallbackTs);
+  if (master.fixed) fixedCount += 1;
+
+  const locations = (story.locations || []).map((loc) => {
+    const rec = recoverAssetStateIfStale((loc as any).assetState, now, fallbackTs);
+    if (rec.fixed) fixedCount += 1;
+    return rec.fixed ? { ...loc, assetState: rec.next } : loc;
+  });
+
+  const characters = (story.characters || []).map((ch) => {
+    const rec = recoverAssetStateIfStale((ch as any).assetState, now, fallbackTs);
+    if (rec.fixed) fixedCount += 1;
+    const looks = (ch.looks || []).map((lk) => {
+      const lookRec = recoverAssetStateIfStale((lk as any).assetState, now, fallbackTs);
+      if (lookRec.fixed) fixedCount += 1;
+      return lookRec.fixed ? { ...lk, assetState: lookRec.next } : lk;
+    });
+    if (rec.fixed || looks !== ch.looks) return { ...ch, assetState: rec.next, looks };
+    return ch;
+  });
+
+  const sequences = (story.sequences || []).map((seq) => {
+    const shots = (seq.shots || []).map((shot) => {
+      const rec = recoverAssetStateIfStale((shot as any).assetState, now, fallbackTs);
+      const shotTs =
+        (typeof (shot as any)?.assetState?.lastAttemptAt === 'number' && (shot as any).assetState.lastAttemptAt) || fallbackTs;
+      const staleAi =
+        (shot.aiState === 'rendering' || shot.aiState === 'thinking') && now - shotTs >= STALE_GENERATION_MAX_AGE_MS;
+      if (rec.fixed || staleAi) {
+        if (rec.fixed) fixedCount += 1;
+        if (staleAi) fixedCount += 1;
+        return {
+          ...shot,
+          aiState: staleAi ? 'idle' : shot.aiState,
+          aiPrompt: staleAi ? '' : shot.aiPrompt,
+          assetState: rec.fixed ? rec.next : shot.assetState,
+        };
+      }
+      return shot;
+    });
+    return shots !== seq.shots ? { ...seq, shots } : seq;
+  });
+
+  if (fixedCount === 0) return { next: story, fixedCount: 0 };
+  return {
+    next: {
+      ...story,
+      masterKvState: master.fixed ? master.next : (story as any).masterKvState,
+      locations,
+      characters,
+      sequences,
+      updatedAt: now,
+    },
+    fixedCount,
+  };
+};
 
 function renumberShots(shots: Shot[]): Shot[] {
   return shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
@@ -632,6 +714,7 @@ export default function App() {
     steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
   }>(null);
   const [pendingInteractionGeneration, setPendingInteractionGeneration] = useState<PendingInteractionGeneration | null>(null);
+  const staleRecoveryDoneRef = useRef(false);
 
   const activeStory = useMemo<Story | null>(() => {
     if (!workspace.activeProjectId) return null;
@@ -666,6 +749,30 @@ export default function App() {
   useEffect(() => {
     saveAiSettings(aiSettings);
   }, [aiSettings]);
+
+  useEffect(() => {
+    if (staleRecoveryDoneRef.current) return;
+    staleRecoveryDoneRef.current = true;
+    if (!Array.isArray(workspace.projects) || workspace.projects.length === 0) return;
+    const now = Date.now();
+    let recovered = 0;
+    let changed = false;
+    const nextProjects = workspace.projects.map((p) => {
+      const r = recoverStoryStaleGenerationStates(p, now);
+      if (r.fixedCount > 0) {
+        changed = true;
+        recovered += r.fixedCount;
+        return r.next;
+      }
+      return p;
+    });
+    if (changed) {
+      setWorkspace((prev) => ({ ...prev, projects: nextProjects }));
+    }
+    if (recovered > 0) {
+      setTimeout(() => addToast(`Recovered ${recovered} stale generation states.`, 'info'), 0);
+    }
+  }, []);
 
   useEffect(() => {
     if (screen === 'project' && !workspace.activeProjectId) setScreen('library');

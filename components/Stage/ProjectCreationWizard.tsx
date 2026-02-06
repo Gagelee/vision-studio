@@ -79,9 +79,13 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const [assetErrors, setAssetErrors] = useState(0);
   const [assetCurrent, setAssetCurrent] = useState<string>('');
   const [scaffoldCurrent, setScaffoldCurrent] = useState<string>('');
+  const [assetStartAt, setAssetStartAt] = useState<number>(0);
+  const [skipArmed, setSkipArmed] = useState(false);
   const lastScaffoldRef = useRef<Awaited<ReturnType<typeof scaffoldProjectWithSettings>> | null>(null);
   const lastScaffoldArgsRef = useRef<{ intent: string; ratio: AspectRatio } | null>(null);
   const storyRef = useRef<Story | null>(null);
+  const completedRef = useRef(false);
+  const stopUiUpdatesRef = useRef(false);
   const preflightFileRef = useRef<HTMLInputElement | null>(null);
   const preflightMessagesRef = useRef<HTMLDivElement | null>(null);
 
@@ -120,6 +124,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     setAssetDone(0);
     setAssetErrors(0);
     setAssetCurrent('');
+    setAssetStartAt(0);
+    setSkipArmed(false);
     setScaffoldCurrent('');
     setIsPreflightOpen(false);
     setPreflightInput('');
@@ -135,6 +141,16 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     storyRef.current = null;
     lastScaffoldRef.current = null;
     lastScaffoldArgsRef.current = null;
+    completedRef.current = false;
+    stopUiUpdatesRef.current = false;
+  };
+
+  const finishCreation = (project: Story, planArg: AgentPlan, debug?: any) => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    stopUiUpdatesRef.current = true;
+    setIsProcessing(false);
+    onComplete(project, planArg, debug);
   };
 
   const readReferenceFiles = async (files: FileList | null) => {
@@ -331,12 +347,15 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 
   const runAssets = async (res: Awaited<ReturnType<typeof scaffoldProjectWithSettings>>) => {
     // Auto-generate assets during creation so the progress UI is honest and users understand the wait.
+    const ASSET_STAGE_TIMEOUT_MS = 6 * 60_000;
     let total = 0;
     let done = 0;
     let errors = 0;
 
     if (aiSettings.image.provider !== 'mock') {
       setPhase('assets');
+      setAssetStartAt(Date.now());
+      setSkipArmed(false);
       const jobs = buildAssetJobs(res.story, 'all');
       total = jobs.length;
       setAssetTotal(jobs.length);
@@ -344,7 +363,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
       if (jobs.length > 0) {
         storyRef.current = jobs.reduce((acc, job) => applyAssetQueued(acc, job), storyRef.current || res.story);
         if (storyRef.current) onDraftProject?.(storyRef.current);
-	        await executeAssetJobs({
+          const assetExec = executeAssetJobs({
 	          jobs,
 	          settings: aiSettings.image,
 	          aspectRatio: res.story.aspectRatio,
@@ -353,6 +372,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	          maxAttempts: 3,
 	          stopAfterMasterKvFailure: false,
 		          onEvent: (ev) => {
+                if (stopUiUpdatesRef.current) return;
 		            const currentStory = storyRef.current || res.story;
 		            if (ev.type === 'start') {
 		              storyRef.current = applyAssetStart(currentStory, ev.job);
@@ -387,11 +407,23 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
               if (storyRef.current) onDraftProject?.(storyRef.current);
 		          },
 		        });
-		      }
+          const race = await Promise.race([
+            assetExec.then(() => 'done' as const),
+            new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), ASSET_STAGE_TIMEOUT_MS)),
+          ]);
+          if (race === 'timeout') {
+            const partial = storyRef.current || res.story;
+            finishCreation(partial, res.plan, {
+              ...res.debug,
+              assets: { total, done, errors, timedOut: true, timeoutMs: ASSET_STAGE_TIMEOUT_MS },
+            });
+            return;
+          }
+	      }
     }
 
     const finalStory = storyRef.current || res.story;
-    onComplete(finalStory, res.plan, {
+    finishCreation(finalStory, res.plan, {
       ...res.debug,
       assets: { total, done, errors },
     });
@@ -410,8 +442,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     setAssetDone(0);
     setAssetErrors(0);
     setAssetCurrent('');
+    setAssetStartAt(0);
+    setSkipArmed(false);
     setScaffoldCurrent('');
     storyRef.current = null;
+    completedRef.current = false;
+    stopUiUpdatesRef.current = false;
 
     let scaffoldIntent = effectiveIntent;
     lastScaffoldArgsRef.current = { intent: scaffoldIntent, ratio };
@@ -704,15 +740,48 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	                              {assetCurrent}{assetErrors ? ` (errors: ${assetErrors})` : ''}
 	                            </div>
 	                          )}
+                            {phase === 'assets' && assetStartAt > 0 && (
+                              <div className="text-[10px] text-white/30 font-mono">
+                                Elapsed: {Math.floor(Math.max(0, Date.now() - assetStartAt) / 1000)}s
+                              </div>
+                            )}
                             {phase === 'scaffold' && scaffoldCurrent && (
                               <div className="text-[11px] text-white/30 font-mono break-words">
                                 {scaffoldCurrent}
                               </div>
                             )}
-                          <div className="text-[10px] text-white/20 font-mono">
+		                          <div className="text-[10px] text-white/20 font-mono">
                             Image: {aiSettings.image.provider}/{aiSettings.image.model}
                             {aiSettings.image.provider === 'mock' ? ' (mock — assets will NOT be generated)' : ''}
                           </div>
+                          {phase === 'assets' && plan && (
+                            <div className="pt-2 flex items-center justify-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!skipArmed) {
+                                    setSkipArmed(true);
+                                    return;
+                                  }
+                                  const partial = storyRef.current || lastScaffoldRef.current?.story;
+                                  const currentPlan = lastScaffoldRef.current?.plan || plan;
+                                  if (!partial || !currentPlan) return;
+                                  finishCreation(partial, currentPlan, {
+                                    ...(lastScaffoldRef.current as any)?.debug,
+                                    assets: {
+                                      total: assetTotal,
+                                      done: assetDone,
+                                      errors: assetErrors,
+                                      skipped: true,
+                                    },
+                                  });
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/15 text-white/80 text-[10px] font-black uppercase tracking-widest hover:bg-white/15"
+                              >
+                                {skipArmed ? 'Confirm Enter Project' : 'Enter Project Now'}
+                              </button>
+                            </div>
+                          )}
 		                    </div>
 		                </div>
 	            ) : (
