@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ModelRuntimeSettings, Story, SelectionState } from '../../types';
 import { 
   Play, 
@@ -12,19 +12,26 @@ import {
   Clapperboard,
   Maximize,
   AlertTriangle,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Upload
 } from 'lucide-react';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildMasterKeyVisualPrompt } from '../../lib/ai/prompts';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 import { isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
+import { runDirectorCommand } from '../../lib/ai/agent/direct';
 
 interface ProjectDashboardProps {
   story: Story;
   onSelect: (sel: SelectionState) => void;
   onPlayCinema: () => void;
   imageSettings?: ModelRuntimeSettings;
+  directSettings?: ModelRuntimeSettings;
   onUpdateStory: (updater: (prev: Story) => Story) => void;
+  onAcceptProposedStyleGuide?: (args: { styleGuide: string; regenerateAssets: boolean }) => void;
+  onUpdateAssets?: (activeKvVersionId: string) => void;
+  kvActionRequest?: { id: number; type: 'generate' | 'accept' | 'discard' | 'regenerate' } | null;
+  onKvActionHandled?: (id: number) => void;
   onToast?: (message: string, type?: 'success' | 'info') => void;
 }
 
@@ -33,7 +40,12 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
   onSelect,
   onPlayCinema,
   imageSettings,
+  directSettings,
   onUpdateStory,
+  onAcceptProposedStyleGuide,
+  onUpdateAssets,
+  kvActionRequest,
+  onKvActionHandled,
   onToast,
 }) => {
   const totalShots = story.sequences.reduce((acc, seq) => acc + seq.shots.length, 0);
@@ -41,11 +53,45 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
   const firstSeqId = story.sequences[0]?.id;
 
   const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
+  const canUseDirector = Boolean(directSettings && directSettings.provider !== 'mock');
   const [isGeneratingKv, setIsGeneratingKv] = useState(false);
   const [kvError, setKvError] = useState<string | null>(null);
   const kvStatus = (story as any)?.masterKvState?.status;
   const isKvBatchGenerating = kvStatus === 'running' || kvStatus === 'queued';
   const isKvBusy = isGeneratingKv || isKvBatchGenerating;
+  const referenceInputRef = useRef<HTMLInputElement | null>(null);
+  const referenceImages = Array.isArray((story as any)?.referenceImages) ? (story as any).referenceImages : [];
+  const useReferenceImages = (story as any)?.referenceMode !== 'off';
+  const maxReferenceImages = 4;
+  const [styleSynthesisError, setStyleSynthesisError] = useState<string | null>(null);
+  const storyProposal = String((story as any)?.proposedStyleGuide || '');
+  const [proposalDraft, setProposalDraft] = useState(storyProposal);
+
+  useEffect(() => {
+    setProposalDraft(storyProposal);
+  }, [story.id, storyProposal]);
+
+  useEffect(() => {
+    if (!kvActionRequest?.id) return;
+    let cancelled = false;
+    const run = async () => {
+      if (kvActionRequest.type === 'generate') {
+        await handleGenerateKvVariant();
+      } else if (kvActionRequest.type === 'accept') {
+        handleAcceptProposedStyleGuide();
+      } else if (kvActionRequest.type === 'discard') {
+        handleIgnoreProposedStyleGuide();
+      } else if (kvActionRequest.type === 'regenerate') {
+        handleIgnoreProposedStyleGuide();
+        await handleGenerateKvVariant();
+      }
+      if (!cancelled) onKvActionHandled?.(kvActionRequest.id);
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [kvActionRequest?.id]);
 
   const kvVersions = useMemo(() => {
     const existing = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
@@ -68,28 +114,124 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
     if (id) return id;
     return String(displayKvVersions[displayKvVersions.length - 1]?.id || '');
   }, [displayKvVersions, story]);
+  const syncedKvId = String((story as any)?.assetsSyncedKvVersionId || activeKvId || '').trim();
+  const hasKvDrift = Boolean(activeKvId) && String(activeKvId) !== String(syncedKvId);
+  const proposalSourceKvId = String((story as any)?.proposedStyleGuideSourceKvVersionId || '').trim();
+  const showProposalCta =
+    Boolean(proposalSourceKvId) &&
+    String(proposalSourceKvId) === String(activeKvId) &&
+    Boolean(String(proposalDraft || storyProposal || '').trim());
+  const activeKvVersion =
+    (displayKvVersions || []).find((v: any) => String(v?.id || '') === String(activeKvId || '')) ||
+    (displayKvVersions || [])[displayKvVersions.length - 1];
+  const activeKvPrompt = String((activeKvVersion as any)?.metadata?.prompt || '').trim();
+
+  const normalizeStyleGuideText = (raw: string) => {
+    const t = String(raw || '').trim();
+    if (!t) return '';
+    const noPreface = t
+      .replace(/^```[\s\S]*?\n/, '')
+      .replace(/```$/g, '')
+      .replace(/^I\s+(have\s+)?(synthesized|created|generated|prepared)[^.]*\.\s*/i, '')
+      .replace(/^Here\s+is\s+(the\s+)?(style\s+guide|proposal)[^:]*:\s*/i, '')
+      .trim();
+    const lines = noPreface
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((line) => !/^\-\s*core visual direction:\s*i\s+(have|am|will)\b/i.test(line))
+      .filter((line) => !/^i\s+(have|am|will|can)\b/i.test(line));
+    if (lines.length >= 4) return lines.join('\n');
+    const sentenceLines = noPreface
+      .split(/[.;]\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => (s.startsWith('-') ? s : `- ${s.replace(/[.]+$/, '')}.`));
+    if (sentenceLines.length >= 3) return sentenceLines.join('\n');
+    return '';
+  };
+
+  const extractStyleGuideCandidate = (res: any) => {
+    const fromAction = (Array.isArray(res?.actions) ? res.actions : [])
+      .map((a: any) => (a?.type === 'UPDATE_STORY' ? a?.payload?.patch?.styleGuide || a?.payload?.styleGuide : ''))
+      .find((x: any) => typeof x === 'string' && String(x).trim());
+    const normalizedAction = normalizeStyleGuideText(String(fromAction || ''));
+    if (normalizedAction) return normalizedAction;
+    const normalizedReply = normalizeStyleGuideText(String(res?.reply || ''));
+    if (normalizedReply) return normalizedReply;
+    const raw = String(res?.reply || '').trim();
+    if (!raw) return '';
+    return [
+      `- Core visual direction: live-action cinematic cyberpunk with grounded production realism.`,
+      `- Keep rendering consistent with story intent: ${String(story.intent || '').trim() || 'cinematic narrative continuity'}.`,
+      `- Preserve stable character identity and environment continuity across all generated assets.`,
+      `- Maintain controlled palette, lighting logic, and camera language; avoid abrupt style drift.`,
+      `- Negative constraints: no logos, no watermarks, no text artifacts.`,
+    ].join('\n');
+  };
 
   const handleSelectKvVariant = (versionId: string) => {
     const v = (kvVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
     if (!v?.imageUrl) return;
     const isPlaceholder = String(v?.type || '') === 'placeholder' || isLikelyPlaceholderImageUrl(String(v.imageUrl));
+    const variantProposal = String((v as any)?.metadata?.proposedStyleGuide || '').trim();
     onUpdateStory((prev) => ({
       ...prev,
       keyVisualUrl: String(v.imageUrl),
       keyVisualVersions: kvVersions as any,
       activeKeyVisualVersionId: String(versionId) as any,
+      proposedStyleGuide: variantProposal,
+      proposedStyleGuideUpdatedAt: variantProposal ? Date.now() : (prev as any).proposedStyleGuideUpdatedAt,
+      proposedStyleGuideSourceKvVersionId: variantProposal ? String(versionId) : '',
       masterKvState: {
         ...(prev as any).masterKvState,
         status: isPlaceholder ? ((prev as any).masterKvState?.status || 'idle') : 'done',
         lastError: isPlaceholder ? 'Active KV is a placeholder; generate a real Master KV.' : '',
       },
     }));
+    setProposalDraft(variantProposal);
     onToast?.(isPlaceholder ? 'Placeholder KV selected (won’t unblock assets)' : 'Master KV set active', 'info');
+  };
+
+  const handleDeleteKvVariant = (versionId: string) => {
+    const all = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : kvVersions;
+    const remaining = (all || []).filter((v: any) => String(v?.id || '') !== String(versionId));
+    if (!remaining.length) {
+      onToast?.('Cannot delete the last KV variant', 'info');
+      return;
+    }
+    const activeBefore = String((story as any).activeKeyVisualVersionId || '');
+    const deletingActive = activeBefore === String(versionId);
+    const nextActive = deletingActive ? remaining[remaining.length - 1] : remaining.find((v: any) => String(v?.id || '') === activeBefore) || remaining[remaining.length - 1];
+    onUpdateStory((prev) => ({
+      ...prev,
+      keyVisualVersions: remaining as any,
+      activeKeyVisualVersionId: String(nextActive?.id || '') as any,
+      keyVisualUrl: String(nextActive?.imageUrl || prev.keyVisualUrl || ''),
+      assetsSyncedKvVersionId:
+        String((prev as any).assetsSyncedKvVersionId || '') === String(versionId)
+          ? String(nextActive?.id || '')
+          : String((prev as any).assetsSyncedKvVersionId || ''),
+      proposedStyleGuide:
+        String((prev as any).proposedStyleGuideSourceKvVersionId || '') === String(versionId) ? '' : String((prev as any).proposedStyleGuide || ''),
+      proposedStyleGuideUpdatedAt: Date.now(),
+      proposedStyleGuideSourceKvVersionId:
+        String((prev as any).proposedStyleGuideSourceKvVersionId || '') === String(versionId)
+          ? ''
+          : String((prev as any).proposedStyleGuideSourceKvVersionId || ''),
+    }));
+    onToast?.('KV variant deleted', 'info');
+  };
+
+  const handleUpdateAssets = () => {
+    if (!onUpdateAssets || !activeKvId) return;
+    onUpdateAssets(String(activeKvId));
   };
 
   const handleGenerateKvVariant = async () => {
     if (!canGenerate || isKvBusy) return;
     setKvError(null);
+    setStyleSynthesisError(null);
     setIsGeneratingKv(true);
     const now = Date.now();
     onUpdateStory((prev) => ({
@@ -111,28 +253,98 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
       const baseVersions = baseExisting.length ? baseExisting : baseSeed;
       const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
 
-      const refs = story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'current master kv' }] : [];
+      const uploadedRefs = useReferenceImages
+        ? referenceImages
+            .slice(0, maxReferenceImages)
+            .map((r: any) => ({ url: String(r?.url || ''), label: r?.name ? String(r.name) : 'master kv reference' }))
+            .filter((r: any) => r.url)
+        : [];
+      const fallbackRefs = uploadedRefs.length === 0 && story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'current master kv' }] : [];
+      const refs = uploadedRefs.length ? uploadedRefs : fallbackRefs;
+
+      let promptForKv = buildMasterKeyVisualPrompt({
+        intent: story.intent,
+        logline: story.logline,
+        styleGuide: (story as any).styleGuide,
+      } as any);
+
+      if (uploadedRefs.length && useReferenceImages && canUseDirector) {
+        const promptRes = await runDirectorCommand({
+          message:
+            'Summarize current story intent + uploaded Master KV references into ONE production-ready image prompt for generating a single master key visual. Return only prompt text. No actions.',
+          selection: { type: 'story', id: story.id },
+          story,
+          settings: directSettings!,
+          allowSingleFallback: false,
+          useFunctionCalling: Boolean((directSettings as any)?.useFunctionCalling),
+        });
+        const distilled = String(promptRes?.reply || '').trim();
+        if (distilled) promptForKv = distilled;
+      }
+
       const out = await generateImageFromPrompt({
-        prompt: buildMasterKeyVisualPrompt({ intent: story.intent, logline: story.logline, styleGuide: (story as any).styleGuide } as any),
+        prompt: promptForKv,
         settings: imageSettings!,
         aspectRatio: story.aspectRatio,
         references: refs,
         strict: true,
-        requireAllReferences: refs.length > 0,
+        requireAllReferences: false,
       });
+
+      const refUrls = new Set(refs.map((r: any) => String(r?.url || '').trim()).filter(Boolean));
+      if (refUrls.has(String(out.imageUrl || '').trim())) {
+        throw new Error('Generated KV matches a reference image. Please retry with different references.');
+      }
 
       const id = `kv-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
       const createdAt = Date.now();
-      const nextVersions = [
-        ...cleanedBase,
-        { id, imageUrl: out.imageUrl, createdAt, type: cleanedBase.length ? 'variation' : 'base' },
-      ];
+
+      let proposedStyleGuide = '';
+      if (uploadedRefs.length && useReferenceImages && canUseDirector) {
+        const storyForStyle = { ...story, keyVisualUrl: out.imageUrl } as Story;
+        const styleRes = await runDirectorCommand({
+          message:
+            'Based on current story and the active Master KV, produce a concise production-ready style guide text. Respond with exactly one UPDATE_STORY action that only sets patch.styleGuide.',
+          selection: { type: 'story', id: story.id },
+          story: storyForStyle,
+          settings: directSettings!,
+          allowSingleFallback: false,
+          useFunctionCalling: Boolean((directSettings as any)?.useFunctionCalling),
+        });
+        proposedStyleGuide = extractStyleGuideCandidate(styleRes);
+        if (!proposedStyleGuide) {
+          throw new Error('Style guide format invalid. Please regenerate.');
+        }
+      }
+
+      const replaceExistingForReferenceRefresh = uploadedRefs.length > 0 && useReferenceImages;
+      const nextEntry = {
+        id,
+        imageUrl: out.imageUrl,
+        createdAt,
+        type: replaceExistingForReferenceRefresh ? 'base' : cleanedBase.length ? 'variation' : 'base',
+        metadata: {
+          ...(proposedStyleGuide ? { proposedStyleGuide } : {}),
+          prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || promptForKv || '').slice(0, 4000),
+          references: refs,
+          settings: {
+            provider: imageSettings?.provider,
+            model: imageSettings?.model,
+            temperature: imageSettings?.temperature,
+          },
+          aspectRatio: story.aspectRatio,
+        },
+      };
+      const nextVersions = replaceExistingForReferenceRefresh ? [nextEntry] : [...cleanedBase, nextEntry];
 
       onUpdateStory((prev) => ({
         ...prev,
         keyVisualUrl: out.imageUrl,
         keyVisualVersions: nextVersions as any,
         activeKeyVisualVersionId: id as any,
+        proposedStyleGuide: proposedStyleGuide || '',
+        proposedStyleGuideUpdatedAt: Date.now(),
+        proposedStyleGuideSourceKvVersionId: proposedStyleGuide ? id : '',
         masterKvState: {
           ...(prev as any).masterKvState,
           status: 'done',
@@ -140,10 +352,20 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           lastAttemptAt: createdAt,
         },
       }));
-      onToast?.('Master KV generated', 'success');
+      if (proposedStyleGuide) {
+        setProposalDraft(proposedStyleGuide);
+        onToast?.('Master KV generated with new style-guide proposal', 'success');
+      } else {
+        setProposalDraft('');
+        onToast?.(
+          replaceExistingForReferenceRefresh ? 'Master KV regenerated from references (replaced previous variants)' : 'Master KV generated',
+          'success',
+        );
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setKvError(msg);
+      if (String(msg).toLowerCase().includes('style')) setStyleSynthesisError(msg);
+      else setKvError(msg);
       onUpdateStory((prev) => ({
         ...prev,
         masterKvState: {
@@ -157,6 +379,106 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
     } finally {
       setIsGeneratingKv(false);
     }
+  };
+
+  const handleAddReferenceImages = async (files: FileList | null) => {
+    if (!files) return;
+    const remaining = maxReferenceImages - referenceImages.length;
+    if (remaining <= 0) {
+      setKvError(`Reference images limit reached (${maxReferenceImages}).`);
+      return;
+    }
+    const picked = Array.from(files).slice(0, remaining);
+    const reads = picked.map(
+      (file) =>
+        new Promise<{ id: string; url: string; name?: string; createdAt?: number }>((resolve, reject) => {
+          if (!file.type.startsWith('image/')) {
+            reject(new Error(`Unsupported file: ${file.name}`));
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = () =>
+            resolve({
+              id: `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              url: String(reader.result || ''),
+              name: file.name,
+              createdAt: Date.now(),
+            });
+          reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          reader.readAsDataURL(file);
+        }),
+    );
+    const settled = await Promise.allSettled(reads);
+    const success = settled
+      .filter((r): r is PromiseFulfilledResult<{ id: string; url: string; name?: string; createdAt?: number }> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((r) => r.url);
+    const errors = settled.filter((r) => r.status === 'rejected') as Array<PromiseRejectedResult>;
+    if (errors.length) setKvError(errors[0]?.reason?.message || 'Failed to add reference images.');
+    if (!success.length) return;
+    const nextRefs = [...referenceImages, ...success].slice(0, maxReferenceImages);
+    onUpdateStory((prev) => ({
+      ...prev,
+      referenceImages: nextRefs as any,
+      referenceMode: ((prev as any)?.referenceMode || 'auto') as any,
+    }));
+    if (referenceInputRef.current) referenceInputRef.current.value = '';
+  };
+
+  const handleRemoveReferenceImage = (id: string) => {
+    const nextRefs = referenceImages.filter((r: any) => String(r?.id || '') !== String(id));
+    onUpdateStory((prev) => ({
+      ...prev,
+      referenceImages: nextRefs as any,
+    }));
+  };
+
+  const handleAcceptProposedStyleGuide = () => {
+    const next = String(proposalDraft || '').trim();
+    if (!next) return;
+    if (onAcceptProposedStyleGuide) {
+      onAcceptProposedStyleGuide({ styleGuide: next, regenerateAssets: true });
+    } else {
+      onUpdateStory((prev) => ({
+        ...prev,
+        styleGuide: next,
+        proposedStyleGuide: '',
+        proposedStyleGuideUpdatedAt: Date.now(),
+        proposedStyleGuideSourceKvVersionId: '',
+        assetsSyncedKvVersionId: String((prev as any).activeKeyVisualVersionId || activeKvId || ''),
+      }));
+    }
+    onToast?.('Style guide accepted. Regenerating assets…', 'success');
+  };
+
+  const handleIgnoreProposedStyleGuide = () => {
+    onUpdateStory((prev) => {
+      const sourceId = String((prev as any).proposedStyleGuideSourceKvVersionId || '').trim();
+      if (!sourceId) {
+        return {
+          ...prev,
+          proposedStyleGuide: '',
+          proposedStyleGuideUpdatedAt: Date.now(),
+          proposedStyleGuideSourceKvVersionId: '',
+        };
+      }
+      const all = Array.isArray((prev as any).keyVisualVersions) ? (prev as any).keyVisualVersions : [];
+      const remaining = all.filter((v: any) => String(v?.id || '') !== sourceId);
+      const activeIdBefore = String((prev as any).activeKeyVisualVersionId || '').trim();
+      const shouldSwitch = activeIdBefore === sourceId;
+      const fallback = remaining.length ? remaining[remaining.length - 1] : null;
+      return {
+        ...prev,
+        keyVisualVersions: remaining as any,
+        activeKeyVisualVersionId: shouldSwitch ? String(fallback?.id || '') : activeIdBefore,
+        keyVisualUrl: shouldSwitch ? String(fallback?.imageUrl || '') : prev.keyVisualUrl,
+        proposedStyleGuide: '',
+        proposedStyleGuideUpdatedAt: Date.now(),
+        proposedStyleGuideSourceKvVersionId: '',
+      };
+    });
+    setProposalDraft('');
+    onToast?.('Proposal discarded and generated KV variant removed', 'info');
   };
 
   return (
@@ -259,19 +581,33 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
             </div>
 
             <div className="shrink-0 flex flex-col items-end gap-3">
-              <button
-                onClick={handleGenerateKvVariant}
-                disabled={!canGenerate || isKvBusy}
-                className={`flex items-center gap-2 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-sm ${
-                  !canGenerate
-                    ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 cursor-not-allowed border border-zinc-200 dark:border-zinc-700'
-                    : 'bg-[#ee4d2d] hover:bg-[#f05d40] text-white'
-                }`}
-                title={!canGenerate ? 'Image provider is Mock' : story.keyVisualUrl ? 'Generate KV variant' : 'Generate Master KV'}
-              >
-                <Sparkles className={`w-4 h-4 ${isKvBusy ? 'animate-pulse' : ''}`} />
-                {kvStatus === 'queued' ? 'Queued…' : isKvBusy ? 'Generating…' : story.keyVisualUrl ? 'Generate Variant' : 'Generate KV'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleGenerateKvVariant}
+                  disabled={!canGenerate || isKvBusy}
+                  className={`flex items-center gap-2 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-sm ${
+                    !canGenerate
+                      ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 cursor-not-allowed border border-zinc-200 dark:border-zinc-700'
+                      : 'bg-[#ee4d2d] hover:bg-[#f05d40] text-white'
+                  }`}
+                  title={!canGenerate ? 'Image provider is Mock' : story.keyVisualUrl ? 'Generate KV variant' : 'Generate Master KV'}
+                >
+                  <Sparkles className={`w-4 h-4 ${isKvBusy ? 'animate-pulse' : ''}`} />
+                  {kvStatus === 'queued' ? 'Queued…' : isKvBusy ? 'Generating…' : story.keyVisualUrl ? 'Generate Variant' : 'Generate KV'}
+                </button>
+                <button
+                  onClick={handleUpdateAssets}
+                  disabled={!onUpdateAssets || !hasKvDrift}
+                  className={`px-4 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${
+                    onUpdateAssets && hasKvDrift
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_10px_25px_rgba(16,185,129,0.25)]'
+                      : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 cursor-not-allowed border border-zinc-200 dark:border-zinc-700'
+                  }`}
+                  title={hasKvDrift ? 'Regenerate assets using current active KV' : 'Assets already synced with active KV'}
+                >
+                  Update Assets
+                </button>
+              </div>
               <div className="text-[10px] font-mono text-zinc-400">
                 Status: {(story as any).masterKvState?.status || 'idle'}
               </div>
@@ -279,54 +615,212 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           </div>
 
           <div className="p-10 grid grid-cols-1 lg:grid-cols-2 gap-10 items-start">
-            <div className="relative aspect-video rounded-3xl overflow-hidden bg-zinc-100 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 shadow-2xl">
-              {story.keyVisualUrl ? (
-                <img
-                  src={story.keyVisualUrl}
-                  className="w-full h-full object-cover cursor-zoom-in"
-                  alt="Master KV"
-                  onClick={() => story.keyVisualUrl && openLightbox({ url: story.keyVisualUrl, title: 'Master KV' })}
-                />
-              ) : (
-                <div className="w-full h-full flex flex-col items-center justify-center text-zinc-400">
-                  <ImageIcon className="w-8 h-8" />
-                  <div className="mt-3 text-xs font-bold uppercase tracking-widest">No Master KV</div>
+            <div className="space-y-4">
+              <div className="relative aspect-video rounded-3xl overflow-hidden bg-zinc-100 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 shadow-2xl">
+                {story.keyVisualUrl ? (
+                  <>
+                    <img
+                      src={story.keyVisualUrl}
+                      className="w-full h-full object-cover cursor-zoom-in"
+                      alt="Master KV"
+                      onClick={() => story.keyVisualUrl && openLightbox({ url: story.keyVisualUrl, title: 'Master KV' })}
+                    />
+                    {showProposalCta && (
+                      <div className="absolute inset-x-4 bottom-4 bg-black/70 border border-white/10 rounded-2xl p-3 backdrop-blur-md flex items-center justify-between gap-3">
+                        <div className="text-xs text-zinc-100">New KV + style proposal ready</div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleAcceptProposedStyleGuide}
+                            className="px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider bg-emerald-600 text-white hover:bg-emerald-500"
+                          >
+                            Accept
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleIgnoreProposedStyleGuide}
+                            className="px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
+                          >
+                            Discard
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-zinc-400">
+                    <ImageIcon className="w-8 h-8" />
+                    <div className="mt-3 text-xs font-bold uppercase tracking-widest">No Master KV</div>
+                  </div>
+                )}
+              </div>
+              <div className="bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Variants</div>
+                  <div className="text-[10px] text-zinc-500">{displayKvVersions.length}</div>
                 </div>
-              )}
+                {displayKvVersions.length <= 1 ? (
+                  <div className="text-sm text-zinc-500 dark:text-zinc-400">
+                    Generate more variants to audition different global art directions.
+                  </div>
+                ) : (
+                  <div className="flex gap-3 overflow-x-auto no-scrollbar">
+                    {displayKvVersions
+                      .slice()
+                      .reverse()
+                      .map((v: any) => {
+                        const isActive = String(v.id) === String(activeKvId);
+                        const canDelete = displayKvVersions.length > 1;
+                        return (
+                          <button
+                            key={String(v.id)}
+                            onClick={() => handleSelectKvVariant(String(v.id))}
+                            className={`relative w-40 aspect-video rounded-2xl overflow-hidden border-2 shrink-0 transition-all ${
+                              isActive ? 'border-emerald-500' : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-600'
+                            }`}
+                            title={isActive ? 'Active' : 'Set active'}
+                          >
+                            <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
+                            <button
+                              type="button"
+                              className="absolute top-1.5 right-1.5 w-6 h-6 rounded-md bg-black/60 text-white text-[10px] flex items-center justify-center border border-white/10"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openLightbox({ url: String(v.imageUrl), title: `Master KV Variant` });
+                              }}
+                              title="View large"
+                            >
+                              ⤢
+                            </button>
+                            {canDelete && (
+                              <button
+                                type="button"
+                                className="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-md bg-black/60 text-white text-[10px] flex items-center justify-center border border-white/10 hover:bg-rose-600/80"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteKvVariant(String(v.id));
+                                }}
+                                title="Delete variant"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </button>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="space-y-4">
-              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Variants</div>
-              {displayKvVersions.length <= 1 ? (
-                <div className="text-sm text-zinc-500 dark:text-zinc-400">
-                  Generate more variants to audition different global art directions, then click one to set active.
+              <div className="bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Reference Images (1-4)</div>
+                  <label className="flex items-center gap-2 text-[10px] text-zinc-500 dark:text-zinc-400">
+                    <input
+                      type="checkbox"
+                      checked={useReferenceImages}
+                      onChange={(e) => {
+                        const nextMode = e.target.checked ? 'auto' : 'off';
+                        onUpdateStory((prev) => ({
+                          ...prev,
+                          referenceMode: nextMode,
+                        }));
+                      }}
+                    />
+                    Use for KV generation
+                  </label>
                 </div>
-              ) : (
-                <div className="flex gap-3 overflow-x-auto no-scrollbar">
-                  {displayKvVersions.slice().reverse().map((v: any) => {
-                    const isActive = String(v.id) === String(activeKvId);
-                    return (
+                <input
+                  ref={referenceInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => handleAddReferenceImages(e.target.files)}
+                />
+                <div className="flex flex-wrap gap-2">
+                  {referenceImages.map((img: any) => (
+                    <div key={String(img.id)} className="relative w-16 h-16 rounded-xl overflow-hidden border border-zinc-200 dark:border-white/10 bg-black/30">
+                      <img
+                        src={String(img.url)}
+                        className="w-full h-full object-cover cursor-zoom-in"
+                        onClick={() => openLightbox({ url: String(img.url), title: img.name ? `Reference: ${img.name}` : 'Reference' })}
+                      />
                       <button
-                        key={String(v.id)}
-                        onClick={() => handleSelectKvVariant(String(v.id))}
-                        className={`relative w-40 aspect-video rounded-2xl overflow-hidden border-2 shrink-0 transition-all ${
-                          isActive ? 'border-emerald-500' : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-600'
-                        }`}
-                        title={isActive ? 'Active' : 'Set active'}
+                        type="button"
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/60 text-white text-[10px] flex items-center justify-center"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRemoveReferenceImage(String(img.id));
+                        }}
+                        title="Remove"
                       >
-                        <img
-                          src={String(v.imageUrl)}
-                          className="w-full h-full object-cover"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openLightbox({ url: String(v.imageUrl), title: `Master KV Variant` });
-                          }}
-                        />
+                        ✕
                       </button>
-                    );
-                  })}
+                    </div>
+                  ))}
+                {referenceImages.length < maxReferenceImages && (
+                    <button
+                      type="button"
+                      className="w-16 h-16 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:text-[#ee4d2d] hover:border-[#ee4d2d]/50 flex flex-col items-center justify-center gap-1 text-[10px] font-bold uppercase tracking-wide"
+                      onClick={() => referenceInputRef.current?.click()}
+                      title="Upload reference images"
+                    >
+                      <Upload className="w-4 h-4" />
+                      Add
+                    </button>
+                )}
+                {activeKvPrompt && (
+                  <div className="mt-4 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-900/30 p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">KV Prompt</div>
+                      <button
+                        type="button"
+                        className="px-2 py-1 rounded-lg border border-zinc-200 dark:border-zinc-700 text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                        onClick={() => navigator.clipboard?.writeText(activeKvPrompt)}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <pre className="text-[11px] whitespace-pre-wrap text-zinc-700 dark:text-zinc-200 max-h-40 overflow-y-auto custom-scrollbar">
+                      {activeKvPrompt}
+                    </pre>
+                  </div>
+                )}
+              </div>
+              </div>
+              <div className="bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Style Description Proposal</div>
+                  <div className="text-[10px] text-zinc-500">
+                    Generated after clicking `Generate KV`.
+                  </div>
                 </div>
-              )}
+
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Current StyleGuide</div>
+                    <textarea
+                      value={String(story.styleGuide || '')}
+                      readOnly
+                      className="w-full h-32 bg-zinc-100 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl p-3 text-xs text-zinc-600 dark:text-zinc-300 leading-relaxed resize-none"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Proposed (Editable)</div>
+                    <textarea
+                      value={proposalDraft}
+                      onChange={(e) => setProposalDraft(e.target.value)}
+                      placeholder="Click 'Generate KV' to create a new KV and proposed style guide."
+                      className="w-full h-40 bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl p-3 text-xs text-zinc-700 dark:text-zinc-200 leading-relaxed resize-y min-h-32"
+                    />
+                  </div>
+                </div>
+
+                {styleSynthesisError && <div className="text-xs text-rose-400">{styleSynthesisError}</div>}
+              </div>
             </div>
           </div>
         </section>

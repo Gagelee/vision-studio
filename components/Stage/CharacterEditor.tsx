@@ -63,8 +63,37 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     return { ...c, ...avatarPatch, looks: nextLooks } as any;
   };
 
+  const mergeRuntimeAssetFields = (baseDraft: Character, source: Character): Character => {
+    if (String(baseDraft.id || '') !== String(source.id || '')) return normalizeDraft(source);
+    const srcByLookId = new Map((source.looks || []).map((lk) => [String(lk.id), lk]));
+    const mergedLooks = (baseDraft.looks || []).map((lk) => {
+      const src = srcByLookId.get(String(lk.id));
+      if (!src) return lk;
+      return {
+        ...lk,
+        previewUrl: src.previewUrl,
+        previewVersions: (src as any).previewVersions,
+        activePreviewVersionId: (src as any).activePreviewVersionId,
+        assetState: (src as any).assetState,
+      } as any;
+    });
+    const known = new Set(mergedLooks.map((lk) => String(lk.id)));
+    for (const src of source.looks || []) {
+      if (!known.has(String(src.id))) mergedLooks.push(src);
+    }
+    return normalizeDraft({
+      ...baseDraft,
+      avatarUrl: source.avatarUrl,
+      assetState: source.assetState,
+      looks: mergedLooks,
+      ...(Array.isArray((source as any).avatarVersions) ? { avatarVersions: (source as any).avatarVersions } : {}),
+      ...((source as any).activeAvatarVersionId ? { activeAvatarVersionId: (source as any).activeAvatarVersionId } : {}),
+    } as any);
+  };
+
   const [draft, setDraft] = useState<Character>(() => normalizeDraft(character));
   const draftRef = useRef<Character>(draft);
+  const lastCharacterIdRef = useRef<string>(String(character.id || ''));
   const [editingLook, setEditingLook] = useState<CharacterLook | null>(null);
   const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
   const [generatingLookIds, setGeneratingLookIds] = useState<Record<string, boolean>>({});
@@ -77,9 +106,31 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   }, [draft]);
 
   useEffect(() => {
+    const nextId = String(character.id || '');
+    const prevId = String(lastCharacterIdRef.current || '');
+    const changedCharacter = nextId !== prevId;
+    lastCharacterIdRef.current = nextId;
+    if (changedCharacter) {
+      setDraft(normalizeDraft(character));
+      return;
+    }
     const dirty = JSON.stringify(draftRef.current) !== JSON.stringify(character);
     if (!dirty) setDraft(normalizeDraft(character));
   }, [character]);
+
+  useEffect(() => {
+    setDraft((prev) => {
+      const next = mergeRuntimeAssetFields(prev, character);
+      return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
+    });
+  }, [
+    character.id,
+    character.assetState?.status,
+    (character as any)?.activeAvatarVersionId,
+    (character as any)?.avatarUrl,
+    (character as any)?.avatarVersions,
+    character.looks,
+  ]);
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(character);
   const isLocked = draft.status === 'locked';
@@ -169,7 +220,22 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
         avatarUrl: out.imageUrl,
         avatarVersions: [
           ...cleanedBase,
-          { id: newId, imageUrl: out.imageUrl, createdAt: now, type: cleanedBase.length ? 'variation' : 'base' },
+          {
+            id: newId,
+            imageUrl: out.imageUrl,
+            createdAt: now,
+            type: cleanedBase.length ? 'variation' : 'base',
+            metadata: {
+              prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || buildCharacterAvatarPrompt(draft, styleGuide) || '').slice(0, 4000),
+              references,
+              settings: {
+                provider: imageSettings.provider,
+                model: imageSettings.model,
+                temperature: imageSettings.temperature,
+              },
+              aspectRatio: '1:1',
+            },
+          },
         ] as any,
         activeAvatarVersionId: newId as any,
         assetState: {
@@ -310,7 +376,22 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                     imageUrl: out.imageUrl,
                     createdAt: now,
                     type: cleanedBase.length ? 'variation' : 'base',
-                    metadata: activeAvatarId ? { sourceAvatarVersionId: activeAvatarId } : undefined,
+                    metadata: {
+                      prompt: String(
+                        out?.debug?.promptUsed ||
+                          out?.debug?.promptUsedPreview ||
+                          buildCharacterLookPrompt(baseCharacter, look, styleGuide) ||
+                          '',
+                      ).slice(0, 4000),
+                      references: refs,
+                      settings: {
+                        provider: imageSettings.provider,
+                        model: imageSettings.model,
+                        temperature: imageSettings.temperature,
+                      },
+                      aspectRatio: '1:1',
+                      ...(activeAvatarId ? { sourceAvatarVersionId: activeAvatarId } : {}),
+                    },
                   },
                 ] as any,
                 activePreviewVersionId: newId as any,

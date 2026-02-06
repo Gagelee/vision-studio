@@ -57,6 +57,8 @@ export interface Location {
   activePreviewVersionId?: string;
   status: 'draft' | 'locked';
   assetState?: AssetGenerationState;
+  referenceImages?: ReferenceImage[];
+  referenceMode?: 'auto' | 'off';
 }
 
 export interface AssetImageVersion {
@@ -174,6 +176,12 @@ export interface Story {
   keyVisualVersions?: AssetImageVersion[];
   activeKeyVisualVersionId?: string;
   masterKvState?: AssetGenerationState;
+  referenceImages?: ReferenceImage[];
+  referenceMode?: 'auto' | 'off';
+  proposedStyleGuide?: string;
+  proposedStyleGuideUpdatedAt?: number;
+  proposedStyleGuideSourceKvVersionId?: string;
+  assetsSyncedKvVersionId?: string;
   aspectRatio: AspectRatio;
   status: 'scaffolding' | 'ready';
   createdAt?: number;
@@ -228,7 +236,10 @@ export type AgentActionType =
   | 'GENERATE_SHOT_IMAGE'
   | 'GENERATE_LOCATION_PREVIEW'
   | 'GENERATE_CHARACTER_AVATAR'
-  | 'GENERATE_CHARACTER_LOOK';
+  | 'GENERATE_CHARACTER_LOOK'
+  | 'GENERATE_MASTER_KV_PROPOSAL'
+  | 'ACCEPT_KV_PROPOSAL'
+  | 'DISCARD_KV_PROPOSAL';
 
 export interface AgentAction {
   type: AgentActionType;

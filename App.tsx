@@ -83,6 +83,17 @@ function createBlankShot(
 }
 
 const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
+  const normalizeReferenceImages = (list: any[]) =>
+    (Array.isArray(list) ? list : [])
+      .slice(0, 4)
+      .map((r) => ({
+        id: String(r?.id || `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+        url: String(r?.url || ''),
+        name: r?.name ? String(r.name) : undefined,
+        createdAt: typeof r?.createdAt === 'number' ? r.createdAt : Date.now(),
+      }))
+      .filter((r) => r.url);
+
   return actions.reduce<Story>((acc, action) => {
     if (action.type === 'UPDATE_STORY') {
       const patch = action.payload?.patch || action.payload || {};
@@ -93,6 +104,13 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         intent: typeof patch.intent === 'string' ? patch.intent : acc.intent,
         styleGuide: typeof patch.styleGuide === 'string' ? patch.styleGuide : acc.styleGuide,
         keyVisualUrl: typeof patch.keyVisualUrl === 'string' ? patch.keyVisualUrl : acc.keyVisualUrl,
+        referenceImages: Array.isArray(patch.referenceImages) ? normalizeReferenceImages(patch.referenceImages) : acc.referenceImages,
+        referenceMode: patch.referenceMode === 'auto' || patch.referenceMode === 'off' ? patch.referenceMode : acc.referenceMode,
+        proposedStyleGuide: typeof patch.styleGuide === 'string' ? '' : (acc as any).proposedStyleGuide,
+        proposedStyleGuideUpdatedAt:
+          typeof patch.styleGuide === 'string' ? Date.now() : (acc as any).proposedStyleGuideUpdatedAt,
+        proposedStyleGuideSourceKvVersionId:
+          typeof patch.styleGuide === 'string' ? '' : (acc as any).proposedStyleGuideSourceKvVersionId,
         updatedAt: Date.now(),
       };
 
@@ -386,6 +404,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 description: typeof patch.description === 'string' ? patch.description : l.description,
                 visualStyle: typeof patch.visualStyle === 'string' ? patch.visualStyle : l.visualStyle,
                 status: patch.status === 'draft' || patch.status === 'locked' ? patch.status : l.status,
+                referenceImages: Array.isArray(patch.referenceImages) ? normalizeReferenceImages(patch.referenceImages) : l.referenceImages,
+                referenceMode: patch.referenceMode === 'auto' || patch.referenceMode === 'off' ? patch.referenceMode : l.referenceMode,
               }
             : l,
         ),
@@ -441,16 +461,6 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       const characterId = String(action.payload?.characterId || '');
       const patch = action.payload?.patch || {};
       if (!characterId) return acc;
-      const normalizeReferenceImages = (list: any[]) =>
-        (Array.isArray(list) ? list : [])
-          .slice(0, 4)
-          .map((r) => ({
-            id: String(r?.id || `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
-            url: String(r?.url || ''),
-            name: r?.name ? String(r.name) : undefined,
-            createdAt: typeof r?.createdAt === 'number' ? r.createdAt : Date.now(),
-          }))
-          .filter((r) => r.url);
       return {
         ...acc,
         characters: acc.characters.map((c) =>
@@ -596,6 +606,7 @@ export default function App() {
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [isScriptEditorOpen, setIsScriptEditorOpen] = useState(false);
   const [isDirectorThinking, setIsDirectorThinking] = useState(false);
+  const [kvConsoleActionRequest, setKvConsoleActionRequest] = useState<null | { id: number; type: 'generate' | 'accept' | 'discard' | 'regenerate' }>(null);
   const [directorStream, setDirectorStream] = useState<null | {
     status?: string;
     reply?: string;
@@ -678,6 +689,11 @@ export default function App() {
       projects[idx] = { ...updated, updatedAt: now };
       return { ...prev, projects };
     });
+  };
+
+  const queueKvConsoleAction = (type: 'generate' | 'accept' | 'discard' | 'regenerate', projectId: string) => {
+    setSelection({ type: 'story', id: projectId });
+    setKvConsoleActionRequest({ id: Date.now() + Math.floor(Math.random() * 1000), type });
   };
 
   // ----- Workspace / Project Library -----
@@ -1083,7 +1099,9 @@ export default function App() {
       const p: any = a.payload || {};
       if (t === 'UPDATE_STORY') {
         const patch = p.patch || p;
-        const hasAny = ['title', 'logline', 'intent', 'styleGuide', 'keyVisualUrl'].some((k) => typeof patch?.[k] === 'string');
+        const hasString = ['title', 'logline', 'intent', 'styleGuide', 'keyVisualUrl'].some((k) => typeof patch?.[k] === 'string');
+        const hasRefPatch = Array.isArray(patch?.referenceImages) || patch?.referenceMode === 'auto' || patch?.referenceMode === 'off';
+        const hasAny = hasString || hasRefPatch;
         return hasAny ? { ok: true } : { ok: false, reason: 'UPDATE_STORY missing patch' };
       }
       if (t === 'NAVIGATE') {
@@ -1148,6 +1166,9 @@ export default function App() {
       if (t === 'GENERATE_PROJECT_ASSETS') {
         return { ok: true };
       }
+      if (t === 'GENERATE_MASTER_KV_PROPOSAL' || t === 'ACCEPT_KV_PROPOSAL' || t === 'DISCARD_KV_PROPOSAL') {
+        return { ok: true };
+      }
       return { ok: true };
     };
 
@@ -1169,8 +1190,17 @@ export default function App() {
     }
 
     const navigateActions = validActions.filter((a) => a.type === 'NAVIGATE');
-    const mutationActions = validActions.filter((a) => !a.type.startsWith('GENERATE_') && a.type !== 'NAVIGATE');
-    const generateActions = validActions.filter((a) => a.type.startsWith('GENERATE_'));
+    const kvFlowActions = validActions.filter((a) =>
+      a.type === 'GENERATE_MASTER_KV_PROPOSAL' || a.type === 'ACCEPT_KV_PROPOSAL' || a.type === 'DISCARD_KV_PROPOSAL',
+    );
+    const mutationActions = validActions.filter(
+      (a) =>
+        !a.type.startsWith('GENERATE_') &&
+        a.type !== 'NAVIGATE' &&
+        a.type !== 'ACCEPT_KV_PROPOSAL' &&
+        a.type !== 'DISCARD_KV_PROPOSAL',
+    );
+    const generateActions = validActions.filter((a) => a.type.startsWith('GENERATE_') && a.type !== 'GENERATE_MASTER_KV_PROPOSAL');
     const kvUpdated = mutationActions.some((a) => {
       if (a.type !== 'UPDATE_STORY') return false;
       const patch = (a as any)?.payload?.patch || (a as any)?.payload || {};
@@ -1193,6 +1223,25 @@ export default function App() {
       const last = navigateActions[navigateActions.length - 1];
       const nextSel = last?.payload as SelectionState | undefined;
       if (nextSel?.type && nextSel?.id) setSelection(nextSel);
+    }
+
+    if (kvFlowActions.length) {
+      const hasDiscard = kvFlowActions.some((a) => a.type === 'DISCARD_KV_PROPOSAL');
+      const hasGenerate = kvFlowActions.some((a) => a.type === 'GENERATE_MASTER_KV_PROPOSAL');
+      const hasAccept = kvFlowActions.some((a) => a.type === 'ACCEPT_KV_PROPOSAL');
+      if (hasDiscard && hasGenerate) {
+        queueKvConsoleAction('regenerate', projectId);
+        addToast('KV regenerate requested by Director. Review in Project Dashboard.', 'info');
+      } else if (hasGenerate) {
+        queueKvConsoleAction('generate', projectId);
+        addToast('KV update requested by Director. Review in Project Dashboard.', 'info');
+      } else if (hasAccept) {
+        queueKvConsoleAction('accept', projectId);
+        addToast('Director requested accepting current KV proposal.', 'info');
+      } else if (hasDiscard) {
+        queueKvConsoleAction('discard', projectId);
+        addToast('Director requested discarding current KV proposal.', 'info');
+      }
     }
 
     const storyAfterUpdates = mutationActions.length ? applyActionsToStory(story, mutationActions) : story;
@@ -1364,14 +1413,14 @@ export default function App() {
       if (a.type === 'GENERATE_LOCATION_PREVIEW') {
         const locationId = String(payload.locationId || '');
         const loc = storyAfterUpdates.locations.find((l) => l.id === locationId);
-        if (loc) addJob(`location:${locationId}`, { kind: 'location', locationId, prompt: buildLocationPreviewPrompt(loc) });
+        if (loc) addJob(`location:${locationId}`, { kind: 'location', locationId, prompt: buildLocationPreviewPrompt(loc, (storyAfterUpdates as any)?.styleGuide) });
         continue;
       }
 
       if (a.type === 'GENERATE_CHARACTER_AVATAR') {
         const characterId = String(payload.characterId || '');
         const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
-        if (ch) addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch) });
+        if (ch) addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch, (storyAfterUpdates as any)?.styleGuide) });
         continue;
       }
 
@@ -1391,6 +1440,47 @@ export default function App() {
         continue;
       }
     }
+
+    const ensurePrerequisiteJobs = () => {
+      const currentJobs = Array.from(deduped.values());
+      const hasShotJob = currentJobs.some((j) => j.kind === 'shot');
+      if (!hasShotJob) return;
+
+      const styleGuide = String((storyAfterUpdates as any)?.styleGuide || '').trim();
+      for (const j of currentJobs) {
+        if (j.kind !== 'shot') continue;
+        const seq = storyAfterUpdates.sequences.find((s) => s.id === j.sequenceId);
+        const shot = seq?.shots.find((s) => s.id === j.shot.id) || j.shot;
+        const locId = String(shot.locationId || '').trim();
+        if (locId) {
+          const loc = storyAfterUpdates.locations.find((l) => l.id === locId);
+          if (loc) addJob(`location:${locId}`, { kind: 'location', locationId: locId, prompt: buildLocationPreviewPrompt(loc, styleGuide) });
+        }
+
+        const cast = (shot.elements as any)?.CASTING?.metadata?.characters;
+        const castArr = Array.isArray(cast) ? cast : [];
+        for (const c of castArr.slice(0, 4)) {
+          const characterId = String(c?.id || '').trim();
+          if (!characterId) continue;
+          const ch = storyAfterUpdates.characters.find((x) => x.id === characterId);
+          if (!ch) continue;
+          addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch, styleGuide) });
+
+          const lookId = String(c?.activeLookId || '').trim();
+          if (!lookId) continue;
+          const lk = ch.looks?.find((x) => x.id === lookId);
+          if (!lk) continue;
+          addJob(`look:${characterId}:${lookId}`, {
+            kind: 'look',
+            characterId,
+            lookId,
+            prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+            avatarVersionId: getAvatarVersionId(ch),
+          });
+        }
+      }
+    };
+    ensurePrerequisiteJobs();
 
     const jobs = Array.from(deduped.values());
     if (jobs.length && aiSettings.image.provider !== 'mock') {
@@ -1420,10 +1510,11 @@ export default function App() {
                 const characterId = String(ev.job.characterId || '');
                 const ch = storyRef.characters.find((c) => c.id === characterId);
                 if (ch?.looks?.length) {
+                  const hasShotJobsInBatch = jobs.some((j) => j.kind === 'shot');
                   const hasLookJobsInBatch = jobs.some(
                     (j) => j.kind === 'look' && String((j as any).characterId || '') === characterId,
                   );
-                  if (!hasLookJobsInBatch) {
+                  if (!hasShotJobsInBatch && !hasLookJobsInBatch) {
                     const styleGuide = (storyRef as any)?.styleGuide;
                     const avatarVersionId = String((ch as any).activeAvatarVersionId || '').trim();
                     const lookJobs: AssetJob[] = ch.looks.map((lk) => ({
@@ -1489,6 +1580,45 @@ export default function App() {
       addToast('Asset generation requested, but Image Provider is Mock.', 'info');
     }
     return { applied: validActions.length, dropped: invalid.length, droppedActions: invalid };
+  };
+
+  const handleAcceptProposedStyleGuide = (args: { styleGuide: string; regenerateAssets: boolean }) => {
+    if (!activeStory || !workspace.activeProjectId) return;
+    const styleGuide = String(args.styleGuide || '').trim();
+    if (!styleGuide) return;
+    const projectId = workspace.activeProjectId;
+    updateStoryById(projectId, (prev) => ({
+      ...prev,
+      styleGuide,
+      proposedStyleGuide: '',
+      proposedStyleGuideUpdatedAt: Date.now(),
+      proposedStyleGuideSourceKvVersionId: '',
+      assetsSyncedKvVersionId: String((prev as any).activeKeyVisualVersionId || ''),
+    }));
+    addToast('Style guide accepted', 'success');
+    if (args.regenerateAssets) {
+      const storyForExec = {
+        ...activeStory,
+        styleGuide,
+        proposedStyleGuide: '',
+        proposedStyleGuideUpdatedAt: Date.now(),
+        proposedStyleGuideSourceKvVersionId: '',
+        assetsSyncedKvVersionId: String((activeStory as any).activeKeyVisualVersionId || ''),
+      } as Story;
+      applyDirectorActions(projectId, storyForExec, [{ type: 'GENERATE_PROJECT_ASSETS', payload: { scope: 'all' } }]);
+      addToast('Regenerating all assets with new style guide…', 'info');
+    }
+  };
+
+  const handleUpdateAssetsFromKv = (activeKvVersionId: string) => {
+    if (!activeStory || !workspace.activeProjectId) return;
+    const projectId = workspace.activeProjectId;
+    updateStoryById(projectId, (prev) => ({
+      ...prev,
+      assetsSyncedKvVersionId: String(activeKvVersionId || (prev as any).activeKeyVisualVersionId || ''),
+    }));
+    applyDirectorActions(projectId, activeStory, [{ type: 'GENERATE_PROJECT_ASSETS', payload: { scope: 'all' } }]);
+    addToast('Regenerating all assets from active KV…', 'info');
   };
 
   // ----- Director Console -----
@@ -1913,7 +2043,14 @@ export default function App() {
               story={activeStory}
               onSelect={handleSelect}
               imageSettings={aiSettings.image}
+              directSettings={aiSettings.direct}
               onUpdateStory={updateActiveStory}
+              onAcceptProposedStyleGuide={handleAcceptProposedStyleGuide}
+              onUpdateAssets={handleUpdateAssetsFromKv}
+              kvActionRequest={kvConsoleActionRequest}
+              onKvActionHandled={(id) => {
+                setKvConsoleActionRequest((prev) => (prev && prev.id === id ? null : prev));
+              }}
               onToast={addToast}
               onPlayCinema={() => {
                 setIsPlayingMaster(true);

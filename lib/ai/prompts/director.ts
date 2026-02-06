@@ -23,13 +23,13 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `   payload: { type: "story"|"location"|"character"|"sequence"|"shot", id: string, parentId?: string }\n` +
     `\n` +
     `A) UPDATE_STORY\n` +
-    `   payload: { patch: { title?: string, logline?: string, intent?: string, styleGuide?: string, keyVisualUrl?: string } }\n` +
+    `   payload: { patch: { title?: string, logline?: string, intent?: string, styleGuide?: string, keyVisualUrl?: string, referenceMode?: "auto"|"off", referenceImages?: Array<{ url: string, name?: string }> } }\n` +
     `\n` +
     `B) CREATE_LOCATION\n` +
     `   payload: { name?: string, description?: string, visualStyle?: string }\n` +
     `\n` +
     `C) UPDATE_LOCATION\n` +
-    `   payload: { locationId: string, patch: { name?: string, description?: string, visualStyle?: string, status?: "draft"|"locked" } }\n` +
+    `   payload: { locationId: string, patch: { name?: string, description?: string, visualStyle?: string, status?: "draft"|"locked", referenceMode?: "auto"|"off", referenceImages?: Array<{ url: string, name?: string }> } }\n` +
     `\n` +
     `C2) DELETE_LOCATION\n` +
     `   payload: { locationId: string }\n` +
@@ -91,6 +91,15 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `6) GENERATE_PROJECT_ASSETS\n` +
     `   payload: { scope?: "all"|"masterkv"|"shots"|"locations"|"characters"|"looks", concurrency?: number }\n` +
     `\n` +
+    `7) GENERATE_MASTER_KV_PROPOSAL\n` +
+    `   payload: { reason?: string }\n` +
+    `\n` +
+    `8) ACCEPT_KV_PROPOSAL\n` +
+    `   payload: { updateAssets?: boolean }\n` +
+    `\n` +
+    `9) DISCARD_KV_PROPOSAL\n` +
+    `   payload: {}\n` +
+    `\n` +
     `Rules:\n` +
     `- If the directive asks to generate/render/create assets/images/frames/storyboards (e.g. "生成资产/出图/渲染分镜"), prefer GENERATE_* actions.\n` +
     `- Use IDs that exist in the provided Story JSON.\n` +
@@ -99,9 +108,15 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- For "video prompt" requests, put the production-ready prompt into UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.videoPrompt=string).\n` +
     `- Keep the action list short (1-5 actions). For bulk generation, use GENERATE_PROJECT_ASSETS.\n` +
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
+    `- If user asks to update/regenerate master KV through director, prefer GENERATE_MASTER_KV_PROPOSAL (not GENERATE_PROJECT_ASSETS masterkv).\n` +
+    `- If user says accept/update the new KV proposal, use ACCEPT_KV_PROPOSAL.\n` +
+    `- If user says discard/reject the new KV proposal, use DISCARD_KV_PROPOSAL.\n` +
+    `- If user says retry/regenerate KV proposal, output DISCARD_KV_PROPOSAL then GENERATE_MASTER_KV_PROPOSAL.\n` +
     `- For global visual language/style changes, update UPDATE_STORY.patch.styleGuide (concise style bible).\n` +
     `- For UPDATE_CHARACTER_LOOK, you MUST include characterId + lookId and put changes under patch (do NOT use a top-level id).\n` +
     `- To clear character reference images, use UPDATE_CHARACTER with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
+    `- To clear Master KV references, use UPDATE_STORY with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
+    `- To clear environment references, use UPDATE_LOCATION with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +
     `- Only create a new LOOK when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- Look descriptions must be reference-ready (clean wardrobe/state details), not scene staging or atmosphere.\n` +

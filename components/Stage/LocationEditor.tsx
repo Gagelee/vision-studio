@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Location, ModelRuntimeSettings, Sequence, Shot } from '../../types';
-import { MapPin, Image as ImageIcon, Wand2, Save, Film, AlertCircle, Lock, Unlock, Sparkles, ZoomIn } from 'lucide-react';
+import { MapPin, Image as ImageIcon, Wand2, Save, Film, AlertCircle, Lock, Unlock, Sparkles, ZoomIn, Upload, Copy } from 'lucide-react';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildLocationPreviewPrompt } from '../../lib/ai/prompts';
 import { openLightbox } from '../../lib/ui/lightboxStore';
@@ -47,13 +47,32 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
     return { ...l, previewVersions: seeded.versions, activePreviewVersionId: seeded.activeId } as any;
   };
 
+  const mergeRuntimeAssetFields = (baseDraft: Location, source: Location): Location => {
+    if (String(baseDraft.id || '') !== String(source.id || '')) return normalizeDraft(source);
+    return normalizeDraft({
+      ...baseDraft,
+      previewUrl: source.previewUrl,
+      assetState: source.assetState,
+      ...(Array.isArray((source as any).previewVersions) ? { previewVersions: (source as any).previewVersions } : {}),
+      ...((source as any).activePreviewVersionId ? { activePreviewVersionId: (source as any).activePreviewVersionId } : {}),
+    } as any);
+  };
+
   const [draft, setDraft] = useState<Location>(() => normalizeDraft(location));
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const referenceInputRef = useRef<HTMLInputElement | null>(null);
   
   useEffect(() => {
     setDraft(normalizeDraft(location));
   }, [location.id]);
+
+  useEffect(() => {
+    setDraft((prev) => {
+      const next = mergeRuntimeAssetFields(prev, location);
+      return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
+    });
+  }, [location.id, location.previewUrl, location.assetState?.status, (location as any)?.previewVersions, (location as any)?.activePreviewVersionId]);
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(location);
   const isLocked = draft.status === 'locked';
@@ -61,6 +80,9 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
   const assetStatus = location.assetState?.status;
   const isBatchGenerating = assetStatus === 'running' || assetStatus === 'queued';
   const isBusyGenerating = isGeneratingPreview || isBatchGenerating;
+  const referenceImages = Array.isArray((draft as any).referenceImages) ? (draft as any).referenceImages : [];
+  const useReferenceImages = (draft as any).referenceMode !== 'off';
+  const maxReferenceImages = 4;
   
   // Find all shots using this location
   const usedInShots: { shot: Shot; seqId: string }[] = [];
@@ -81,11 +103,22 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
     setGenerationError(null);
     setIsGeneratingPreview(true);
     try {
+      const references = useReferenceImages
+        ? referenceImages
+            .slice(0, maxReferenceImages)
+            .map((r: any) => ({ url: String(r?.url || ''), label: r?.name ? String(r.name) : 'environment reference' }))
+            .filter((r: any) => r.url)
+        : [];
+      if (!references.length && keyVisualUrl && !String(keyVisualUrl).includes('images.unsplash.com')) {
+        references.push({ url: String(keyVisualUrl), label: 'master kv reference' });
+      }
       const out = await generateImageFromPrompt({
         prompt: buildLocationPreviewPrompt(draft, styleGuide),
         settings: imageSettings,
         aspectRatio: aspectRatio || '16:9',
+        references,
         strict: true,
+        requireAllReferences: false,
       });
       const now = Date.now();
       const seeded = seedPreviewVersions(draft);
@@ -98,7 +131,22 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
         previewUrl: out.imageUrl,
         previewVersions: [
           ...cleanedBase,
-          { id: newId, imageUrl: out.imageUrl, createdAt: now, type: cleanedBase.length ? 'variation' : 'base' },
+          {
+            id: newId,
+            imageUrl: out.imageUrl,
+            createdAt: now,
+            type: cleanedBase.length ? 'variation' : 'base',
+            metadata: {
+              prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || buildLocationPreviewPrompt(draft, styleGuide) || '').slice(0, 4000),
+              references,
+              settings: {
+                provider: imageSettings.provider,
+                model: imageSettings.model,
+                temperature: imageSettings.temperature,
+              },
+              aspectRatio: aspectRatio || '16:9',
+            },
+          },
         ] as any,
         activePreviewVersionId: newId as any,
         assetState: {
@@ -118,10 +166,68 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
     }
   };
 
+  const handleAddReferenceImages = async (files: FileList | null) => {
+    if (!files || isLocked) return;
+    const remaining = maxReferenceImages - referenceImages.length;
+    if (remaining <= 0) {
+      setGenerationError(`Reference images limit reached (${maxReferenceImages}).`);
+      return;
+    }
+    const picked = Array.from(files).slice(0, remaining);
+    const reads = picked.map(
+      (file) =>
+        new Promise<{ id: string; url: string; name?: string; createdAt?: number }>((resolve, reject) => {
+          if (!file.type.startsWith('image/')) {
+            reject(new Error(`Unsupported file: ${file.name}`));
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = () =>
+            resolve({
+              id: `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              url: String(reader.result || ''),
+              name: file.name,
+              createdAt: Date.now(),
+            });
+          reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          reader.readAsDataURL(file);
+        }),
+    );
+    const settled = await Promise.allSettled(reads);
+    const success = settled
+      .filter((r): r is PromiseFulfilledResult<{ id: string; url: string; name?: string; createdAt?: number }> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((r) => r.url);
+    const errors = settled.filter((r) => r.status === 'rejected') as Array<PromiseRejectedResult>;
+    if (errors.length) setGenerationError(errors[0]?.reason?.message || 'Failed to add reference images.');
+    if (!success.length) return;
+    const next = {
+      ...draft,
+      referenceImages: [...referenceImages, ...success].slice(0, maxReferenceImages),
+      referenceMode: (draft as any).referenceMode || 'auto',
+    } as Location;
+    setDraft(next);
+    onSave(next);
+    if (referenceInputRef.current) referenceInputRef.current.value = '';
+  };
+
+  const handleRemoveReferenceImage = (id: string) => {
+    const next = {
+      ...draft,
+      referenceImages: referenceImages.filter((r: any) => String(r?.id || '') !== String(id)),
+    } as Location;
+    setDraft(next);
+    onSave(next);
+  };
+
   const previewVersions = (draft as any).previewVersions || seedPreviewVersions(draft).versions;
   const nonPlaceholderPreviewVersions = (previewVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
   const displayPreviewVersions = nonPlaceholderPreviewVersions.length ? nonPlaceholderPreviewVersions : previewVersions;
   const activePreviewVersionId = (draft as any).activePreviewVersionId || displayPreviewVersions[displayPreviewVersions.length - 1]?.id || '';
+  const activePreviewVersion =
+    (displayPreviewVersions || []).find((v: any) => String(v?.id || '') === String(activePreviewVersionId || '')) ||
+    (displayPreviewVersions || [])[displayPreviewVersions.length - 1];
+  const activePrompt = String((activePreviewVersion as any)?.metadata?.prompt || '').trim();
 
   const handleSelectPreviewVariant = (versionId: string) => {
     const v = (previewVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
@@ -252,6 +358,26 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
                         Generate failed: {generationError}
                     </div>
                 )}
+
+                {activePrompt && (
+                  <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Environment Prompt</div>
+                      <button
+                        type="button"
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-widest border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                        onClick={() => navigator.clipboard?.writeText(activePrompt)}
+                        title="Copy prompt"
+                      >
+                        <Copy className="w-3 h-3" />
+                        Copy
+                      </button>
+                    </div>
+                    <pre className="text-[11px] text-zinc-200 whitespace-pre-wrap bg-zinc-950 border border-zinc-800 rounded-xl p-3 max-h-44 overflow-y-auto custom-scrollbar">
+                      {activePrompt}
+                    </pre>
+                  </div>
+                )}
                 
                 {/* Used In Gallery */}
                 <div>
@@ -373,6 +499,68 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
                         className="w-full h-24 bg-zinc-900 border border-zinc-800 rounded-lg p-4 text-sm text-zinc-300 leading-relaxed focus:outline-none focus:border-emerald-500/50 resize-none transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                         placeholder="Cinematography style, film stock, lighting mood..."
                     />
+                </div>
+
+                <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Reference Images (1-4)</div>
+                        <label className="flex items-center gap-2 text-[10px] text-zinc-400">
+                          <input
+                            type="checkbox"
+                            checked={useReferenceImages}
+                            onChange={(e) => {
+                              const next = { ...draft, referenceMode: e.target.checked ? 'auto' : 'off' } as Location;
+                              setDraft(next);
+                              onSave(next);
+                            }}
+                            disabled={isLocked}
+                          />
+                          Use for environment generation
+                        </label>
+                    </div>
+                    <input
+                      ref={referenceInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => handleAddReferenceImages(e.target.files)}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      {referenceImages.map((img: any) => (
+                        <div key={String(img.id)} className="relative w-16 h-16 rounded-xl overflow-hidden border border-white/10 bg-black/30">
+                          <img
+                            src={String(img.url)}
+                            className="w-full h-full object-cover cursor-zoom-in"
+                            onClick={() => openLightbox({ url: String(img.url), title: img.name ? `Reference: ${img.name}` : 'Reference' })}
+                          />
+                          {!isLocked && (
+                            <button
+                              type="button"
+                              className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/60 text-white text-[10px] flex items-center justify-center"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveReferenceImage(String(img.id));
+                              }}
+                              title="Remove"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      {!isLocked && referenceImages.length < maxReferenceImages && (
+                        <button
+                          type="button"
+                          className="w-16 h-16 rounded-xl border border-dashed border-zinc-700 text-zinc-500 hover:text-emerald-300 hover:border-emerald-500/50 flex flex-col items-center justify-center gap-1 text-[10px] font-bold uppercase tracking-wide"
+                          onClick={() => referenceInputRef.current?.click()}
+                          title="Upload reference images"
+                        >
+                          <Upload className="w-4 h-4" />
+                          Add
+                        </button>
+                      )}
+                    </div>
                 </div>
                 
                 {isDirty && (

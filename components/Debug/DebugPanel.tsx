@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Copy, Trash2, X, Bug } from 'lucide-react';
 import { AiSettings, Story } from '../../types';
-import { DebugEvent, clearDebugEvents, getDebugEvents, subscribeDebugEvents } from '../../lib/debug/eventLog';
+import { DebugEvent, clearDebugEvents, compactDebugValue, getDebugEvents, subscribeDebugEvents } from '../../lib/debug/eventLog';
 import { AGENT_REGISTRY } from '../../lib/ai/agentRegistry';
 import { PROMPT_REGISTRY } from '../../lib/ai/promptMeta';
 
@@ -11,6 +11,9 @@ interface DebugPanelProps {
   agentHistory: any[];
   onClose: () => void;
 }
+
+const EXPORT_EVENT_LIMIT = 300;
+const EXPORT_HISTORY_LIMIT = 40;
 
 const formatTs = (ts: number) => new Date(ts).toLocaleString();
 
@@ -76,9 +79,16 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
   }, [events]);
 
   const diagnostics = useMemo(() => {
+    const exportedEvents = events.slice(-EXPORT_EVENT_LIMIT);
+    const exportedHistory = (agentHistory || []).slice(-EXPORT_HISTORY_LIMIT);
     return {
       ts: Date.now(),
       userAgent: navigator.userAgent,
+      limits: {
+        totalEvents: events.length,
+        exportedEvents: exportedEvents.length,
+        exportedAgentHistory: exportedHistory.length,
+      },
       aiSettings,
       activeProject: activeStory
         ? {
@@ -91,8 +101,8 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
             shots: activeStory.sequences?.reduce((acc, s) => acc + (s.shots?.length || 0), 0) || 0,
           }
         : null,
-      agentHistory: (agentHistory || []).slice(-60),
-      debugEvents: events,
+      agentHistory: compactDebugValue(exportedHistory),
+      debugEvents: compactDebugValue(exportedEvents),
     };
   }, [aiSettings, activeStory, agentHistory, events]);
 
@@ -136,7 +146,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
   };
 
   const copyEvent = async (ev: DebugEvent) => {
-    const text = JSON.stringify(ev, null, 2);
+    const text = JSON.stringify(compactDebugValue(ev), null, 2);
     try {
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
         await navigator.clipboard.writeText(text);

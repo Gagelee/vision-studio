@@ -9,6 +9,21 @@ const styleBlock = (styleGuide?: string) => {
   return `StyleGuide (apply to rendering, palette, lighting, camera feel):\n${s}\n`;
 };
 
+const normalizeStyleGuideForReference = (styleGuide?: string) => {
+  const raw = String(styleGuide || '').trim();
+  if (!raw) return '';
+  const lines = raw
+    .split('\n')
+    .map((x) => x.replace(/^\s*[-*]\s*/, '').trim())
+    .filter(Boolean);
+  const keep = lines.filter((line) =>
+    /(render|style|medium|palette|color|tone|texture|contrast|grain|brush|realistic|photoreal|anime|ink|oil|watercolor)/i.test(line),
+  );
+  const picked = (keep.length ? keep : lines).slice(0, 6);
+  if (!picked.length) return '';
+  return picked.join('; ');
+};
+
 export const buildMasterKeyVisualPrompt = (args: { intent?: string; logline?: string }) => {
   const intent = String(args.intent || '').trim();
   const logline = String(args.logline || '').trim();
@@ -34,9 +49,10 @@ export const buildLocationPreviewPrompt = (loc: Location, styleGuide?: string) =
 };
 
 export const buildCharacterAvatarPrompt = (ch: Character, styleGuide?: string) => {
+  const refStyle = normalizeStyleGuideForReference(styleGuide);
   return (
     `Character reference sheet (clean, standard, consistent). ${baseRulesReference()}\n` +
-    styleBlock(styleGuide) +
+    (refStyle ? `Style adaptation for reference sheet (use only rendering medium/palette/texture; keep neutral studio setup): ${refStyle}\n` : '') +
     `Format: 2x2 model sheet on a plain light/neutral background, consistent scale.\n` +
     `Views: front face (neutral), 3/4 face, profile, full-body front. Same exact person across all views.\n` +
     `Identity: lock facial proportions, age, ethnicity, eye shape, jawline, hairline, and unique identifying details.\n` +
@@ -49,9 +65,10 @@ export const buildCharacterAvatarPrompt = (ch: Character, styleGuide?: string) =
 };
 
 export const buildCharacterLookPrompt = (ch: Character, look: CharacterLook, styleGuide?: string) => {
+  const refStyle = normalizeStyleGuideForReference(styleGuide);
   return (
     `Character LOOK reference sheet (wardrobe/state), clean identity lock. ${baseRulesReference()}\n` +
-    (styleGuide ? `StyleGuide (apply ONLY to rendering medium/brushwork/palette; keep neutral studio lighting):\n${String(styleGuide).trim()}\n` : '') +
+    (refStyle ? `Style adaptation for look sheet (apply ONLY rendering medium/palette/texture; keep neutral studio lighting): ${refStyle}\n` : '') +
     `Format: 2x2 model sheet on a plain light/neutral background, consistent scale.\n` +
     `Views: full-body front, full-body 3/4, profile, head-and-shoulders close-up.\n` +
     `Identity lock: MUST match the provided base avatar reference exactly (same person, same face).\n` +
