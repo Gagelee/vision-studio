@@ -20,6 +20,11 @@ import { buildMasterKeyVisualPrompt } from '../../lib/ai/prompts';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 import { isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
 import { runDirectorCommand } from '../../lib/ai/agent/direct';
+import {
+  buildStyleGuideSynthesisMessage,
+  extractStyleGuideCandidate,
+  mergeKvPromptWithReferenceHints,
+} from '../../lib/ai/kvFlow';
 
 interface ProjectDashboardProps {
   story: Story;
@@ -126,50 +131,6 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
     (displayKvVersions || [])[displayKvVersions.length - 1];
   const activeKvPrompt = String((activeKvVersion as any)?.metadata?.prompt || '').trim();
 
-  const normalizeStyleGuideText = (raw: string) => {
-    const t = String(raw || '').trim();
-    if (!t) return '';
-    const noPreface = t
-      .replace(/^```[\s\S]*?\n/, '')
-      .replace(/```$/g, '')
-      .replace(/^I\s+(have\s+)?(synthesized|created|generated|prepared)[^.]*\.\s*/i, '')
-      .replace(/^Here\s+is\s+(the\s+)?(style\s+guide|proposal)[^:]*:\s*/i, '')
-      .trim();
-    const lines = noPreface
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .filter((line) => !/^\-\s*core visual direction:\s*i\s+(have|am|will)\b/i.test(line))
-      .filter((line) => !/^i\s+(have|am|will|can)\b/i.test(line));
-    if (lines.length >= 4) return lines.join('\n');
-    const sentenceLines = noPreface
-      .split(/[.;]\s+/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => (s.startsWith('-') ? s : `- ${s.replace(/[.]+$/, '')}.`));
-    if (sentenceLines.length >= 3) return sentenceLines.join('\n');
-    return '';
-  };
-
-  const extractStyleGuideCandidate = (res: any) => {
-    const fromAction = (Array.isArray(res?.actions) ? res.actions : [])
-      .map((a: any) => (a?.type === 'UPDATE_STORY' ? a?.payload?.patch?.styleGuide || a?.payload?.styleGuide : ''))
-      .find((x: any) => typeof x === 'string' && String(x).trim());
-    const normalizedAction = normalizeStyleGuideText(String(fromAction || ''));
-    if (normalizedAction) return normalizedAction;
-    const normalizedReply = normalizeStyleGuideText(String(res?.reply || ''));
-    if (normalizedReply) return normalizedReply;
-    const raw = String(res?.reply || '').trim();
-    if (!raw) return '';
-    return [
-      `- Core visual direction: live-action cinematic cyberpunk with grounded production realism.`,
-      `- Keep rendering consistent with story intent: ${String(story.intent || '').trim() || 'cinematic narrative continuity'}.`,
-      `- Preserve stable character identity and environment continuity across all generated assets.`,
-      `- Maintain controlled palette, lighting logic, and camera language; avoid abrupt style drift.`,
-      `- Negative constraints: no logos, no watermarks, no text artifacts.`,
-    ].join('\n');
-  };
-
   const handleSelectKvVariant = (versionId: string) => {
     const v = (kvVersions || []).find((x: any) => String(x?.id || '') === String(versionId));
     if (!v?.imageUrl) return;
@@ -262,16 +223,17 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
       const fallbackRefs = uploadedRefs.length === 0 && story.keyVisualUrl ? [{ url: story.keyVisualUrl, label: 'current master kv' }] : [];
       const refs = uploadedRefs.length ? uploadedRefs : fallbackRefs;
 
-      let promptForKv = buildMasterKeyVisualPrompt({
+      const basePromptForKv = buildMasterKeyVisualPrompt({
         intent: story.intent,
         logline: story.logline,
         styleGuide: (story as any).styleGuide,
       } as any);
+      let promptForKv = basePromptForKv;
 
       if (uploadedRefs.length && useReferenceImages && canUseDirector) {
         const promptRes = await runDirectorCommand({
           message:
-            'Summarize current story intent + uploaded Master KV references into ONE production-ready image prompt for generating a single master key visual. Return only prompt text. No actions.',
+            'Summarize current story intent + uploaded Master KV references into concise composition hints (subject/framing/mood) for a single master key visual. Return only hints text. No actions.',
           selection: { type: 'story', id: story.id },
           story,
           settings: directSettings!,
@@ -279,7 +241,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           useFunctionCalling: Boolean((directSettings as any)?.useFunctionCalling),
         });
         const distilled = String(promptRes?.reply || '').trim();
-        if (distilled) promptForKv = distilled;
+        if (distilled) promptForKv = mergeKvPromptWithReferenceHints(basePromptForKv, distilled);
       }
 
       const out = await generateImageFromPrompt({
@@ -298,20 +260,20 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
 
       const id = `kv-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
       const createdAt = Date.now();
+      const promptUsed = String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || promptForKv || '').slice(0, 4000);
 
       let proposedStyleGuide = '';
-      if (uploadedRefs.length && useReferenceImages && canUseDirector) {
+      if (canUseDirector) {
         const storyForStyle = { ...story, keyVisualUrl: out.imageUrl } as Story;
         const styleRes = await runDirectorCommand({
-          message:
-            'Based on current story and the active Master KV, produce a concise production-ready style guide text. Respond with exactly one UPDATE_STORY action that only sets patch.styleGuide.',
+          message: buildStyleGuideSynthesisMessage(promptUsed),
           selection: { type: 'story', id: story.id },
           story: storyForStyle,
           settings: directSettings!,
           allowSingleFallback: false,
           useFunctionCalling: Boolean((directSettings as any)?.useFunctionCalling),
         });
-        proposedStyleGuide = extractStyleGuideCandidate(styleRes);
+        proposedStyleGuide = extractStyleGuideCandidate({ response: styleRes, story });
         if (!proposedStyleGuide) {
           throw new Error('Style guide format invalid. Please regenerate.');
         }
@@ -325,7 +287,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
         type: replaceExistingForReferenceRefresh ? 'base' : cleanedBase.length ? 'variation' : 'base',
         metadata: {
           ...(proposedStyleGuide ? { proposedStyleGuide } : {}),
-          prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || promptForKv || '').slice(0, 4000),
+          prompt: promptUsed,
           references: refs,
           settings: {
             provider: imageSettings?.provider,

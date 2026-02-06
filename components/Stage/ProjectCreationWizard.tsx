@@ -1,22 +1,73 @@
 
-import React, { useMemo, useRef, useState } from 'react';
-import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle, Upload } from 'lucide-react';
 import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
 import { createLocalMockProject, scaffoldProjectStream, scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
+import { runDirectorCommand } from '../../lib/ai/agent/direct';
 import { isAgentApiError } from '../../lib/ai/agent/apiError';
 import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
 
+type PreflightMsg = { id: string; role: 'user' | 'agent' | 'system'; content: string; attachmentIds?: string[] };
+type PreflightAttachment = {
+  id: string;
+  url: string;
+  name?: string;
+  createdAt?: number;
+  sourceMessageId?: string;
+  assignedTo: string; // unassigned | global | character:<name> | location:<name>
+};
+
 interface ProjectCreationWizardProps {
   aiSettings: AiSettings;
+  workflowMode?: 'auto' | 'interaction';
+  onWorkflowModeChange?: (mode: 'auto' | 'interaction') => void;
   onComplete: (project: Story, plan: AgentPlan, debug?: any) => void;
   onDraftProject?: (project: Story) => void;
   onCancel: () => void;
 }
 
-export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ aiSettings, onComplete, onDraftProject, onCancel }) => {
+export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
+  aiSettings,
+  workflowMode = 'auto',
+  onWorkflowModeChange,
+  onComplete,
+  onDraftProject,
+  onCancel,
+}) => {
+  const createPreflightSeedStory = (intentText: string, aspectRatio: AspectRatio): Story => {
+    const now = Date.now();
+    return {
+      id: `preflight-${now}`,
+      title: intentText.trim().split(/\s+/).slice(0, 6).join(' ') || 'Preflight',
+      logline: intentText.trim() || 'Preflight intent',
+      intent: intentText.trim(),
+      styleGuide: '',
+      keyVisualUrl: '',
+      aspectRatio,
+      status: 'ready',
+      createdAt: now,
+      updatedAt: now,
+      lastOpenedAt: now,
+      locations: [],
+      characters: [],
+      sequences: [],
+    };
+  };
+
   const [intent, setIntent] = useState('');
   const [ratio, setRatio] = useState<AspectRatio>('16:9');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isPreflightOpen, setIsPreflightOpen] = useState(false);
+  const [preflightInput, setPreflightInput] = useState('');
+  const [preflightMessages, setPreflightMessages] = useState<PreflightMsg[]>([]);
+  const [isPreflightThinking, setIsPreflightThinking] = useState(false);
+  const [preflightReady, setPreflightReady] = useState(false);
+  const [preflightBrief, setPreflightBrief] = useState('');
+  const [forceStartArmed, setForceStartArmed] = useState(false);
+  const [unassignedProceedArmed, setUnassignedProceedArmed] = useState(false);
+  const [preflightAttachments, setPreflightAttachments] = useState<PreflightAttachment[]>([]);
+  const [pendingAttachments, setPendingAttachments] = useState<Array<{ id: string; url: string; name?: string; createdAt?: number }>>([]);
+  const [knownTargets, setKnownTargets] = useState<string[]>(['global']);
   const [plan, setPlan] = useState<AgentPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mockFallbackConfirmArmed, setMockFallbackConfirmArmed] = useState(false);
@@ -31,6 +82,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
   const lastScaffoldRef = useRef<Awaited<ReturnType<typeof scaffoldProjectWithSettings>> | null>(null);
   const lastScaffoldArgsRef = useRef<{ intent: string; ratio: AspectRatio } | null>(null);
   const storyRef = useRef<Story | null>(null);
+  const preflightFileRef = useRef<HTMLInputElement | null>(null);
+  const preflightMessagesRef = useRef<HTMLDivElement | null>(null);
 
   const formats: { label: string; ratio: AspectRatio; icon: any }[] = [
     { label: 'Cinema', ratio: '16:9', icon: Tv },
@@ -38,13 +91,23 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     { label: 'Square', ratio: '1:1', icon: Instagram },
     { label: 'Portrait', ratio: '4:5', icon: Clapperboard },
   ];
-
   const progressPct = useMemo(() => {
     if (!isProcessing) return 0;
     if (phase === 'scaffold') return 30;
     const denom = Math.max(1, assetTotal);
     return 30 + Math.round((assetDone / denom) * 70);
   }, [assetDone, assetTotal, isProcessing, phase]);
+  const unassignedAttachmentCount = useMemo(
+    () => preflightAttachments.filter((a) => String(a.assignedTo || '') === 'unassigned').length,
+    [preflightAttachments],
+  );
+
+  useEffect(() => {
+    if (!isPreflightOpen) return;
+    const el = preflightMessagesRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [isPreflightOpen, preflightMessages, isPreflightThinking]);
 
   const resetProgress = () => {
     setPlan(null);
@@ -58,9 +121,212 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     setAssetErrors(0);
     setAssetCurrent('');
     setScaffoldCurrent('');
+    setIsPreflightOpen(false);
+    setPreflightInput('');
+    setPreflightMessages([]);
+    setIsPreflightThinking(false);
+    setPreflightReady(false);
+    setPreflightBrief('');
+    setForceStartArmed(false);
+    setUnassignedProceedArmed(false);
+    setPreflightAttachments([]);
+    setPendingAttachments([]);
+    setKnownTargets(['global']);
     storyRef.current = null;
     lastScaffoldRef.current = null;
     lastScaffoldArgsRef.current = null;
+  };
+
+  const readReferenceFiles = async (files: FileList | null) => {
+    const picked = Array.from(files || [])
+      .filter((f) => f.type.startsWith('image/'))
+      .slice(0, 4);
+    const reads = picked.map(
+      (file) =>
+        new Promise<{ id: string; url: string; name?: string; createdAt?: number }>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () =>
+            resolve({
+              id: `preflight-ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              url: String(reader.result || ''),
+              name: file.name,
+              createdAt: Date.now(),
+            });
+          reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          reader.readAsDataURL(file);
+        }),
+    );
+    const settled = await Promise.allSettled(reads);
+    return settled
+      .filter((r): r is PromiseFulfilledResult<{ id: string; url: string; name?: string; createdAt?: number }> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((r) => r.url);
+  };
+
+  const parseMentionTarget = (text: string): string | null => {
+    const t = String(text || '');
+    const m = t.match(/@([^\s,.;:!?]+)/);
+    if (!m?.[1]) return null;
+    const raw = String(m[1]).trim();
+    if (!raw) return null;
+    const lower = raw.toLowerCase();
+    if (lower.startsWith('loc:') || lower.startsWith('location:')) {
+      const v = raw.split(':').slice(1).join(':').trim();
+      return v ? `location:${v}` : 'location:primary';
+    }
+    if (lower.startsWith('char:') || lower.startsWith('character:')) {
+      const v = raw.split(':').slice(1).join(':').trim();
+      return v ? `character:${v}` : null;
+    }
+    return `character:${raw}`;
+  };
+
+  const inferTargetFromRecentAgent = (): string | null => {
+    const lastAgent = [...preflightMessages].reverse().find((m) => m.role === 'agent');
+    const text = String(lastAgent?.content || '').toLowerCase();
+    if (!text) return null;
+    // Conservative default: only auto-route to global when it's clearly KV/style related.
+    // Character/location routing without explicit mention is too error-prone.
+    if (/(kv|style|look and feel|visual anchor|master visual)/i.test(text)) return 'global';
+    return null;
+  };
+
+  const extractSuggestedTargetsFromAgentReply = (reply: string): string[] => {
+    const text = String(reply || '');
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    const out = new Set<string>();
+    for (const line of lines) {
+      const lower = line.toLowerCase();
+      if (/(kv|master visual|style guide|visual anchor)/i.test(lower)) out.add('global');
+      const quoted = [...line.matchAll(/"([^"]{2,48})"/g)].map((m) => String(m[1] || '').trim()).filter(Boolean);
+      if (/(cast|character|protagonist|hero|role)/i.test(lower)) {
+        for (const q of quoted) out.add(`character:${q}`);
+      }
+      if (/(location|scene|setting|environment)/i.test(lower)) {
+        for (const q of quoted) out.add(`location:${q}`);
+      }
+      const listMatch = line.match(/(?:location|scene|setting|environment)[^:]*:\s*(.+)$/i);
+      if (listMatch?.[1]) {
+        for (const item of String(listMatch[1]).split(',').map((x) => x.trim()).filter(Boolean)) {
+          if (item.length >= 2 && item.length <= 48) out.add(`location:${item}`);
+        }
+      }
+    }
+    return Array.from(out);
+  };
+
+  const resolveAttachmentTarget = (messageText: string): string => {
+    const byMention = parseMentionTarget(messageText);
+    if (byMention) return byMention;
+    const byContext = inferTargetFromRecentAgent();
+    if (byContext) return byContext;
+    return 'unassigned';
+  };
+
+  const sendPreflightMessage = async (userText: string, opts?: { kickoff?: boolean }) => {
+    const text = String(userText || '').trim();
+    const hasFiles = pendingAttachments.length > 0;
+    if (!text && !hasFiles && !opts?.kickoff) return;
+    if (isPreflightThinking) return;
+    const content = text || (hasFiles ? '[Attachments]' : '');
+    const target = hasFiles ? resolveAttachmentTarget(content) : '';
+    const userMsgId = `p-u-${Date.now()}`;
+    const liftedAttachments: PreflightAttachment[] = (pendingAttachments || []).map((a) => ({
+      ...a,
+      sourceMessageId: userMsgId,
+      assignedTo: target || 'unassigned',
+    }));
+    const userMsg: PreflightMsg | null = content
+      ? {
+          id: userMsgId,
+          role: 'user',
+          content: content,
+          attachmentIds: liftedAttachments.map((a) => a.id),
+        }
+      : null;
+    const nextMessages = userMsg ? [...preflightMessages, userMsg] : preflightMessages.slice();
+    if (userMsg) setPreflightMessages(nextMessages);
+    if (!opts?.kickoff && (content.trim() || liftedAttachments.length)) {
+      // Any new user input invalidates previous "ready" until director reconfirms.
+      setPreflightReady(false);
+      setPreflightBrief('');
+    }
+    if (liftedAttachments.length) {
+      setPreflightAttachments((prev) => [...prev, ...liftedAttachments]);
+      setPendingAttachments([]);
+      if (target && !knownTargets.includes(target)) setKnownTargets((prev) => [...prev, target]);
+    }
+    setForceStartArmed(false);
+    setUnassignedProceedArmed(false);
+    setPreflightInput('');
+    setIsPreflightThinking(true);
+    try {
+      const conversation = nextMessages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+      const seedStory = createPreflightSeedStory(String(intent || '').trim(), ratio);
+      const globalRefs = [...preflightAttachments, ...liftedAttachments]
+        .filter((x) => String(x.assignedTo || '') === 'global')
+        .map((x) => ({ id: x.id, url: x.url, name: x.name, createdAt: x.createdAt }));
+      const preflightStory = {
+        ...seedStory,
+        referenceImages: globalRefs,
+        referenceMode: globalRefs.length ? 'auto' : 'off',
+      } as any;
+      const assignmentSummary = [...preflightAttachments, ...liftedAttachments]
+        .map((a) => `${a.name || a.id} -> ${a.assignedTo}`)
+        .join('\n');
+      const res = await runDirectorCommand({
+        message: [
+          '[Start Project Interaction Preflight]',
+          'Goal: clarify requirements before scaffold+asset generation.',
+          'Behavior:',
+          '- Ask concise follow-up questions until enough information is collected.',
+          '- When enough, include a line exactly: READY_TO_SCAFFOLD',
+          '- Then provide "Brief:" followed by concise bullet points.',
+          '- Mention if references are missing and what assumptions will be used.',
+          `Current intent: ${String(intent || '').trim()}`,
+          `Uploaded references count: ${[...preflightAttachments, ...liftedAttachments].length}`,
+          assignmentSummary ? `Attachment assignments:\n${assignmentSummary}` : 'Attachment assignments: (none)',
+          `Conversation:\n${conversation || '(empty)'}`,
+          opts?.kickoff ? 'Kickoff: Ask your first clarifying question now.' : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        selection: { type: 'creation', id: 'creation' },
+        story: preflightStory,
+        settings: aiSettings.direct,
+        allowSingleFallback: false,
+        useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
+      });
+      const reply = String(res?.reply || '').trim();
+      setPreflightMessages((prev) => [...prev, { id: `p-a-${Date.now()}`, role: 'agent', content: reply || '(empty reply)' }]);
+      const suggestedTargets = extractSuggestedTargetsFromAgentReply(reply);
+      if (suggestedTargets.length) {
+        setKnownTargets((prev) => {
+          const s = new Set(prev);
+          for (const t of suggestedTargets) s.add(t);
+          return Array.from(s);
+        });
+      }
+      const readyNow =
+        /READY_TO_SCAFFOLD/i.test(reply) ||
+        /ready to (generate|scaffold|proceed|start)/i.test(reply) ||
+        /可以开始|可开始|开始生成|已准备好|准备好了|可以进入生成/i.test(reply);
+      const askMore =
+        /(\?|还需要|还需|请补充|请提供|can you|could you|please provide|which|what|do you|是否|要不要|有没有)/i.test(reply) &&
+        !readyNow;
+      if (readyNow) setPreflightReady(true);
+      else if (askMore) setPreflightReady(false);
+      if (readyNow) {
+        const brief = reply.replace(/READY_TO_SCAFFOLD/gi, '').trim();
+        setPreflightBrief(brief);
+        setForceStartArmed(false);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPreflightMessages((prev) => [...prev, { id: `p-s-${Date.now()}`, role: 'system', content: `Preflight error: ${msg}` }]);
+    } finally {
+      setIsPreflightThinking(false);
+    }
   };
 
   const runAssets = async (res: Awaited<ReturnType<typeof scaffoldProjectWithSettings>>) => {
@@ -131,8 +397,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     });
   };
 
-  const runScaffold = async (opts?: { allowSingleFallback?: boolean }) => {
-    if (!intent.trim()) return;
+  const runScaffold = async (opts?: { allowSingleFallback?: boolean; intentOverride?: string; retriedJsonRepair?: boolean }) => {
+    const effectiveIntent = String(opts?.intentOverride || intent || '').trim();
+    if (!effectiveIntent) return;
     setIsProcessing(true);
     setError(null);
     setMockFallbackConfirmArmed(false);
@@ -146,14 +413,15 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
     setScaffoldCurrent('');
     storyRef.current = null;
 
-    lastScaffoldArgsRef.current = { intent: intent.trim(), ratio };
+    let scaffoldIntent = effectiveIntent;
+    lastScaffoldArgsRef.current = { intent: scaffoldIntent, ratio };
     try {
       // Prefer streaming for better transparency (multi-agent is long-running and prone to idle timeouts).
       const res =
         aiSettings.scaffoldWorker.provider !== 'mock'
           ? await scaffoldProjectStream(
               {
-                intent: intent.trim(),
+                intent: scaffoldIntent,
                 aspectRatio: ratio,
                 settings: aiSettings.scaffoldWorker,
                 plannerSettings: aiSettings.scaffoldPlanner,
@@ -179,30 +447,114 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
               },
             )
           : await scaffoldProjectWithSettings({
-              intent: intent.trim(),
+              intent: scaffoldIntent,
               aspectRatio: ratio,
               aiSettings,
               allowSingleFallback: Boolean(opts?.allowSingleFallback),
             });
-	      lastScaffoldRef.current = res;
-	      storyRef.current = res.story;
-	      setPlan(res.plan);
-        onDraftProject?.(res.story);
-	      await runAssets(res);
-	    } catch (e) {
+        const normalized = (preflightAttachments || []).map((a) => ({
+          id: a.id,
+          url: a.url,
+          name: a.name,
+          createdAt: a.createdAt,
+          assignedTo: String(a.assignedTo || 'unassigned'),
+        }));
+        const globalRefs = normalized.filter((a) => a.assignedTo === 'global').map(({ assignedTo, ...x }) => x);
+        const charRefs = normalized.filter((a) => a.assignedTo.startsWith('character:'));
+        const locRefs = normalized.filter((a) => a.assignedTo.startsWith('location:'));
+        const enrichedStory = {
+          ...res.story,
+          referenceImages: globalRefs as any,
+          referenceMode: globalRefs.length ? 'auto' : (res.story as any).referenceMode,
+          characters: (res.story.characters || []).map((c) => {
+            const next = charRefs
+              .filter((r) => {
+                const name = String(r.assignedTo.split(':').slice(1).join(':') || '').trim().toLowerCase();
+                const cn = String(c.name || '').trim().toLowerCase();
+                return name && (cn.includes(name) || name.includes(cn));
+              })
+              .map(({ assignedTo, ...x }) => x);
+            if (!next.length) return c;
+            return {
+              ...c,
+              referenceImages: ([...(Array.isArray((c as any).referenceImages) ? (c as any).referenceImages : []), ...next].slice(-4) as any),
+              referenceMode: 'auto',
+            } as any;
+          }),
+          locations: (res.story.locations || []).map((l) => {
+            const next = locRefs
+              .filter((r) => {
+                const name = String(r.assignedTo.split(':').slice(1).join(':') || '').trim().toLowerCase();
+                const ln = String(l.name || '').trim().toLowerCase();
+                return name && (ln.includes(name) || name.includes(ln));
+              })
+              .map(({ assignedTo, ...x }) => x);
+            if (!next.length) return l;
+            return {
+              ...l,
+              referenceImages: ([...(Array.isArray((l as any).referenceImages) ? (l as any).referenceImages : []), ...next].slice(-4) as any),
+              referenceMode: 'auto',
+            } as any;
+          }),
+        } as Story;
+        const enrichedRes = { ...res, story: enrichedStory } as typeof res;
+	      lastScaffoldRef.current = enrichedRes;
+	      storyRef.current = enrichedStory;
+	      setPlan(enrichedRes.plan);
+        onDraftProject?.(enrichedStory);
+	      await runAssets(enrichedRes);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      const looksLikeJsonFormatIssue =
+        /not valid json|invalid json|json parse|response was not valid json|malformed json/i.test(errMsg);
+      const isGemini25Flash =
+        aiSettings.scaffoldWorker.provider === 'gemini' &&
+        /gemini-2\.5-flash/i.test(String(aiSettings.scaffoldWorker.model || ''));
+      if (looksLikeJsonFormatIssue && isGemini25Flash && !opts?.retriedJsonRepair) {
+        setScaffoldCurrent('Retrying with strict JSON mode…');
+        const strictIntent = [
+          effectiveIntent,
+          'Output constraint: return exactly one valid JSON object only; no markdown; no prose; no truncation.',
+          'If content is too long, reduce counts but keep schema complete.',
+        ].join('\n');
+        await runScaffold({
+          allowSingleFallback: true,
+          intentOverride: strictIntent,
+          retriedJsonRepair: true,
+        });
+        return;
+      }
       if (isAgentApiError(e) && e.bodyJson?.errorCode === 'MULTI_AGENT_FAILED') {
         setCanSingleFallback(true);
         setError(String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message || 'Multi-agent scaffold failed'));
         return;
       }
       setCanSingleFallback(false);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     resetProgress();
+    if (workflowMode === 'interaction') {
+      setIsPreflightOpen(true);
+      setPreflightMessages([
+        {
+          id: `p-s-${Date.now()}`,
+          role: 'system',
+          content: 'Interaction preflight started. Director will ask clarifying questions. Upload references here if available.',
+        },
+      ]);
+      setPreflightInput('');
+      setPreflightReady(false);
+      setPreflightBrief('');
+      setForceStartArmed(false);
+      setTimeout(() => {
+        sendPreflightMessage('', { kickoff: true }).catch(() => {});
+      }, 0);
+      return;
+    }
     await runScaffold({ allowSingleFallback: false });
   };
 
@@ -407,15 +759,258 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
                             ))}
                         </div>
 
-                        <button 
-                            type="submit"
-                            disabled={!intent.trim()}
-                            className="group flex items-center gap-4 px-12 py-6 bg-white text-black rounded-full text-xl font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all disabled:opacity-20"
-                        >
-                            Start Production
-                            <ArrowRight className="w-6 h-6 group-hover:translate-x-2 transition-transform" />
-                        </button>
+                        <div className="max-w-xl mx-auto rounded-2xl border border-white/10 bg-white/5 backdrop-blur px-4 py-3">
+                          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-white/40 mb-3">
+                            Workflow Entry Mode
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <button
+                              type="button"
+                              onClick={() => onWorkflowModeChange?.('auto')}
+                              className={`px-4 py-3 rounded-xl border text-left transition-all ${
+                                workflowMode === 'auto'
+                                  ? 'bg-white text-black border-white'
+                                  : 'bg-white/5 text-white/70 border-white/15 hover:bg-white/10'
+                              }`}
+                            >
+                              <div className="text-xs font-black uppercase tracking-widest">Auto</div>
+                              <div className="mt-1 text-[11px] opacity-80">One-shot direct execution.</div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onWorkflowModeChange?.('interaction')}
+                              className={`px-4 py-3 rounded-xl border text-left transition-all ${
+                                workflowMode === 'interaction'
+                                  ? 'bg-amber-400 text-black border-amber-300'
+                                  : 'bg-white/5 text-white/70 border-white/15 hover:bg-white/10'
+                              }`}
+                            >
+                              <div className="text-xs font-black uppercase tracking-widest">Interaction</div>
+                              <div className="mt-1 text-[11px] opacity-80">Back-and-forth before generation.</div>
+                            </button>
+                          </div>
+                        </div>
+
+                        {!isPreflightOpen && (
+                          <button
+                              type="submit"
+                              disabled={!intent.trim()}
+                              className="group flex items-center gap-4 px-12 py-6 bg-white text-black rounded-full text-xl font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all disabled:opacity-20"
+                          >
+                              Start Production
+                              <ArrowRight className="w-6 h-6 group-hover:translate-x-2 transition-transform" />
+                          </button>
+                        )}
                     </form>
+
+                    {isPreflightOpen && (
+                      <div className="fixed inset-0 z-[2600] bg-black/60 backdrop-blur-sm p-6 flex items-center justify-center">
+                      <div className="w-full max-w-3xl rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-6 text-left max-h-[78vh] flex flex-col">
+                        <div className="text-[10px] font-black uppercase tracking-[0.3em] text-white/40 mb-4">Interaction Preflight</div>
+                        <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-5">
+                        <div ref={preflightMessagesRef} className="rounded-2xl border border-white/10 bg-black/20 p-4 h-72 overflow-y-auto space-y-3">
+                          {preflightMessages.map((m) => (
+                            <div key={m.id} className={`text-sm ${m.role === 'user' ? 'text-white' : m.role === 'agent' ? 'text-amber-200' : 'text-zinc-400'}`}>
+                              <span className="text-[10px] font-black uppercase tracking-wider mr-2 opacity-70">{m.role}</span>
+                              <span className="whitespace-pre-wrap">{m.content}</span>
+                              {m.attachmentIds?.length ? (
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {m.attachmentIds.map((id) => {
+                                    const a = preflightAttachments.find((x) => x.id === id);
+                                    if (!a) return null;
+                                    return (
+                                      <span key={id} className="px-1.5 py-0.5 rounded border border-white/15 text-[10px] text-zinc-300">
+                                        {a.name || 'attachment'} {'->'} {a.assignedTo}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                          {isPreflightThinking && <div className="text-xs text-white/50">Director is typing…</div>}
+                        </div>
+
+                        <input
+                          ref={preflightFileRef}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={async (e) => {
+                            const refs = await readReferenceFiles(e.target.files);
+                            if (!refs.length) return;
+                            setPendingAttachments((prev) => [...prev, ...refs].slice(0, 4));
+                            setPreflightMessages((prev) => [
+                              ...prev,
+                              { id: `p-s-${Date.now()}`, role: 'system', content: `Queued attachments: ${refs.map((r) => r.name || 'image').join(', ')}` },
+                            ]);
+                            if (preflightFileRef.current) preflightFileRef.current.value = '';
+                          }}
+                        />
+
+                        {pendingAttachments.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {pendingAttachments.map((r) => (
+                              <button
+                                key={r.id}
+                                type="button"
+                                onClick={() => setPendingAttachments((prev) => prev.filter((x) => x.id !== r.id))}
+                                className="px-2 py-1 rounded-md border border-white/15 text-[10px] text-white/70"
+                              >
+                                Pending: {r.name || 'reference'} ✕
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => preflightFileRef.current?.click()}
+                            className="px-3 py-2 rounded-xl border border-white/15 text-white/80 text-[11px] font-black uppercase tracking-widest hover:bg-white/10"
+                          >
+                            <span className="inline-flex items-center gap-1"><Upload className="w-3.5 h-3.5" />Refs</span>
+                          </button>
+                          <input
+                            value={preflightInput}
+                            onChange={(e) => setPreflightInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter') return;
+                              if (isPreflightThinking) return;
+                              if (!preflightInput.trim() && pendingAttachments.length === 0) return;
+                              e.preventDefault();
+                              sendPreflightMessage(preflightInput).catch(() => {});
+                            }}
+                            className="flex-1 h-11 rounded-xl bg-black/30 border border-white/10 px-3 text-sm text-white placeholder-white/30 focus:outline-none focus:border-[#ee4d2d]/60"
+                            placeholder="Reply to Director..."
+                          />
+                          <button
+                            type="button"
+                            disabled={isPreflightThinking || (!preflightInput.trim() && pendingAttachments.length === 0)}
+                            onClick={() => sendPreflightMessage(preflightInput)}
+                            className="px-4 h-11 rounded-xl bg-white text-black text-[11px] font-black uppercase tracking-widest disabled:opacity-30"
+                          >
+                            Send
+                          </button>
+                        </div>
+
+                        {preflightReady && (
+                          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-100 whitespace-pre-wrap">
+                            {preflightBrief || 'Director marked READY_TO_SCAFFOLD.'}
+                          </div>
+                        )}
+
+                        {preflightAttachments.length > 0 && (
+                          <div className="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2">
+                            <div className="text-[10px] uppercase tracking-widest text-zinc-400 font-black">Attachment Inbox</div>
+                            <div className="space-y-2 max-h-40 overflow-y-auto">
+                              {preflightAttachments.map((a) => (
+                                <div key={a.id} className="flex items-center gap-2">
+                                  <div className="text-[11px] text-white/80 truncate flex-1">{a.name || a.id}</div>
+                                  <select
+                                    value={a.assignedTo}
+                                    onChange={(e) => {
+                                      const v = String(e.target.value || 'unassigned');
+                                      setPreflightAttachments((prev) =>
+                                        prev.map((x) => (x.id === a.id ? { ...x, assignedTo: v } : x)),
+                                      );
+                                      if (v && !knownTargets.includes(v)) setKnownTargets((prev) => [...prev, v]);
+                                    }}
+                                    className="h-8 rounded-md bg-black/40 border border-white/15 text-[11px] text-white px-2"
+                                  >
+                                    <option value="unassigned">unassigned</option>
+                                    {knownTargets.map((t) => (
+                                      <option key={t} value={t}>
+                                        {t}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        </div>
+
+                        <div className="pt-4 mt-4 border-t border-white/10 flex items-center justify-end gap-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsPreflightOpen(false);
+                              setPreflightInput('');
+                              setPreflightMessages([]);
+                              setPreflightReady(false);
+                              setPreflightBrief('');
+                              setForceStartArmed(false);
+                              setUnassignedProceedArmed(false);
+                              setPendingAttachments([]);
+                              setPreflightAttachments([]);
+                            }}
+                            className="px-4 py-2 rounded-xl border border-white/15 text-white/80 text-[11px] font-black uppercase tracking-widest hover:bg-white/10"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isPreflightThinking}
+                            onClick={() => {
+                              if (!preflightReady && !forceStartArmed) {
+                                setForceStartArmed(true);
+                                return;
+                              }
+                              if (unassignedAttachmentCount > 0 && !unassignedProceedArmed) {
+                                setUnassignedProceedArmed(true);
+                                return;
+                              }
+                              const notes = [
+                                preflightBrief ? `Director Brief:\n${preflightBrief}` : '',
+                                preflightAttachments.length
+                                  ? (() => {
+                                      const byTarget = new Map<string, PreflightAttachment[]>();
+                                      for (const a of preflightAttachments) {
+                                        const k = String(a.assignedTo || 'unassigned');
+                                        byTarget.set(k, [...(byTarget.get(k) || []), a]);
+                                      }
+                                      const lines: string[] = [];
+                                      for (const [target, items] of byTarget.entries()) {
+                                        const names = items.map((x) => x.name || x.id).join(', ');
+                                        lines.push(`- ${target}: ${names}`);
+                                      }
+                                      return [
+                                        'Reference Assignments (must be preserved through agent handoff):',
+                                        ...lines,
+                                        'Instruction: Director MUST pass these assignments to Casting/Environment sub-agents and ensure downstream asset generation uses the matched references.',
+                                      ].join('\n');
+                                    })()
+                                  : '',
+                              ]
+                                .filter(Boolean)
+                                .join('\n\n');
+                              const finalIntent = notes
+                                ? `${String(intent || '').trim()}\n\nInteraction Notes:\n${notes}`
+                                : String(intent || '').trim();
+                              setIsPreflightOpen(false);
+                              setForceStartArmed(false);
+                              setUnassignedProceedArmed(false);
+                              runScaffold({ allowSingleFallback: false, intentOverride: finalIntent }).catch((err) =>
+                                setError(err instanceof Error ? err.message : String(err)),
+                              );
+                            }}
+                            className="px-4 py-2 rounded-xl bg-[#ee4d2d] text-white text-[11px] font-black uppercase tracking-widest hover:bg-[#f05d40] disabled:opacity-30"
+                          >
+                            {unassignedAttachmentCount > 0 && unassignedProceedArmed
+                              ? `Confirm Start (${unassignedAttachmentCount} Unassigned)`
+                              : preflightReady
+                                ? 'Start Generate'
+                                : forceStartArmed
+                                  ? 'Confirm Force Start'
+                                  : 'Force Start'}
+                          </button>
+                        </div>
+                      </div>
+                      </div>
+                    )}
                 </div>
             )}
         </div>

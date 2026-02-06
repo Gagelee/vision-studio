@@ -25,6 +25,7 @@ export interface ModelRuntimeSettings {
   temperature: number;
   maxOutputTokens?: number;
   baseUrl?: string;
+  workflowMode?: 'auto' | 'interaction';
   // Opt-in for agents that can use structured tool/function calling (more reliable than raw JSON).
   useFunctionCalling?: boolean;
   // Opt-in for streaming director responses (SSE progress).

@@ -1,6 +1,7 @@
 import type { Character, CharacterLook, Location } from '../../../types';
 
-const baseRulesCinematic = () => `No text. No watermark. No logos. Cinematic, high-quality.`;
+const baseRulesCinematic = () =>
+  `No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly (not default photoreal unless requested).`;
 const baseRulesReference = () => `No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.`;
 
 const styleBlock = (styleGuide?: string) => {
@@ -32,7 +33,7 @@ export const buildMasterKeyVisualPrompt = (args: { intent?: string; logline?: st
     `Master Key Visual (KV) for a film project. ${baseRulesCinematic()}\n` +
     `High-level goal: a single iconic, consistent visual constitution that all assets should follow.\n` +
     (styleGuide ? styleBlock(styleGuide) : '') +
-    `Style requirements: cohesive palette, consistent lens language, cinematic lighting. Avoid drastic style shifts.\n` +
+    `Style requirements: cohesive palette, consistent visual language, stable medium/texture/lighting intent. Avoid drastic style shifts.\n` +
     (intent ? `Intent: ${intent}\n` : '') +
     (logline ? `Logline: ${logline}\n` : '')
   );

@@ -44,6 +44,25 @@ import {
 
 type Screen = 'library' | 'creation' | 'project';
 
+interface DirectorApplyResult {
+  applied: number;
+  dropped: number;
+  droppedActions: AgentAction[];
+  deferredJobs?: AssetJob[];
+  scopeLabel?: string;
+  concurrency?: number;
+  storyAfterUpdates?: Story;
+}
+
+interface PendingInteractionGeneration {
+  id: string;
+  projectId: string;
+  jobs: AssetJob[];
+  scopeLabel: string;
+  concurrency: number;
+  story: Story;
+}
+
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
 
 function renumberShots(shots: Shot[]): Shot[] {
@@ -612,6 +631,7 @@ export default function App() {
     reply?: string;
     steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
   }>(null);
+  const [pendingInteractionGeneration, setPendingInteractionGeneration] = useState<PendingInteractionGeneration | null>(null);
 
   const activeStory = useMemo<Story | null>(() => {
     if (!workspace.activeProjectId) return null;
@@ -655,6 +675,13 @@ export default function App() {
     if (!workspace.activeProjectId) return;
     setSelection({ type: 'story', id: workspace.activeProjectId });
   }, [workspace.activeProjectId]);
+
+  useEffect(() => {
+    if (!pendingInteractionGeneration) return;
+    if (pendingInteractionGeneration.projectId !== workspace.activeProjectId) {
+      setPendingInteractionGeneration(null);
+    }
+  }, [workspace.activeProjectId, pendingInteractionGeneration]);
 
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
 
@@ -1088,7 +1115,121 @@ export default function App() {
     // TODO: structured dialogue lines (future).
   };
 
-  const applyDirectorActions = (projectId: string, story: Story, actions: AgentAction[]) => {
+  const runAssetJobsForDirector = (args: {
+    projectId: string;
+    story: Story;
+    jobs: AssetJob[];
+    scopeLabel: string;
+    concurrency: number;
+  }) => {
+    const { projectId, story, jobs, scopeLabel, concurrency } = args;
+    if (!jobs.length) return;
+    if (aiSettings.image.provider === 'mock') {
+      addToast('Asset generation requested, but Image Provider is Mock.', 'info');
+      return;
+    }
+
+    const applyQueued = (s: Story) => jobs.reduce((acc, job) => applyAssetQueued(acc, job), s);
+    const queuedStory = applyQueued(story);
+    updateStoryById(projectId, (prev) => applyQueued(prev));
+    addToast(`Queued asset generation (${jobs.length})…`, 'info');
+    addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
+
+    setTimeout(() => {
+      let storyRef = queuedStory;
+      const handleAssetEvent = (ev: any) => {
+        if (ev.type === 'start') {
+          storyRef = applyAssetStart(storyRef, ev.job);
+          updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
+          addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
+        }
+        if (ev.type === 'success') {
+          storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl, ev.meta);
+          updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl, ev.meta));
+          addDebugEvent({
+            level: 'info',
+            scope: 'asset.exec',
+            message: 'Success',
+            data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
+          });
+          if (ev.job?.kind === 'character') {
+            const characterId = String(ev.job.characterId || '');
+            const ch = storyRef.characters.find((c) => c.id === characterId);
+            if (ch?.looks?.length) {
+              const hasShotJobsInBatch = jobs.some((j) => j.kind === 'shot');
+              const hasLookJobsInBatch = jobs.some(
+                (j) => j.kind === 'look' && String((j as any).characterId || '') === characterId,
+              );
+              if (!hasShotJobsInBatch && !hasLookJobsInBatch) {
+                const styleGuide = (storyRef as any)?.styleGuide;
+                const avatarVersionId = String((ch as any).activeAvatarVersionId || '').trim();
+                const lookJobs: AssetJob[] = ch.looks.map((lk) => ({
+                  kind: 'look',
+                  characterId,
+                  lookId: lk.id,
+                  prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+                  avatarVersionId,
+                }));
+                storyRef = lookJobs.reduce((acc, job) => applyAssetQueued(acc, job), storyRef);
+                updateStoryById(projectId, (prev) => lookJobs.reduce((acc, job) => applyAssetQueued(acc, job), prev));
+                executeAssetJobs({
+                  jobs: lookJobs,
+                  settings: aiSettings.image,
+                  aspectRatio: storyRef.aspectRatio,
+                  concurrency,
+                  getStoryForRefs: () => storyRef,
+                  maxAttempts: 3,
+                  stopAfterMasterKvFailure: true,
+                  onEvent: handleAssetEvent,
+                });
+              }
+            }
+          }
+        }
+        if (ev.type === 'blocked') {
+          storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
+          updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
+          addToast(`Blocked: ${ev.reason}`, 'info');
+          addDebugEvent({
+            level: 'warn',
+            scope: 'asset.exec',
+            message: 'Blocked',
+            data: { done: ev.done, total: ev.total, job: ev.job, reason: ev.reason },
+          });
+        }
+        if (ev.type === 'error') {
+          storyRef = applyAssetError(storyRef, ev.job, ev.error);
+          updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
+          addDebugEvent({
+            level: 'warn',
+            scope: 'asset.exec',
+            message: 'Error',
+            data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error },
+          });
+        }
+        if (ev.done === ev.total) addToast('Assets generated (director).', 'success');
+      };
+      executeAssetJobs({
+        jobs,
+        settings: aiSettings.image,
+        aspectRatio: story.aspectRatio,
+        concurrency,
+        getStoryForRefs: () => storyRef,
+        maxAttempts: 3,
+        stopAfterMasterKvFailure: true,
+        onEvent: handleAssetEvent,
+      }).catch(() => {
+        addToast('Asset generation had errors. Check Debug.', 'info');
+      });
+    }, 0);
+  };
+
+  const applyDirectorActions = (
+    projectId: string,
+    story: Story,
+    actions: AgentAction[],
+    opts?: { deferGeneration?: boolean },
+  ): DirectorApplyResult => {
     if (!actions.length) {
       addToast('No changes applied', 'info');
       return { applied: 0, dropped: 0, droppedActions: [] as AgentAction[] };
@@ -1483,103 +1624,19 @@ export default function App() {
     ensurePrerequisiteJobs();
 
     const jobs = Array.from(deduped.values());
-    if (jobs.length && aiSettings.image.provider !== 'mock') {
-      const applyQueued = (s: Story) => jobs.reduce((acc, job) => applyAssetQueued(acc, job), s);
-      const queuedStory = applyQueued(storyAfterUpdates);
-      updateStoryById(projectId, (prev) => applyQueued(prev));
-      addToast(`Queued asset generation (${jobs.length})…`, 'info');
-      addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
-      setTimeout(() => {
-        let storyRef = queuedStory;
-        const handleAssetEvent = (ev: any) => {
-            if (ev.type === 'start') {
-              storyRef = applyAssetStart(storyRef, ev.job);
-              updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
-              addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
-            }
-            if (ev.type === 'success') {
-              storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl, ev.meta);
-              updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl, ev.meta));
-              addDebugEvent({
-                level: 'info',
-                scope: 'asset.exec',
-                message: 'Success',
-                data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
-              });
-              if (ev.job?.kind === 'character') {
-                const characterId = String(ev.job.characterId || '');
-                const ch = storyRef.characters.find((c) => c.id === characterId);
-                if (ch?.looks?.length) {
-                  const hasShotJobsInBatch = jobs.some((j) => j.kind === 'shot');
-                  const hasLookJobsInBatch = jobs.some(
-                    (j) => j.kind === 'look' && String((j as any).characterId || '') === characterId,
-                  );
-                  if (!hasShotJobsInBatch && !hasLookJobsInBatch) {
-                    const styleGuide = (storyRef as any)?.styleGuide;
-                    const avatarVersionId = String((ch as any).activeAvatarVersionId || '').trim();
-                    const lookJobs: AssetJob[] = ch.looks.map((lk) => ({
-                      kind: 'look',
-                      characterId,
-                      lookId: lk.id,
-                      prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
-                      avatarVersionId,
-                    }));
-                    storyRef = lookJobs.reduce((acc, job) => applyAssetQueued(acc, job), storyRef);
-                    updateStoryById(projectId, (prev) => lookJobs.reduce((acc, job) => applyAssetQueued(acc, job), prev));
-                    executeAssetJobs({
-                      jobs: lookJobs,
-                      settings: aiSettings.image,
-                      aspectRatio: storyRef.aspectRatio,
-                      concurrency,
-                      getStoryForRefs: () => storyRef,
-                      maxAttempts: 3,
-                      stopAfterMasterKvFailure: true,
-                      onEvent: handleAssetEvent,
-                    });
-                  }
-                }
-              }
-            }
-            if (ev.type === 'blocked') {
-              storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
-              updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
-              addToast(`Blocked: ${ev.reason}`, 'info');
-              addDebugEvent({
-                level: 'warn',
-                scope: 'asset.exec',
-                message: 'Blocked',
-                data: { done: ev.done, total: ev.total, job: ev.job, reason: ev.reason },
-              });
-            }
-            if (ev.type === 'error') {
-              storyRef = applyAssetError(storyRef, ev.job, ev.error);
-              updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
-              addDebugEvent({
-                level: 'warn',
-                scope: 'asset.exec',
-                message: 'Error',
-                data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error },
-              });
-            }
-            if (ev.done === ev.total) addToast('Assets generated (director).', 'success');
-          };
-        executeAssetJobs({
-          jobs,
-          settings: aiSettings.image,
-          aspectRatio: storyAfterUpdates.aspectRatio,
-          concurrency,
-          getStoryForRefs: () => storyRef,
-          maxAttempts: 3,
-          stopAfterMasterKvFailure: true,
-          onEvent: handleAssetEvent,
-        }).catch(() => {
-          addToast('Asset generation had errors. Check Debug.', 'info');
-        });
-      }, 0);
-    } else if (jobs.length) {
-      addToast('Asset generation requested, but Image Provider is Mock.', 'info');
+    if (jobs.length && opts?.deferGeneration) {
+      return {
+        applied: validActions.length,
+        dropped: invalid.length,
+        droppedActions: invalid,
+        deferredJobs: jobs,
+        scopeLabel,
+        concurrency,
+        storyAfterUpdates,
+      };
     }
-    return { applied: validActions.length, dropped: invalid.length, droppedActions: invalid };
+    if (jobs.length) runAssetJobsForDirector({ projectId, story: storyAfterUpdates, jobs, scopeLabel, concurrency });
+    return { applied: validActions.length, dropped: invalid.length, droppedActions: invalid, storyAfterUpdates };
   };
 
   const handleAcceptProposedStyleGuide = (args: { styleGuide: string; regenerateAssets: boolean }) => {
@@ -1621,18 +1678,147 @@ export default function App() {
     addToast('Regenerating all assets from active KV…', 'info');
   };
 
+  const parseChatImageAttachments = async (files: File[]) => {
+    const picked = (files || []).filter((f) => f.type.startsWith('image/')).slice(0, 4);
+    const reads = picked.map(
+      (file) =>
+        new Promise<{ id: string; url: string; name?: string; createdAt?: number }>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () =>
+            resolve({
+              id: `chat-ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              url: String(reader.result || ''),
+              name: file.name,
+              createdAt: Date.now(),
+            });
+          reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          reader.readAsDataURL(file);
+        }),
+    );
+    const settled = await Promise.allSettled(reads);
+    return settled
+      .filter((r): r is PromiseFulfilledResult<{ id: string; url: string; name?: string; createdAt?: number }> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((r) => r.url);
+  };
+
+  const attachReferencesBySelection = (
+    story: Story,
+    selectionSnapshot: SelectionState,
+    refs: Array<{ id: string; url: string; name?: string; createdAt?: number }>,
+  ): Story => {
+    if (!refs.length) return story;
+    const mergeRefs = (existing: any[]) => [...(Array.isArray(existing) ? existing : []), ...refs].slice(-4);
+    if (selectionSnapshot.type === 'location') {
+      return {
+        ...story,
+        locations: story.locations.map((l) =>
+          l.id === selectionSnapshot.id ? ({ ...l, referenceImages: mergeRefs((l as any).referenceImages), referenceMode: 'auto' } as any) : l,
+        ),
+      };
+    }
+    if (selectionSnapshot.type === 'character') {
+      return {
+        ...story,
+        characters: story.characters.map((c) =>
+          c.id === selectionSnapshot.id ? ({ ...c, referenceImages: mergeRefs((c as any).referenceImages), referenceMode: 'auto' } as any) : c,
+        ),
+      };
+    }
+    return { ...story, referenceImages: mergeRefs((story as any).referenceImages), referenceMode: 'auto' } as any;
+  };
+
+  const interactionCandidateSummary = useMemo(() => {
+    if (!pendingInteractionGeneration) return null;
+    const s = pendingInteractionGeneration.story;
+    const jobs = pendingInteractionGeneration.jobs || [];
+    const hasKv = jobs.some((j) => j.kind === 'masterkv');
+    const locationIds = Array.from(new Set(jobs.filter((j) => j.kind === 'location').map((j: any) => String(j.locationId || '')))).filter(Boolean);
+    const characterIds = Array.from(
+      new Set(
+        jobs
+          .filter((j) => j.kind === 'character' || j.kind === 'look')
+          .map((j: any) => String(j.characterId || '')),
+      ),
+    ).filter(Boolean);
+    return {
+      hasKv,
+      kvRefCount: Array.isArray((s as any).referenceImages) ? (s as any).referenceImages.length : 0,
+      locations: locationIds
+        .map((id) => s.locations.find((l) => l.id === id))
+        .filter(Boolean)
+        .map((l) => ({
+          id: String((l as any).id),
+          name: String((l as any).name || 'Location'),
+          desc: String((l as any).description || ''),
+          refs: Array.isArray((l as any).referenceImages) ? (l as any).referenceImages.length : 0,
+        })),
+      cast: characterIds
+        .map((id) => s.characters.find((c) => c.id === id))
+        .filter(Boolean)
+        .map((c) => ({
+          id: String((c as any).id),
+          name: String((c as any).name || 'Character'),
+          desc: String((c as any).description || ''),
+          refs: Array.isArray((c as any).referenceImages) ? (c as any).referenceImages.length : 0,
+        })),
+    };
+  }, [pendingInteractionGeneration]);
+
+  const confirmInteractionGeneration = () => {
+    const pending = pendingInteractionGeneration;
+    if (!pending) return;
+    runAssetJobsForDirector({
+      projectId: pending.projectId,
+      story: pending.story,
+      jobs: pending.jobs,
+      scopeLabel: pending.scopeLabel,
+      concurrency: pending.concurrency,
+    });
+    setPendingInteractionGeneration(null);
+  };
+
   // ----- Director Console -----
 
-		  const handleDirectorMessage = async (msg: string) => {
+		  const handleDirectorMessage = async (msg: string, attachments: File[] = []) => {
 		    if (!activeStory || !workspace.activeProjectId) return;
+        if (pendingInteractionGeneration) {
+          setPendingInteractionGeneration(null);
+          addToast('Pending generation confirmation was cleared. Applying your new instruction.', 'info');
+        }
+        const isInteractionMode = String((aiSettings.direct as any)?.workflowMode || 'auto') === 'interaction';
+        const normalizedMsg = String(msg || '').trim() || 'Use attached images as references and continue with interaction flow.';
+        const directive = isInteractionMode
+          ? [
+              '[Interaction Mode]',
+              'First clarify intent and constraints. For KV/location/cast generation, ask for references and propose candidates before generation.',
+              'Do not run generation actions until user explicitly confirms to generate.',
+              `User: ${normalizedMsg}`,
+            ].join('\n')
+          : normalizedMsg;
 		      const projectId = workspace.activeProjectId;
         const selectionSnapshot = selection;
+        const parsedRefs = await parseChatImageAttachments(attachments || []);
+        const storyWithAttachments = parsedRefs.length
+          ? attachReferencesBySelection(activeStory, selectionSnapshot, parsedRefs)
+          : activeStory;
+        if (parsedRefs.length) {
+          updateStoryById(projectId, () => storyWithAttachments);
+          addToast(`Attached ${parsedRefs.length} reference image(s) to current context.`, 'info');
+        }
         setIsDirectorThinking(true);
         addDebugEvent({
           level: 'info',
           scope: 'agent.direct',
           message: 'Request',
-          data: { message: msg, selection: selectionSnapshot, storyId: activeStory.id },
+          data: {
+            message: directive,
+            rawMessage: msg,
+            selection: selectionSnapshot,
+            storyId: activeStory.id,
+            interactionMode: isInteractionMode,
+            attachmentCount: parsedRefs.length,
+          },
         });
         const useStreaming = Boolean((aiSettings.direct as any)?.useStreaming);
         if (useStreaming) {
@@ -1644,7 +1830,7 @@ export default function App() {
 	    const userEntry: AgentLogEntry = {
 	      id: `u-${Date.now()}`,
 	      role: 'user',
-      content: msg,
+      content: parsedRefs.length ? `${normalizedMsg}\n[Attachments: ${parsedRefs.map((x) => x.name || 'image').join(', ')}]` : normalizedMsg,
       timestamp: Date.now(),
     };
 
@@ -1658,9 +1844,9 @@ export default function App() {
           if (useStreaming) {
             res = await runDirectorCommandStream(
               {
-                message: msg,
+                message: directive,
                 selection: selectionSnapshot,
-                story: activeStory,
+                story: storyWithAttachments,
                 settings: aiSettings.direct,
                 allowSingleFallback: false,
                 useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
@@ -1705,9 +1891,9 @@ export default function App() {
             );
           } else {
             res = await runDirectorCommand({
-              message: msg,
+              message: directive,
               selection: selectionSnapshot,
-              story: activeStory,
+              story: storyWithAttachments,
               settings: aiSettings.direct,
               allowSingleFallback: false,
               useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
@@ -1779,7 +1965,20 @@ export default function App() {
           return;
         }
 		
-        const exec = applyDirectorActions(projectId, activeStory, res.actions);
+        const exec = applyDirectorActions(projectId, storyWithAttachments, res.actions, {
+          deferGeneration: isInteractionMode,
+        });
+        if (isInteractionMode && exec.deferredJobs?.length) {
+          setPendingInteractionGeneration({
+            id: `pending-gen-${Date.now()}`,
+            projectId,
+            jobs: exec.deferredJobs,
+            scopeLabel: exec.scopeLabel || 'director:interaction',
+            concurrency: exec.concurrency || 2,
+            story: exec.storyAfterUpdates || activeStory,
+          });
+          addToast('Interaction mode: generation is waiting for your confirmation.', 'info');
+        }
         if (exec) {
           setAgentHistoryByProject((prev) => ({
             ...prev,
@@ -1808,6 +2007,15 @@ export default function App() {
 
         const projectId = pendingDirectorMultiAgentFailure.projectId;
         const msg = pendingDirectorMultiAgentFailure.message;
+        const isInteractionMode = String((aiSettings.direct as any)?.workflowMode || 'auto') === 'interaction';
+        const directive = isInteractionMode
+          ? [
+              '[Interaction Mode]',
+              'First clarify intent and constraints. For KV/location/cast generation, ask for references and propose candidates before generation.',
+              'Do not run generation actions until user explicitly confirms to generate.',
+              `User: ${msg}`,
+            ].join('\n')
+          : msg;
         const selectionSnapshot = pendingDirectorMultiAgentFailure.selection;
         setIsDirectorThinking(true);
         const useStreaming = Boolean((aiSettings.direct as any)?.useStreaming);
@@ -1821,7 +2029,7 @@ export default function App() {
           const res = useStreaming
             ? await runDirectorCommandStream(
                 {
-                  message: msg,
+                  message: directive,
                   selection: selectionSnapshot,
                   story: activeStory,
                   settings: aiSettings.direct,
@@ -1867,7 +2075,7 @@ export default function App() {
                 }
               )
             : await runDirectorCommand({
-                message: msg,
+                message: directive,
                 selection: selectionSnapshot,
                 story: activeStory,
                 settings: aiSettings.direct,
@@ -1901,7 +2109,20 @@ export default function App() {
             return;
           }
 
-          const exec = applyDirectorActions(projectId, activeStory, res.actions);
+          const exec = applyDirectorActions(projectId, activeStory, res.actions, {
+            deferGeneration: isInteractionMode,
+          });
+          if (isInteractionMode && exec.deferredJobs?.length) {
+            setPendingInteractionGeneration({
+              id: `pending-gen-${Date.now()}`,
+              projectId,
+              jobs: exec.deferredJobs,
+              scopeLabel: exec.scopeLabel || 'director:interaction',
+              concurrency: exec.concurrency || 2,
+              story: exec.storyAfterUpdates || storyWithAttachments,
+            });
+            addToast('Interaction mode: generation is waiting for your confirmation.', 'info');
+          }
           if (exec) {
             setAgentHistoryByProject((prev) => ({
               ...prev,
@@ -1977,6 +2198,10 @@ export default function App() {
       <>
         <ProjectCreationWizard
           aiSettings={aiSettings}
+          workflowMode={String((aiSettings.direct as any)?.workflowMode || 'auto') as any}
+          onWorkflowModeChange={(mode) =>
+            setAiSettings((prev) => ({ ...prev, direct: { ...prev.direct, workflowMode: mode } as any }))
+          }
           onComplete={handleCreationComplete}
           onDraftProject={upsertWorkspaceProject}
           onCancel={() => setScreen('library')}
@@ -2138,6 +2363,10 @@ export default function App() {
               onSendMessage={handleDirectorMessage}
               isThinking={isDirectorThinking}
               stream={directorStream || undefined}
+              workflowMode={String((aiSettings.direct as any)?.workflowMode || 'auto') as any}
+              onWorkflowModeChange={(mode) =>
+                setAiSettings((prev) => ({ ...prev, direct: { ...prev.direct, workflowMode: mode } as any }))
+              }
             />
           </div>
         )}
@@ -2152,6 +2381,10 @@ export default function App() {
               onSendMessage={handleDirectorMessage}
               isThinking={isDirectorThinking}
               stream={directorStream || undefined}
+              workflowMode={String((aiSettings.direct as any)?.workflowMode || 'auto') as any}
+              onWorkflowModeChange={(mode) =>
+                setAiSettings((prev) => ({ ...prev, direct: { ...prev.direct, workflowMode: mode } as any }))
+              }
             />
           </div>
         )}
@@ -2338,13 +2571,117 @@ export default function App() {
                       setPendingDirectorFallbackArmed(true);
                       return;
                     }
-                    applyDirectorActions(pendingDirectorFallback.projectId, activeStory, pendingDirectorFallback.res.actions);
+                    const isInteractionMode = String((aiSettings.direct as any)?.workflowMode || 'auto') === 'interaction';
+                    const exec = applyDirectorActions(
+                      pendingDirectorFallback.projectId,
+                      activeStory,
+                      pendingDirectorFallback.res.actions,
+                      { deferGeneration: isInteractionMode },
+                    );
+                    if (isInteractionMode && exec.deferredJobs?.length) {
+                      setPendingInteractionGeneration({
+                        id: `pending-gen-${Date.now()}`,
+                        projectId: pendingDirectorFallback.projectId,
+                        jobs: exec.deferredJobs,
+                        scopeLabel: exec.scopeLabel || 'director:interaction',
+                        concurrency: exec.concurrency || 2,
+                        story: exec.storyAfterUpdates || activeStory,
+                      });
+                      addToast('Interaction mode: generation is waiting for your confirmation.', 'info');
+                    }
                     setPendingDirectorFallback(null);
                     setPendingDirectorFallbackArmed(false);
                   }}
                   className="px-4 py-2 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest hover:opacity-90"
                 >
                   {pendingDirectorFallbackArmed ? 'Confirm Apply' : 'Apply Fallback'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingInteractionGeneration && pendingInteractionGeneration.projectId === activeStory.id && !isPlayingMaster && (
+        <div className="fixed inset-0 z-[4600] bg-black/65 backdrop-blur-sm p-6 flex items-center justify-center">
+          <div className="w-full max-w-3xl rounded-3xl border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden">
+            <div className="h-14 px-5 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60">
+              <div className="text-sm font-bold">Interaction Mode Confirmation</div>
+              <button
+                onClick={() => setPendingInteractionGeneration(null)}
+                className="p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
+                title="Close"
+              >
+                <X className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="text-sm text-zinc-700 dark:text-zinc-200">
+                Director has prepared candidates. Before generation, confirm whether you want to generate now or revise/upload references first.
+              </div>
+
+              {interactionCandidateSummary?.hasKv && (
+                <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">KV Candidate</div>
+                  <div className="text-sm text-zinc-700 dark:text-zinc-200">Master KV will be generated for current story intent/style.</div>
+                  <div className="mt-1 text-xs text-zinc-500">Reference images: {interactionCandidateSummary.kvRefCount}</div>
+                </div>
+              )}
+
+              {interactionCandidateSummary?.locations?.length ? (
+                <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Scene Candidates</div>
+                  <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
+                    {interactionCandidateSummary.locations.slice(0, 6).map((loc) => (
+                      <div key={loc.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-2">
+                        <div className="text-sm font-semibold">{loc.name}</div>
+                        <div className="text-xs text-zinc-500 line-clamp-2">{loc.desc || 'No description'}</div>
+                        <div className="text-[11px] text-zinc-500 mt-1">References: {loc.refs}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {interactionCandidateSummary?.cast?.length ? (
+                <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Cast Candidates</div>
+                  <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
+                    {interactionCandidateSummary.cast.slice(0, 6).map((ch) => (
+                      <div key={ch.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-2">
+                        <div className="text-sm font-semibold">{ch.name}</div>
+                        <div className="text-xs text-zinc-500 line-clamp-2">{ch.desc || 'No description'}</div>
+                        <div className="text-[11px] text-zinc-500 mt-1">References: {ch.refs}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex items-center justify-end gap-3 pt-1">
+                <button
+                  onClick={() => {
+                    setPendingInteractionGeneration(null);
+                    addToast('Generation cancelled. Tell Director what to revise.', 'info');
+                  }}
+                  className="px-4 py-2 rounded-xl bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-200 text-[11px] font-black uppercase tracking-widest hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  Modify In Chat
+                </button>
+                <button
+                  onClick={() => {
+                    setPendingInteractionGeneration(null);
+                    addToast('Upload references in Project / Location / Character editor, then ask Director to generate.', 'info');
+                  }}
+                  className="px-4 py-2 rounded-xl bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-200 text-[11px] font-black uppercase tracking-widest hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  Upload Refs First
+                </button>
+                <button
+                  onClick={confirmInteractionGeneration}
+                  className="px-4 py-2 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest hover:opacity-90"
+                >
+                  Generate Now
                 </button>
               </div>
             </div>

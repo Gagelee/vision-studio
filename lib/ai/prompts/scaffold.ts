@@ -21,7 +21,7 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `- styleGuide: string (DIRECTOR-created art core; assume user didn't specify style and you must decide it; include: rendering medium/style (e.g., live-action photoreal / anime / ink wash / oil painting), genre+tone, color palette, lighting mood, composition rules, camera language, negative constraints; 8-14 bullet-like sentences)\n` +
     `- locations: array of {name, description, visualStyle}\n` +
     `- characters: array of {name, description, looks:[{name, description}]}\n` +
-    `- sequences: array of {title, context, shots:[...]} (2-4 sequences; 2-4 shots each)\n` +
+    `- sequences: array of {title, context, shots:[...]} (agent decides appropriate count)\n` +
     `- each shot: {\n` +
     `    description, timeOfDay, duration,\n` +
     `    locationName, castNames[],\n` +
@@ -31,7 +31,13 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `  }\n` +
     `Rules:\n` +
     `- duration is seconds (integer 2-8)\n` +
+    `- Plan by runtime budget, not fixed counts: default target total runtime is ~60 seconds.\n` +
+    `- If user explicitly requests a runtime/length, obey user requirement over default.\n` +
+    `- Choose sequence/shot counts that best fit the target runtime and story rhythm.\n` +
     `- Keep JSON VALID. If too long, reduce counts/verbosity.\n` +
+    `- If the Intent includes a "Reference Assignments" section, treat it as hard constraints and preserve those mappings through Director -> Casting/Environment decisions.\n` +
+    `- For character-assigned references, ensure corresponding character entries/looks are created or updated to match those references.\n` +
+    `- For location-assigned references, ensure corresponding location entries/style reflect those references.\n` +
     `- Maintain strong continuity: same character identity across looks; same environment logic across shots.\n` +
     `- LOOKS: Only create a character look when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- The "videoPrompt" MUST be production-ready and self-contained.\n` +
