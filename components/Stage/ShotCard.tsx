@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2 } from 'lucide-react';
+import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2, Clock } from 'lucide-react';
 import { Shot, ElementType, AspectRatio } from '../../types';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
@@ -13,6 +13,9 @@ interface ShotCardProps {
 
 export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, aspectRatio = '16:9' }) => {
   const isProcessing = shot.aiState && shot.aiState !== 'idle';
+  const assetStatus = shot.assetState?.status;
+  const isQueued = assetStatus === 'queued';
+  const isRunning = assetStatus === 'running';
 
   const ratioStyles: Record<AspectRatio, string> = {
     '16:9': 'aspect-video',
@@ -42,6 +45,18 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
            <span className="bg-amber-500/90 text-black text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 animate-pulse shadow-sm">
               <Sparkles className="w-2.5 h-2.5" />
               {shot.aiState === 'thinking' ? 'AI Analyzing...' : 'Rendering...'}
+           </span>
+        )}
+        {!isProcessing && isRunning && (
+           <span className="bg-amber-500/90 text-black text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              Generating...
+           </span>
+        )}
+        {!isProcessing && isQueued && (
+           <span className="bg-amber-400/90 text-black text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm">
+              <Clock className="w-2.5 h-2.5" />
+              Queued
            </span>
         )}
       </div>

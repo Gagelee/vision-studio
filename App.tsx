@@ -24,7 +24,7 @@ import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
 import { isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
-import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
+import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -441,6 +441,16 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       const characterId = String(action.payload?.characterId || '');
       const patch = action.payload?.patch || {};
       if (!characterId) return acc;
+      const normalizeReferenceImages = (list: any[]) =>
+        (Array.isArray(list) ? list : [])
+          .slice(0, 4)
+          .map((r) => ({
+            id: String(r?.id || `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+            url: String(r?.url || ''),
+            name: r?.name ? String(r.name) : undefined,
+            createdAt: typeof r?.createdAt === 'number' ? r.createdAt : Date.now(),
+          }))
+          .filter((r) => r.url);
       return {
         ...acc,
         characters: acc.characters.map((c) =>
@@ -450,6 +460,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 name: typeof patch.name === 'string' ? patch.name : c.name,
                 description: typeof patch.description === 'string' ? patch.description : c.description,
                 status: patch.status === 'draft' || patch.status === 'locked' ? patch.status : c.status,
+                referenceImages: Array.isArray(patch.referenceImages) ? normalizeReferenceImages(patch.referenceImages) : c.referenceImages,
+                referenceMode: patch.referenceMode === 'auto' || patch.referenceMode === 'off' ? patch.referenceMode : c.referenceMode,
               }
             : c,
         ),
@@ -1189,6 +1201,10 @@ export default function App() {
     const addJob = (key: string, job: AssetJob) => {
       if (!deduped.has(key)) deduped.set(key, job);
     };
+    const getAvatarVersionId = (ch: any) => {
+      const id = String(ch?.activeAvatarVersionId || '').trim();
+      return id || undefined;
+    };
 
     // Auto-generate storyboard images for newly created shots.
     const createdShots: Array<{ sequenceId: string; shot: Shot }> = [];
@@ -1234,6 +1250,7 @@ export default function App() {
             characterId: ch.id,
             lookId,
             prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+            avatarVersionId: getAvatarVersionId(ch),
           });
         }
       }
@@ -1290,7 +1307,13 @@ export default function App() {
         const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
         const lk = ch?.looks?.find((x) => x.id === lookId);
         if (!ch || !lk) continue;
-        addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk, styleGuide) });
+        addJob(`look:${characterId}:${lookId}`, {
+          kind: 'look',
+          characterId,
+          lookId,
+          prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+          avatarVersionId: getAvatarVersionId(ch),
+        });
       }
     }
 
@@ -1357,17 +1380,27 @@ export default function App() {
         const lookId = String(payload.lookId || '');
         const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
         const lk = ch?.looks?.find((x) => x.id === lookId);
-        if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk, (storyAfterUpdates as any)?.styleGuide) });
+        if (ch && lk)
+          addJob(`look:${characterId}:${lookId}`, {
+            kind: 'look',
+            characterId,
+            lookId,
+            prompt: buildCharacterLookPrompt(ch, lk, (storyAfterUpdates as any)?.styleGuide),
+            avatarVersionId: getAvatarVersionId(ch),
+          });
         continue;
       }
     }
 
     const jobs = Array.from(deduped.values());
     if (jobs.length && aiSettings.image.provider !== 'mock') {
+      const applyQueued = (s: Story) => jobs.reduce((acc, job) => applyAssetQueued(acc, job), s);
+      const queuedStory = applyQueued(storyAfterUpdates);
+      updateStoryById(projectId, (prev) => applyQueued(prev));
       addToast(`Queued asset generation (${jobs.length})…`, 'info');
       addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
       setTimeout(() => {
-        let storyRef = storyAfterUpdates;
+        let storyRef = queuedStory;
         const handleAssetEvent = (ev: any) => {
             if (ev.type === 'start') {
               storyRef = applyAssetStart(storyRef, ev.job);
@@ -1392,12 +1425,16 @@ export default function App() {
                   );
                   if (!hasLookJobsInBatch) {
                     const styleGuide = (storyRef as any)?.styleGuide;
-                    const lookJobs = ch.looks.map((lk) => ({
+                    const avatarVersionId = String((ch as any).activeAvatarVersionId || '').trim();
+                    const lookJobs: AssetJob[] = ch.looks.map((lk) => ({
                       kind: 'look',
                       characterId,
                       lookId: lk.id,
                       prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+                      avatarVersionId,
                     }));
+                    storyRef = lookJobs.reduce((acc, job) => applyAssetQueued(acc, job), storyRef);
+                    updateStoryById(projectId, (prev) => lookJobs.reduce((acc, job) => applyAssetQueued(acc, job), prev));
                     executeAssetJobs({
                       jobs: lookJobs,
                       settings: aiSettings.image,
