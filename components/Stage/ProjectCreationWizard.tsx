@@ -4,7 +4,7 @@ import { Sparkles, ArrowRight, Smartphone, Tv, Instagram, Clapperboard, Loader2,
 import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
 import { createLocalMockProject, scaffoldProjectStream, scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
 import { isAgentApiError } from '../../lib/ai/agent/apiError';
-import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
+import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
 
 interface ProjectCreationWizardProps {
   aiSettings: AiSettings;
@@ -75,7 +75,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ ai
       total = jobs.length;
       setAssetTotal(jobs.length);
 
-	      if (jobs.length > 0) {
+      if (jobs.length > 0) {
+        storyRef.current = jobs.reduce((acc, job) => applyAssetQueued(acc, job), storyRef.current || res.story);
+        if (storyRef.current) onDraftProject?.(storyRef.current);
 	        await executeAssetJobs({
 	          jobs,
 	          settings: aiSettings.image,

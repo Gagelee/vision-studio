@@ -40,6 +40,9 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [versionInfo, setVersionInfo] = useState<ShotVersion | null>(null);
+  const assetStatus = shot.assetState?.status;
+  const isBatchGenerating = assetStatus === 'running' || assetStatus === 'queued';
+  const isBusyGenerating = isGenerating || isBatchGenerating;
 
   const handleVersionSelect = (versionId: string) => {
     const version = shot.versions.find(v => v.id === versionId);
@@ -60,7 +63,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   };
 
   const handleGenerateVersion = async () => {
-    if (isGenerating) return;
+    if (isBusyGenerating) return;
     setIsGenerating(true);
     setGenerationError(null);
     try {
@@ -330,14 +333,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             {/* Generate New Button */}
             <button 
                 onClick={(e) => { e.stopPropagation(); handleGenerateVersion(); }}
-                disabled={isGenerating}
+                disabled={isBusyGenerating}
                 className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-indigo-400 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all group disabled:opacity-40 disabled:cursor-not-allowed"
             >
                 <div className="p-3 rounded-full bg-zinc-900 group-hover:bg-indigo-500/20 transition-colors">
-                    <RefreshCw className={`w-6 h-6 ${isGenerating ? 'animate-spin' : 'group-hover:animate-spin'}`} />
+                    <RefreshCw className={`w-6 h-6 ${isBusyGenerating ? 'animate-spin' : 'group-hover:animate-spin'}`} />
                 </div>
                 <span className="text-xs font-bold uppercase tracking-wide">
-                  {isGenerating ? 'Generating...' : isPlaceholderActive ? 'Generate' : 'Generate Variant'}
+                  {assetStatus === 'queued' ? 'Queued…' : isBusyGenerating ? 'Generating...' : isPlaceholderActive ? 'Generate' : 'Generate Variant'}
                 </span>
             </button>
 

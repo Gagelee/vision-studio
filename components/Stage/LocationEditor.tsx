@@ -58,6 +58,9 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
   const isDirty = JSON.stringify(draft) !== JSON.stringify(location);
   const isLocked = draft.status === 'locked';
   const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
+  const assetStatus = location.assetState?.status;
+  const isBatchGenerating = assetStatus === 'running' || assetStatus === 'queued';
+  const isBusyGenerating = isGeneratingPreview || isBatchGenerating;
   
   // Find all shots using this location
   const usedInShots: { shot: Shot; seqId: string }[] = [];
@@ -74,7 +77,7 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
   };
 
   const handleGeneratePreview = async () => {
-    if (!imageSettings || imageSettings.provider === 'mock' || isLocked || isGeneratingPreview) return;
+    if (!imageSettings || imageSettings.provider === 'mock' || isLocked || isBusyGenerating) return;
     setGenerationError(null);
     setIsGeneratingPreview(true);
     try {
@@ -160,7 +163,7 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
         <div className="flex gap-3">
              <button 
                 onClick={handleGeneratePreview}
-                disabled={!canGenerate || isLocked || isGeneratingPreview}
+                disabled={!canGenerate || isLocked || isBusyGenerating}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all shadow-lg ${
                     !canGenerate || isLocked
                     ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700'
@@ -168,8 +171,8 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
                 }`}
                 title={!canGenerate ? 'Image provider is Mock' : 'Generate a new variant'}
              >
-                <Sparkles className={`w-4 h-4 ${isGeneratingPreview ? 'animate-pulse' : ''}`} />
-                {isGeneratingPreview ? 'Generating...' : 'Generate Variant'}
+                <Sparkles className={`w-4 h-4 ${isBusyGenerating ? 'animate-pulse' : ''}`} />
+                {assetStatus === 'queued' ? 'Queued…' : isBusyGenerating ? 'Generating...' : 'Generate Variant'}
              </button>
              <button 
                 onClick={handleSave}

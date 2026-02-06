@@ -38,7 +38,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `   payload: { name?: string, description?: string }\n` +
     `\n` +
     `E) UPDATE_CHARACTER\n` +
-    `   payload: { characterId: string, patch: { name?: string, description?: string, status?: "draft"|"locked" } }\n` +
+    `   payload: { characterId: string, patch: { name?: string, description?: string, status?: "draft"|"locked", referenceMode?: "auto"|"off", referenceImages?: Array<{ url: string, name?: string }> } }\n` +
     `\n` +
     `E2) DELETE_CHARACTER\n` +
     `   payload: { characterId: string }\n` +
@@ -101,6 +101,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
     `- For global visual language/style changes, update UPDATE_STORY.patch.styleGuide (concise style bible).\n` +
     `- For UPDATE_CHARACTER_LOOK, you MUST include characterId + lookId and put changes under patch (do NOT use a top-level id).\n` +
+    `- To clear character reference images, use UPDATE_CHARACTER with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +
     `- Only create a new LOOK when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- Look descriptions must be reference-ready (clean wardrobe/state details), not scene staging or atmosphere.\n` +

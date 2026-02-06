@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug, BookText, Loader2 } from 'lucide-react';
+import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug, BookText, Loader2, Clock } from 'lucide-react';
 import { Story, SelectionState } from '../../types';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
@@ -139,7 +139,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="px-2 space-y-0.5">
                     {story.sequences.map(seq => {
                         const isActive = (selection.type === 'sequence' && selection.id === seq.id) || (selection.type === 'shot' && selection.parentId === seq.id);
-                        const isSeqLoading = (seq.shots || []).some((s) => s.aiState === 'rendering' || s.assetState?.status === 'running');
+                        const isSeqRunning = (seq.shots || []).some((s) => s.aiState === 'rendering' || s.assetState?.status === 'running');
+                        const isSeqQueued = (seq.shots || []).some((s) => s.assetState?.status === 'queued');
                         return (
                              <div 
                                 key={seq.id}
@@ -167,8 +168,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                   ✕
                                 </button>
                               )}
-                              {isSeqLoading && (
+                              {isSeqRunning && (
                                 <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
+                              )}
+                              {!isSeqRunning && isSeqQueued && (
+                                <Clock className="w-3.5 h-3.5 text-orange-400" />
                               )}
                             </div>
                              </div>
@@ -218,6 +222,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               )}
                               {loc.assetState?.status === 'running' && (
                                 <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
+                              )}
+                              {loc.assetState?.status === 'queued' && (
+                                <Clock className="w-3.5 h-3.5 text-orange-400" />
                               )}
                             </div>
                          </div>
@@ -274,6 +281,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               )}
                               {char.assetState?.status === 'running' && (
                                 <Loader2 className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+                              )}
+                              {char.assetState?.status === 'queued' && (
+                                <Clock className="w-3.5 h-3.5 text-indigo-400" />
                               )}
                             </div>
                          </div>

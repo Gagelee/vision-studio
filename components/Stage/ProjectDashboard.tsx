@@ -43,6 +43,9 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
   const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
   const [isGeneratingKv, setIsGeneratingKv] = useState(false);
   const [kvError, setKvError] = useState<string | null>(null);
+  const kvStatus = (story as any)?.masterKvState?.status;
+  const isKvBatchGenerating = kvStatus === 'running' || kvStatus === 'queued';
+  const isKvBusy = isGeneratingKv || isKvBatchGenerating;
 
   const kvVersions = useMemo(() => {
     const existing = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
@@ -85,7 +88,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
   };
 
   const handleGenerateKvVariant = async () => {
-    if (!canGenerate || isGeneratingKv) return;
+    if (!canGenerate || isKvBusy) return;
     setKvError(null);
     setIsGeneratingKv(true);
     const now = Date.now();
@@ -258,7 +261,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
             <div className="shrink-0 flex flex-col items-end gap-3">
               <button
                 onClick={handleGenerateKvVariant}
-                disabled={!canGenerate || isGeneratingKv}
+                disabled={!canGenerate || isKvBusy}
                 className={`flex items-center gap-2 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-sm ${
                   !canGenerate
                     ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 cursor-not-allowed border border-zinc-200 dark:border-zinc-700'
@@ -266,8 +269,8 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                 }`}
                 title={!canGenerate ? 'Image provider is Mock' : story.keyVisualUrl ? 'Generate KV variant' : 'Generate Master KV'}
               >
-                <Sparkles className={`w-4 h-4 ${isGeneratingKv ? 'animate-pulse' : ''}`} />
-                {isGeneratingKv ? 'Generating…' : story.keyVisualUrl ? 'Generate Variant' : 'Generate KV'}
+                <Sparkles className={`w-4 h-4 ${isKvBusy ? 'animate-pulse' : ''}`} />
+                {kvStatus === 'queued' ? 'Queued…' : isKvBusy ? 'Generating…' : story.keyVisualUrl ? 'Generate Variant' : 'Generate KV'}
               </button>
               <div className="text-[10px] font-mono text-zinc-400">
                 Status: {(story as any).masterKvState?.status || 'idle'}

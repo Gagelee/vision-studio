@@ -77,6 +77,13 @@ export interface CharacterLook {
   assetState?: AssetGenerationState;
 }
 
+export interface ReferenceImage {
+  id: string;
+  url: string;
+  name?: string;
+  createdAt?: number;
+}
+
 export interface Character {
   id: string;
   name: string;
@@ -88,10 +95,12 @@ export interface Character {
   status?: 'draft' | 'locked';
   looks: CharacterLook[];
   assetState?: AssetGenerationState;
+  referenceImages?: ReferenceImage[];
+  referenceMode?: 'auto' | 'off';
 }
 
 export interface AssetGenerationState {
-  status: 'idle' | 'running' | 'done' | 'error' | 'blocked';
+  status: 'idle' | 'queued' | 'running' | 'done' | 'error' | 'blocked';
   lastError?: string;
   lastAttemptAt?: number;
   attempts?: number;
