@@ -38,8 +38,9 @@ export const StartProductionModal: React.FC<StartProductionModalProps> = ({ targ
               {target.detail && <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 line-clamp-2">{target.detail}</div>}
             </div>
           )}
-          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4 text-sm text-zinc-600 dark:text-zinc-300 leading-relaxed">
-            目前“生产”是镜头维度的占位流程：点击确认后会把该 Shot 标记为 queued（后续再接入真实渲染/合成 API）。
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4 text-sm text-zinc-600 dark:text-zinc-300 leading-relaxed space-y-2">
+            <div>将使用 Gemini Veo 3.1 将当前镜头关键帧生成视频。</div>
+            <div className="text-xs text-zinc-500">时长会自动使用该 Shot 当前设置（仅 4/6/8s），分辨率固定 720p。</div>
           </div>
 
           <div className="mt-6 flex items-center justify-end gap-3">

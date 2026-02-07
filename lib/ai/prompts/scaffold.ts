@@ -30,7 +30,7 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `    videoPrompt      // FULL prompt for video generation, consistent style, includes env/cast/action/camera/lighting\n` +
     `  }\n` +
     `Rules:\n` +
-    `- duration is seconds (integer 2-8)\n` +
+    `- duration must be one of: 4, 6, 8 (seconds)\n` +
     `- Plan by runtime budget, not fixed counts: default target total runtime is ~60 seconds.\n` +
     `- If user explicitly requests a runtime/length, obey user requirement over default.\n` +
     `- Choose sequence/shot counts that best fit the target runtime and story rhythm.\n` +

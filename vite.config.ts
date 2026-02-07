@@ -414,6 +414,7 @@ const mimeByExt = (ext: string) => {
   if (e === '.png') return 'image/png';
   if (e === '.jpg' || e === '.jpeg') return 'image/jpeg';
   if (e === '.webp') return 'image/webp';
+  if (e === '.mp4') return 'video/mp4';
   return 'application/octet-stream';
 };
 
@@ -538,6 +539,16 @@ const buildGeminiGenerateContentUrl = (args: { env?: Record<string, string>; mod
 const buildGeminiStreamContentUrl = (args: { env?: Record<string, string>; model: string }) => {
   const baseUrl = resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:streamGenerateContent?alt=sse`;
+};
+
+const buildGeminiPredictLongRunningUrl = (args: { env?: Record<string, string>; model: string }) => {
+  const baseUrl = resolveGeminiBaseUrl(args.env);
+  return `${baseUrl}/models/${encodeURIComponent(args.model)}:predictLongRunning`;
+};
+
+const buildGeminiOperationUrl = (args: { env?: Record<string, string>; operationName: string }) => {
+  const baseUrl = resolveGeminiBaseUrl(args.env);
+  return `${baseUrl}/${String(args.operationName || '').replace(/^\/+/, '')}`;
 };
 
 const includesAnyText = (text: string, phrases: string[]) => {
@@ -1170,6 +1181,399 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       } catch {
         res.statusCode = 404;
         return res.end('Not found');
+      }
+    });
+
+    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
+      if (req.method !== 'POST') return next();
+      const body = await readJsonBody(req);
+
+      const prompt = String(body?.prompt || '').trim();
+      const promptSpec = body?.promptSpec && typeof body.promptSpec === 'object' ? body.promptSpec : null;
+      const imageUrl = String(body?.imageUrl || '').trim();
+      const durationRaw = Number(body?.durationSeconds ?? 6);
+      const durationSeconds = durationRaw === 4 || durationRaw === 6 || durationRaw === 8 ? durationRaw : 6;
+      const aspectRatio = String(body?.aspectRatio || '16:9').trim() === '9:16' ? '9:16' : '16:9';
+      const resolution = String(body?.resolution || '720p').trim();
+      const generateAudio = Boolean(body?.generateAudio ?? true);
+      const requestedModel = String(body?.model || '').trim();
+      const preferredModel = String(requestedModel || env.GEMINI_VIDEO_MODEL || 'veo-3.1-fast-generate-preview').trim();
+      const fallbackModel = String(env.GEMINI_VIDEO_FALLBACK_MODEL || 'veo-3.1-generate-preview').trim();
+      const modelCandidates = Array.from(new Set([preferredModel, fallbackModel].map((m) => String(m || '').trim()).filter(Boolean)));
+
+      if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
+      if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
+      if (resolution !== '720p') return sendJson(res, 400, { ok: false, error: 'Only 720p is supported' });
+      if (!geminiApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+
+      const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any): string => {
+        const parts: string[] = [];
+        parts.push('Image-to-video: use the provided image as the starting frame; preserve subject identity and environment continuity.');
+        if (basePrompt) parts.push(`Core direction: ${basePrompt}`);
+        if (spec?.shotDescription) parts.push(`Scene: ${String(spec.shotDescription).trim()}`);
+        if (spec?.action) parts.push(`Action: ${String(spec.action).trim()}`);
+        if (spec?.camera) parts.push(`Camera motion: ${String(spec.camera).trim()}`);
+        if (spec?.composition) parts.push(`Composition: ${String(spec.composition).trim()}`);
+        if (spec?.lensEffect) parts.push(`Lens/look: ${String(spec.lensEffect).trim()}`);
+        if (spec?.mood) parts.push(`Lighting and mood: ${String(spec.mood).trim()}`);
+        if (spec?.style) parts.push(`Visual style: ${String(spec.style).trim()}`);
+        if (spec?.audio) parts.push(`Audio intent: ${String(spec.audio).trim()}`);
+        const constraints = Array.isArray(spec?.constraints) ? spec.constraints : [];
+        if (constraints.length) parts.push(`Constraints: ${constraints.map((x: any) => String(x).trim()).filter(Boolean).join(' ')}`);
+        parts.push('Motion quality: natural physics, coherent anatomy, stable geometry, no jitter/flicker, no abrupt style drift.');
+        parts.push('No text overlays, subtitles, logos, or watermark.');
+        return parts.join('\n').slice(0, 8000);
+      };
+
+      const promptUsed = composeVeoImageToVideoPrompt(prompt, promptSpec);
+
+      const loadImage = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
+        const u = String(url || '').trim();
+        if (!u) return null;
+
+        if (u.startsWith('/__generated__/')) {
+          const clean = u.split('?')[0].split('#')[0];
+          const filePath = safeGeneratedAssetPath(clean);
+          if (!filePath) return null;
+          const bytes = await fs.promises.readFile(filePath);
+          return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+        }
+
+        if (u.startsWith('data:image/')) {
+          const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(u);
+          if (!match) return null;
+          return { mimeType: match[1], bytes: Buffer.from(match[2], 'base64') };
+        }
+
+        if (u.startsWith('http://') || u.startsWith('https://')) {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 20_000);
+          try {
+            const init: any = { signal: controller.signal };
+            const dispatcher = getProxyDispatcher(u, env);
+            if (dispatcher) init.dispatcher = dispatcher;
+            const resp = await fetch(u, init);
+            if (!resp.ok) return null;
+            const ct = String(resp.headers.get('content-type') || '');
+            if (!ct.startsWith('image/')) return null;
+            const bytes = Buffer.from(await resp.arrayBuffer());
+            if (!bytes.length) return null;
+            return { mimeType: ct.split(';')[0] || 'image/png', bytes };
+          } finally {
+            clearTimeout(timeout);
+          }
+        }
+
+        return null;
+      };
+
+      const readVideoBytes = async (rawUrl: string): Promise<{ bytes: Buffer; mimeType: string } | null> => {
+        const candidates = new Set<string>();
+        const direct = String(rawUrl || '').trim();
+        if (direct) candidates.add(direct);
+        if (direct.startsWith('/')) candidates.add(`${resolveGeminiBaseUrl(env)}${direct}`);
+        const queue = Array.from(candidates);
+        for (let i = 0; i < queue.length; i++) {
+          const c = queue[i];
+          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiApiKey)}`;
+          for (const u of [c, withKey]) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 90_000);
+            try {
+              const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiApiKey } };
+              const dispatcher = getProxyDispatcher(u, env);
+              if (dispatcher) init.dispatcher = dispatcher;
+              const resp = await fetch(u, init);
+              if (!resp.ok) continue;
+              const ct = String(resp.headers.get('content-type') || '').toLowerCase();
+              if (ct.startsWith('video/')) {
+                const bytes = Buffer.from(await resp.arrayBuffer());
+                if (!bytes.length) continue;
+                return { bytes, mimeType: ct.split(';')[0] || 'video/mp4' };
+              }
+              if (ct.includes('application/json')) {
+                const data = (await resp.json().catch(() => null)) as any;
+                const nextUri = String(data?.video?.uri || data?.downloadUri || data?.uri || '').trim();
+                if (nextUri && !candidates.has(nextUri)) {
+                  candidates.add(nextUri);
+                  queue.push(nextUri);
+                }
+              }
+            } catch {
+              // ignore and try next
+            } finally {
+              clearTimeout(timeout);
+            }
+          }
+        }
+        return null;
+      };
+
+      const collectStringCandidates = (input: any, maxNodes = 1200): string[] => {
+        const out: string[] = [];
+        const seen = new Set<any>();
+        const stack: any[] = [input];
+        let steps = 0;
+        while (stack.length && steps < maxNodes) {
+          const cur = stack.pop();
+          steps++;
+          if (!cur || typeof cur !== 'object') continue;
+          if (seen.has(cur)) continue;
+          seen.add(cur);
+          for (const [k, v] of Object.entries(cur)) {
+            if (typeof v === 'string') {
+              const key = String(k || '').toLowerCase();
+              const val = String(v || '').trim();
+              if (!val) continue;
+              if (key.includes('uri') || key.includes('url') || key.includes('file') || val.startsWith('http://') || val.startsWith('https://') || val.startsWith('/')) {
+                out.push(val);
+              }
+            } else if (v && typeof v === 'object') {
+              stack.push(v);
+            }
+          }
+        }
+        return Array.from(new Set(out));
+      };
+
+      const fileNameToCandidateUrls = (name: string): string[] => {
+        const n = String(name || '').trim().replace(/^\/+/, '');
+        if (!n) return [];
+        const base = resolveGeminiBaseUrl(env);
+        if (!/^files\//.test(n)) return [];
+        return Array.from(
+          new Set([
+            `${base}/${n}`,
+            `${base}/${n}?alt=media`,
+            `${base}/${n}:download`,
+            `${base}/${n}:download?alt=media`,
+          ]),
+        );
+      };
+
+      try {
+        const loaded = await loadImage(imageUrl);
+        if (!loaded) return sendJson(res, 400, { ok: false, error: 'Unable to load source image' });
+
+        ensureGeneratedDir();
+        let predictRes: any = null;
+        let model = modelCandidates[0];
+        let predictParamsUsed: Record<string, any> = {};
+        const modelErrors: Array<{ model: string; error: string; removedParams?: string[] }> = [];
+        const detectUnsupportedParam = (err: any): string | '' => {
+          const text = formatFetchError(err);
+          const m1 = /`([^`]+)`\s+isn'?t supported/i.exec(text);
+          if (m1?.[1]) return String(m1[1]).trim();
+          const m2 = /\b(enhancePrompt|generateAudio|numberOfVideos|resolution|durationSeconds|aspectRatio)\b[^.\n]*isn'?t supported/i.exec(text);
+          if (m2?.[1]) return String(m2[1]).trim();
+          return '';
+        };
+        for (const candidate of modelCandidates) {
+          model = candidate;
+          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const predictDispatcher = getProxyDispatcher(predictUrl, env);
+          const baseParams: Record<string, any> = {
+            aspectRatio,
+            durationSeconds,
+            resolution,
+            enhancePrompt: true,
+            numberOfVideos: 1,
+          };
+          if (generateAudio) baseParams.generateAudio = true;
+          const removedParams: string[] = [];
+          try {
+            let params = { ...baseParams };
+            for (let i = 0; i < 5; i++) {
+              try {
+                predictRes = await withRetries(
+                  async () => {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 120_000);
+                    try {
+                      const init: any = {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({
+                          instances: [
+                            {
+                              prompt: promptUsed,
+                              image: {
+                                bytesBase64Encoded: loaded.bytes.toString('base64'),
+                                mimeType: loaded.mimeType || 'image/png',
+                              },
+                            },
+                          ],
+                          parameters: params,
+                        }),
+                        signal: controller.signal,
+                      };
+                      if (predictDispatcher) init.dispatcher = predictDispatcher;
+                      const out = await fetch(predictUrl, init);
+                      if (!out.ok) {
+                        const text = await out.text().catch(() => '');
+                        const err: any = new Error(`Gemini Video HTTP ${out.status}${text ? `: ${text}` : ''}`);
+                        err.status = out.status;
+                        err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(out.status));
+                        throw err;
+                      }
+                      return (await out.json()) as any;
+                    } finally {
+                      clearTimeout(timeout);
+                    }
+                  },
+                  { label: `gemini.video.predict:${candidate}`, maxAttempts: 4 },
+                );
+                predictParamsUsed = { ...params };
+                break;
+              } catch (e: any) {
+                const unsupported = detectUnsupportedParam(e);
+                const canDowngrade =
+                  Number(e?.status || 0) === 400 &&
+                  unsupported &&
+                  Object.prototype.hasOwnProperty.call(params, unsupported);
+                if (!canDowngrade) throw e;
+                delete (params as any)[unsupported];
+                removedParams.push(unsupported);
+              }
+            }
+            if (predictRes) break;
+          } catch (e: any) {
+            modelErrors.push({ model: candidate, error: formatFetchError(e), removedParams });
+          }
+        }
+        if (!predictRes) {
+          throw new Error(`Gemini Video: all model candidates failed. ${modelErrors.map((x) => `${x.model}: ${x.error}`).join(' | ')}`);
+        }
+
+        const operationName = String(predictRes?.name || '').trim();
+        if (!operationName) throw new Error('Gemini Video: missing operation name');
+
+        const pollStart = Date.now();
+        const pollTimeoutMs = Math.max(60_000, Number(env.GEMINI_VIDEO_TIMEOUT_MS || 10 * 60_000));
+        const pollIntervalMs = Math.max(1500, Number(env.GEMINI_VIDEO_POLL_INTERVAL_MS || 4000));
+        let opData: any = predictRes;
+        while (!opData?.done) {
+          if (Date.now() - pollStart > pollTimeoutMs) {
+            throw new Error(`Gemini Video timeout after ${Math.round((Date.now() - pollStart) / 1000)}s`);
+          }
+          await sleep(pollIntervalMs);
+          const opUrl = `${buildGeminiOperationUrl({ env, operationName })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const opDispatcher = getProxyDispatcher(opUrl, env);
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 60_000);
+          try {
+            const init: any = { signal: controller.signal };
+            if (opDispatcher) init.dispatcher = opDispatcher;
+            const opRes = await fetch(opUrl, init);
+            if (!opRes.ok) {
+              const text = await opRes.text().catch(() => '');
+              throw new Error(`Gemini Video operation HTTP ${opRes.status}${text ? `: ${text}` : ''}`);
+            }
+            opData = (await opRes.json()) as any;
+          } finally {
+            clearTimeout(timeout);
+          }
+        }
+
+        if (opData?.error) {
+          const message = String(opData?.error?.message || opData?.error?.details || 'unknown error');
+          throw new Error(`Gemini Video operation failed: ${message}`);
+        }
+
+        const sample =
+          opData?.response?.generateVideoResponse?.generatedSamples?.[0] ||
+          opData?.response?.generatedSamples?.[0] ||
+          opData?.generatedSamples?.[0];
+        const primaryVideoUri = String(sample?.video?.uri || sample?.uri || '').trim();
+        const inline = sample?.video?.inlineData || sample?.inlineData;
+        const inlineBytes = typeof inline?.data === 'string' ? Buffer.from(String(inline.data), 'base64') : null;
+
+        const uriCandidates = new Set<string>();
+        if (primaryVideoUri) uriCandidates.add(primaryVideoUri);
+        for (const s of collectStringCandidates(opData)) {
+          const v = String(s || '').trim();
+          if (!v) continue;
+          if (/^https?:\/\//i.test(v) || v.startsWith('/')) {
+            uriCandidates.add(v);
+            continue;
+          }
+          if (/^files\//i.test(v)) {
+            for (const u of fileNameToCandidateUrls(v)) uriCandidates.add(u);
+          }
+        }
+
+        let videoBytes: Buffer | null = inlineBytes && inlineBytes.length ? inlineBytes : null;
+        let resolvedVideoUri = primaryVideoUri;
+        if (!videoBytes && uriCandidates.size) {
+          for (const u of uriCandidates) {
+            const fetched = await readVideoBytes(u);
+            if (fetched?.bytes?.length) {
+              videoBytes = fetched.bytes;
+              resolvedVideoUri = u;
+              break;
+            }
+          }
+        }
+
+        if (videoBytes && videoBytes.length) {
+          const hash = crypto.createHash('sha256').update(`${model}\n${durationSeconds}\n${aspectRatio}\n${promptUsed}\n${imageUrl}`).digest('hex').slice(0, 16);
+          const filename = `${Date.now()}-${hash}.mp4`;
+          fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), videoBytes);
+          return sendJson(res, 200, {
+            videoUrl: `/__generated__/${filename}`,
+            operationName,
+            debug: {
+              transport: 'http',
+              provider: 'gemini',
+              model,
+              baseUrl: geminiBaseUrl,
+              durationSeconds,
+              resolution,
+              aspectRatio,
+              bytes: videoBytes.length,
+              promptPreview: prompt.slice(0, 240),
+              promptUsedPreview: promptUsed.slice(0, 320),
+              requestParameters: predictParamsUsed,
+              uriCandidates: Array.from(uriCandidates).slice(0, 16),
+            },
+          });
+        }
+
+        if (!resolvedVideoUri) {
+          const responseShape = JSON.stringify(
+            {
+              opKeys: Object.keys(opData || {}).slice(0, 30),
+              responseKeys: Object.keys(opData?.response || {}).slice(0, 30),
+              sampleKeys: Object.keys(sample || {}).slice(0, 30),
+            },
+            null,
+            0,
+          );
+          throw new Error(`Gemini Video: operation completed but no downloadable video URI (shape=${responseShape})`);
+        }
+        return sendJson(res, 200, {
+          videoUrl: resolvedVideoUri,
+          operationName,
+          debug: {
+            transport: 'http',
+            provider: 'gemini',
+            model,
+            baseUrl: geminiBaseUrl,
+            durationSeconds,
+            resolution,
+            aspectRatio,
+            remote: true,
+            promptUsedPreview: promptUsed.slice(0, 320),
+            requestParameters: predictParamsUsed,
+            uriCandidates: Array.from(uriCandidates).slice(0, 16),
+          },
+        });
+      } catch (e: any) {
+        return sendJson(res, 500, {
+          ok: false,
+          error: formatFetchError(e),
+          debug: { provider: 'gemini', modelCandidates, imageUrlPreview: imageUrl.slice(0, 200), promptPreview: prompt.slice(0, 200), promptUsedPreview: promptUsed.slice(0, 320) },
+        });
       }
     });
 

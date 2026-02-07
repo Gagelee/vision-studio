@@ -142,6 +142,7 @@ export const buildTeamScaffoldEditorPrompt = (args: {
     `Rules:\n` +
     `- Keep continuity strong. Keep shot descriptions visual.\n` +
     `- Use location names that exist in environment list.\n` +
+    `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
     `DirectorBrief: ${brief}\n` +
     `Script: ${script}\n` +
     `Environments: ${env}\n`

@@ -43,6 +43,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const assetStatus = shot.assetState?.status;
   const isBatchGenerating = assetStatus === 'running' || assetStatus === 'queued';
   const isBusyGenerating = isGenerating || isBatchGenerating;
+  const activeVideoUrl = String(shot.production?.videoUrl || '').trim();
 
   const handleVersionSelect = (versionId: string) => {
     const version = shot.versions.find(v => v.id === versionId);
@@ -243,9 +244,18 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             </div>
         </div>
         <div className="flex items-center gap-3">
-            <span className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-400 font-mono">
-                {shot.duration}s
-            </span>
+            <label className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-400 font-mono flex items-center gap-1.5">
+                <span className="uppercase tracking-wider">Dur</span>
+                <select
+                  value={[4, 6, 8].includes(Number(shot.duration)) ? shot.duration : 4}
+                  onChange={(e) => onUpdateShot({ ...shot, duration: Number(e.target.value) })}
+                  className="bg-transparent text-zinc-200 text-[10px] font-mono outline-none"
+                >
+                  <option value={4}>4s</option>
+                  <option value={6}>6s</option>
+                  <option value={8}>8s</option>
+                </select>
+            </label>
             <span className="px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-[10px] text-indigo-400 font-bold">
                 {aspectRatio}
             </span>
@@ -278,7 +288,15 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
-                {activeVersion ? (
+                {activeVideoUrl ? (
+                    <video
+                        src={activeVideoUrl}
+                        className="w-full h-full object-contain bg-black"
+                        controls
+                        loop
+                        playsInline
+                    />
+                ) : activeVersion ? (
                     isPlaceholderActive ? (
                       <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
                         <MonitorPlay className="w-14 h-14 opacity-50" />
@@ -295,7 +313,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
                         <MonitorPlay className="w-12 h-12 opacity-50" />
-                        <span>No generated footage</span>
+                        <span>No generated keyframe</span>
                     </div>
                 )}
                 

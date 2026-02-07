@@ -156,6 +156,12 @@ export interface Shot {
   production?: {
     status: 'idle' | 'queued' | 'running' | 'done' | 'error';
     lastStartedAt?: number;
+    lastCompletedAt?: number;
+    lastError?: string;
+    operationName?: string;
+    durationSeconds?: 4 | 6 | 8;
+    resolution?: '720p';
+    videoUrl?: string;
   };
 }
 

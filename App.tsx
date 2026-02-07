@@ -25,6 +25,7 @@ import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
 import { isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
 import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
+import { generateVideoFromImage } from './lib/ai/video/generate';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -151,6 +152,17 @@ function renumberShots(shots: Shot[]): Shot[] {
   return shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
 }
 
+function normalizeShotDurationSeconds(raw: unknown): 4 | 6 | 8 {
+  let n = Number(raw);
+  if (!Number.isFinite(n)) return 4;
+  // Some agent payloads may pass milliseconds.
+  if (n > 60) n = Math.round(n / 1000);
+  const rounded = Math.round(n);
+  if (rounded <= 5) return 4;
+  if (rounded <= 7) return 6;
+  return 8;
+}
+
 function createBlankShot(
   story: Story,
   seq: Sequence,
@@ -167,7 +179,7 @@ function createBlankShot(
     locationId: init?.locationId || fallbackLocationId,
     timeOfDay: init?.timeOfDay || 'Day',
     description: init?.description || 'New shot',
-    duration: typeof init?.duration === 'number' && Number.isFinite(init.duration) ? Math.max(1, Math.round(init.duration)) : 4,
+    duration: normalizeShotDurationSeconds(init?.duration),
     thumbnailUrl: thumb,
     activeVersionId: 'v1',
     versions: [{ id: 'v1', imageUrl: thumb, createdAt: now, type: 'placeholder' }],
@@ -283,12 +295,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       if (!sequenceId) return acc;
       const afterShotId = action.payload?.afterShotId ? String(action.payload.afterShotId) : undefined;
       const rawDuration = action.payload?.duration;
-      const normalizedDuration =
-        typeof rawDuration === 'number' && Number.isFinite(rawDuration)
-          ? rawDuration > 60
-            ? Math.round(rawDuration / 1000)
-            : Math.round(rawDuration)
-          : undefined;
+      const normalizedDuration = typeof rawDuration === 'number' && Number.isFinite(rawDuration) ? normalizeShotDurationSeconds(rawDuration) : undefined;
       const init = {
         locationId: action.payload?.locationId ? String(action.payload.locationId) : undefined,
         timeOfDay: action.payload?.timeOfDay ? String(action.payload.timeOfDay) : undefined,
@@ -418,10 +425,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 description: typeof patch.description === 'string' ? patch.description : s.description,
                 timeOfDay: typeof patch.timeOfDay === 'string' ? patch.timeOfDay : s.timeOfDay,
                 locationId: typeof patch.locationId === 'string' ? patch.locationId : s.locationId,
-                duration:
-                  typeof patch.duration === 'number' && Number.isFinite(patch.duration)
-                    ? Math.max(1, Math.round(patch.duration))
-                    : s.duration,
+                duration: typeof patch.duration === 'number' && Number.isFinite(patch.duration) ? normalizeShotDurationSeconds(patch.duration) : s.duration,
               };
             }),
           };
@@ -943,20 +947,168 @@ export default function App() {
 
   };
 
-  const startShotProduction = (sequenceId: string, shotId: string) => {
+  const startShotProduction = async (args: { sequenceId: string; shotId: string }) => {
+    const now = Date.now();
+    const aspectRatio = activeStory?.aspectRatio === '9:16' ? '9:16' : '16:9';
+    const storyNow = activeStory;
+    const seq = storyNow?.sequences.find((s) => s.id === args.sequenceId);
+    const shot = seq?.shots.find((s) => s.id === args.shotId);
+    if (!storyNow || !seq || !shot) {
+      addToast('Shot not found', 'info');
+      return;
+    }
+
+    const activeVersion =
+      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
+      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
+    const imageUrl = String(activeVersion?.imageUrl || '').trim();
+    if (!imageUrl) {
+      addToast('Start Production blocked: generate/select a keyframe first.', 'info');
+      return;
+    }
+
+    const styleGuide = String((storyNow as any)?.styleGuide || '').trim();
+    const location = storyNow.locations.find((l) => l.id === shot.locationId);
+    const shotAction = String((shot.elements as any)?.[ElementType.SCRIPT]?.prompt || '').trim();
+    const cameraPrompt = String(shot.elements?.[ElementType.CAMERA]?.prompt || '').trim();
+    const lightingPrompt = String(shot.elements?.[ElementType.LIGHTING]?.prompt || '').trim();
+    const audioPrompt = String(shot.elements?.[ElementType.AUDIO]?.prompt || '').trim();
+    const authoredVideoPrompt = String((shot.elements as any)?.[ElementType.CAMERA]?.metadata?.videoPrompt || '').trim();
+
+    const videoPrompt =
+      authoredVideoPrompt ||
+      [
+        'Use the provided source image as the first frame and preserve subject identity and environment continuity.',
+        `Scene: ${String(shot.description || '').trim() || 'Cinematic scene progression from the source image.'}`,
+        shotAction ? `Action: ${shotAction}` : '',
+        cameraPrompt ? `Camera movement: ${cameraPrompt}` : '',
+        lightingPrompt ? `Lighting: ${lightingPrompt}` : '',
+        location?.name ? `Location: ${location.name}` : '',
+        location?.visualStyle ? `Environment style: ${String(location.visualStyle).trim()}` : '',
+        styleGuide ? `Visual style guide: ${styleGuide}` : '',
+        'Motion quality: natural physics, stable anatomy, no flicker, no abrupt style drift.',
+        'Output: cinematic, coherent, high detail.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+    const durationSeconds = normalizeShotDurationSeconds(shot.duration);
+
     updateActiveStory((prev) => ({
       ...prev,
-      sequences: prev.sequences.map((seq) => {
-        if (seq.id !== sequenceId) return seq;
-        return {
-          ...seq,
-          shots: seq.shots.map((s) =>
-            s.id === shotId ? { ...s, production: { status: 'queued', lastStartedAt: Date.now() } } : s,
-          ),
-        };
-      }),
+      sequences: prev.sequences.map((s) =>
+        s.id !== args.sequenceId
+          ? s
+          : {
+              ...s,
+              shots: s.shots.map((x) =>
+                x.id !== args.shotId
+                  ? x
+                  : {
+                      ...x,
+                      duration: durationSeconds,
+                      production: {
+                        ...x.production,
+                        status: 'running',
+                        lastStartedAt: now,
+                        lastError: '',
+                        durationSeconds,
+                        resolution: '720p',
+                      },
+                    },
+              ),
+            },
+      ),
     }));
-    addToast('Shot production queued (placeholder)', 'success');
+
+    try {
+      const out = await generateVideoFromImage({
+        prompt: videoPrompt,
+        imageUrl,
+        durationSeconds,
+        aspectRatio,
+        resolution: '720p',
+        generateAudio: true,
+        promptSpec: {
+          shotDescription: String(shot.description || '').trim(),
+          action: shotAction,
+          style: styleGuide || String(location?.visualStyle || '').trim(),
+          camera: cameraPrompt,
+          composition: `Aspect ratio ${aspectRatio}`,
+          lensEffect: cameraPrompt,
+          mood: lightingPrompt,
+          audio: audioPrompt,
+          constraints: [
+            'Preserve character identity and wardrobe continuity.',
+            'Avoid flicker, morphing artifacts, and geometry instability.',
+            'No text overlays, subtitles, logos, or watermark.',
+          ],
+        },
+      });
+
+      const finishedAt = Date.now();
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : {
+                        ...x,
+                        production: {
+                          ...x.production,
+                          status: 'done',
+                          lastCompletedAt: finishedAt,
+                          lastError: '',
+                          durationSeconds,
+                          resolution: '720p',
+                          operationName: out.operationName,
+                          videoUrl: out.videoUrl,
+                        },
+                      },
+                ),
+              },
+        ),
+      }));
+      addToast(`Shot production complete (${durationSeconds}s, 720p)`, 'success');
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      addDebugEvent({
+        level: 'error',
+        scope: 'asset.video',
+        message: 'Start production failed',
+        data: { error: err, sequenceId: args.sequenceId, shotId: args.shotId },
+      });
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : {
+                        ...x,
+                        production: {
+                          ...x.production,
+                          status: 'error',
+                          lastError: err,
+                          durationSeconds,
+                          resolution: '720p',
+                        },
+                      },
+                ),
+              },
+        ),
+      }));
+      addToast(`Shot production failed: ${err}`, 'info');
+    }
   };
 
   // ----- Render Helpers -----
@@ -1085,11 +1237,15 @@ export default function App() {
   };
 
   const handleShotUpdate = (updatedShot: Shot) => {
+    const normalizedShot: Shot = {
+      ...updatedShot,
+      duration: normalizeShotDurationSeconds(updatedShot.duration),
+    };
     updateActiveStory((prev) => ({
       ...prev,
       sequences: prev.sequences.map((seq) => {
-        if (seq.shots.some((s) => s.id === updatedShot.id)) {
-          return { ...seq, shots: seq.shots.map((s) => (s.id === updatedShot.id ? updatedShot : s)) };
+        if (seq.shots.some((s) => s.id === normalizedShot.id)) {
+          return { ...seq, shots: seq.shots.map((s) => (s.id === normalizedShot.id ? normalizedShot : s)) };
         }
         return seq;
       }),
@@ -2806,7 +2962,7 @@ export default function App() {
             return { label: `Shot #${shot.sequence}${loc?.name ? ` · ${loc.name}` : ''}`, detail: shot.description };
           })()}
           onConfirm={() => {
-            startShotProduction(productionTarget.sequenceId, productionTarget.shotId);
+            startShotProduction({ sequenceId: productionTarget.sequenceId, shotId: productionTarget.shotId });
             setProductionTarget(null);
           }}
           onClose={() => setProductionTarget(null)}

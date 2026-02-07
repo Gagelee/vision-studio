@@ -12,6 +12,13 @@ interface ShotCardProps {
 }
 
 export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, aspectRatio = '16:9' }) => {
+  const normalizedDuration = [4, 6, 8].includes(Number(shot.duration))
+    ? Number(shot.duration)
+    : Number(shot.duration) <= 5
+      ? 4
+      : Number(shot.duration) <= 7
+        ? 6
+        : 8;
   const isProcessing = shot.aiState && shot.aiState !== 'idle';
   const assetStatus = shot.assetState?.status;
   const isQueued = assetStatus === 'queued';
@@ -77,7 +84,7 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
           )}
           <span className="bg-black/60 backdrop-blur-md text-zinc-300 text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 border border-white/10 shadow-sm">
             <MonitorPlay className="w-3 h-3" />
-            {shot.duration}s
+            {normalizedDuration}s
           </span>
         </div>
       </div>
