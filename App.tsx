@@ -179,6 +179,59 @@ const recoverStoryStaleGenerationStates = (story: Story, now: number): { next: S
   };
 };
 
+const mergeIncomingStoryPreferRealPreviews = (incoming: Story, existing?: Story | null): Story => {
+  if (!existing || existing.id !== incoming.id) return incoming;
+  const pickUrl = (nextUrl: string, prevUrl: string) => {
+    const n = String(nextUrl || '').trim();
+    const p = String(prevUrl || '').trim();
+    const nReal = n && !isLikelyPlaceholderImageUrl(n);
+    const pReal = p && !isLikelyPlaceholderImageUrl(p);
+    if (nReal) return n;
+    if (pReal) return p;
+    return n || p;
+  };
+  const mergeVersions = (nextVersions: any[], prevVersions: any[]) => {
+    const out: any[] = [];
+    const seen = new Set<string>();
+    for (const v of [...(Array.isArray(nextVersions) ? nextVersions : []), ...(Array.isArray(prevVersions) ? prevVersions : [])]) {
+      const key = String(v?.id || '') || String(v?.imageUrl || '');
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(v);
+    }
+    return out;
+  };
+  const nextSequences = (incoming.sequences || []).map((seq) => {
+    const prevSeq = (existing.sequences || []).find((s) => s.id === seq.id);
+    if (!prevSeq) return seq;
+    return {
+      ...seq,
+      shots: (seq.shots || []).map((shot) => {
+        const prevShot = (prevSeq.shots || []).find((s) => s.id === shot.id);
+        if (!prevShot) return shot;
+        const nextThumb = pickUrl(String((shot as any).thumbnailUrl || ''), String((prevShot as any).thumbnailUrl || ''));
+        const nextVersions = mergeVersions((shot as any).versions || [], (prevShot as any).versions || []);
+        const currentActive = nextVersions.find((v: any) => String(v?.id || '') === String((shot as any).activeVersionId || ''));
+        const prevActive = nextVersions.find((v: any) => String(v?.id || '') === String((prevShot as any).activeVersionId || ''));
+        const currentActiveReal = Boolean(currentActive?.imageUrl) && !isLikelyPlaceholderImageUrl(String(currentActive.imageUrl));
+        const prevActiveReal = Boolean(prevActive?.imageUrl) && !isLikelyPlaceholderImageUrl(String(prevActive.imageUrl));
+        const activeVersionId =
+          currentActiveReal || !prevActiveReal ? (shot as any).activeVersionId : (prevShot as any).activeVersionId;
+        return {
+          ...shot,
+          thumbnailUrl: nextThumb,
+          versions: nextVersions,
+          activeVersionId,
+        } as any;
+      }),
+    };
+  });
+  return {
+    ...incoming,
+    sequences: nextSequences,
+  };
+};
+
 function renumberShots(shots: Shot[]): Shot[] {
   return shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
 }
@@ -1202,7 +1255,7 @@ export default function App() {
       const idx = prev.projects.findIndex((p) => p.id === project.id);
       if (idx < 0) return { ...prev, projects: [project, ...prev.projects] };
       const projects = prev.projects.slice();
-      projects[idx] = project;
+      projects[idx] = mergeIncomingStoryPreferRealPreviews(project, projects[idx]);
       return { ...prev, projects };
     });
   };
@@ -1212,7 +1265,7 @@ export default function App() {
       const idx = prev.projects.findIndex((p) => p.id === project.id);
       const projects = prev.projects.slice();
       if (idx < 0) projects.unshift(project);
-      else projects[idx] = project;
+      else projects[idx] = mergeIncomingStoryPreferRealPreviews(project, projects[idx]);
       return { ...prev, projects, activeProjectId: project.id };
     });
     setSelection({ type: 'story', id: project.id });

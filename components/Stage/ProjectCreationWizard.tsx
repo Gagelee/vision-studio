@@ -95,6 +95,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const [stageDigests, setStageDigests] = useState<StageDigest[]>([]);
   const [assetPreviewFeed, setAssetPreviewFeed] = useState<AssetPreviewCard[]>([]);
   const [assetCarouselIndex, setAssetCarouselIndex] = useState(0);
+  const [insightPanel, setInsightPanel] = useState<'briefs' | 'assets'>('briefs');
   const [error, setError] = useState<string | null>(null);
   const [mockFallbackConfirmArmed, setMockFallbackConfirmArmed] = useState(false);
   const [singleFallbackConfirmArmed, setSingleFallbackConfirmArmed] = useState(false);
@@ -196,6 +197,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     setSingleFallbackConfirmArmed(false);
     setCanSingleFallback(false);
     setPhase('scaffold');
+    setInsightPanel('briefs');
     setAssetTotal(0);
     setAssetDone(0);
     setAssetErrors(0);
@@ -215,6 +217,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     setStageDigests([]);
     setAssetPreviewFeed([]);
     setAssetCarouselIndex(0);
+    setInsightPanel('briefs');
     storyRef.current = null;
     lastScaffoldRef.current = null;
     lastScaffoldArgsRef.current = null;
@@ -236,21 +239,81 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     });
   };
 
-  const summarizeTeamMessagePreview = (raw: unknown): string => {
+  const fallbackSummaryForAgent = (agent: string) => {
+    const a = String(agent || '').trim().toLowerCase();
+    if (a === 'director.brief') return 'Locked project title, logline, and creative direction.';
+    if (a === 'casting_director') return 'Defined character identities and look directions.';
+    if (a === 'environment_director') return 'Defined environments, tone, and spatial continuity.';
+    if (a === 'script_writer') return 'Drafted story parts, scenes, and shot beats.';
+    if (a === 'editor') return 'Checked pacing, continuity, and production readiness.';
+    if (a === 'scaffold.single') return 'Generated full scaffold in single-call fallback mode.';
+    return 'Completed stage output.';
+  };
+
+  const extractLooseField = (txt: string, key: string): string => {
+    const source = String(txt || '').replace(/\\n/g, ' ').replace(/\\"/g, '"');
+    const quoted = source.match(new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`, 'i'));
+    if (quoted?.[1]) return String(quoted[1]).trim();
+    const plain = source.match(new RegExp(`\\b${key}\\b\\s*[:=]\\s*([^,}\\n]+)`, 'i'));
+    if (!plain?.[1]) return '';
+    return String(plain[1]).replace(/^["']|["']$/g, '').trim();
+  };
+
+  const summarizeParsedPayload = (parsed: any): string => {
+    const notes = String(parsed?.notes || '').trim();
+    if (notes) return notes.replace(/\s+/g, ' ').slice(0, 180);
+    const reply = String(parsed?.reply || parsed?.summary || '').trim();
+    if (reply) return reply.replace(/\s+/g, ' ').slice(0, 180);
+    if (Array.isArray(parsed?.characters) && parsed.characters.length) {
+      return `Defined ${parsed.characters.length} character profiles with visual identity guidance.`;
+    }
+    if (Array.isArray(parsed?.locations) && parsed.locations.length) {
+      return `Outlined ${parsed.locations.length} environments with production constraints.`;
+    }
+    if (Array.isArray(parsed?.sequences) && parsed.sequences.length) {
+      return `Drafted ${parsed.sequences.length} story parts with scene progression.`;
+    }
+    if (Array.isArray(parsed?.shots) && parsed.shots.length) {
+      return `Composed ${parsed.shots.length} shot-level directives for the sequence.`;
+    }
+    if (Array.isArray(parsed?.suggestedActions) && parsed.suggestedActions.length) {
+      const types = parsed.suggestedActions
+        .slice(0, 3)
+        .map((a: any) => String(a?.type || '').trim())
+        .filter(Boolean);
+      return `Proposed ${parsed.suggestedActions.length} action(s)${types.length ? `: ${types.join(', ')}` : ''}.`;
+    }
+    const title = String(parsed?.title || '').trim();
+    const logline = String(parsed?.logline || '').trim();
+    if (title || logline) return [title, logline].filter(Boolean).join(' — ').slice(0, 180);
+    return '';
+  };
+
+  const summarizeTeamMessagePreview = (raw: unknown, agent?: string): string => {
     const txt = String(raw || '').trim();
-    if (!txt) return '';
+    if (!txt) return fallbackSummaryForAgent(String(agent || ''));
     try {
       const parsed = JSON.parse(txt) as any;
-      const pick =
-        String(parsed?.notes || '').trim() ||
-        String(parsed?.reply || '').trim() ||
-        String(parsed?.summary || '').trim() ||
-        (Array.isArray(parsed?.suggestedActions) ? `${parsed.suggestedActions.length} action(s) proposed.` : '');
-      if (!pick) return txt.slice(0, 120);
-      return pick.replace(/\s+/g, ' ').slice(0, 180);
+      const pick = summarizeParsedPayload(parsed);
+      if (pick) return pick;
     } catch {
-      return txt.replace(/\s+/g, ' ').slice(0, 180);
+      // Keep extracting from truncated JSON-ish strings.
     }
+    const notes = extractLooseField(txt, 'notes');
+    if (notes) return notes.replace(/\s+/g, ' ').slice(0, 180);
+    const reply = extractLooseField(txt, 'reply') || extractLooseField(txt, 'summary');
+    if (reply) return reply.replace(/\s+/g, ' ').slice(0, 180);
+    if (/"characters"\s*:\s*\[/i.test(txt)) return 'Updated character definitions and look direction.';
+    if (/"locations"\s*:\s*\[/i.test(txt)) return 'Updated environment definitions and scene context.';
+    if (/"sequences"\s*:\s*\[/i.test(txt)) return 'Updated story parts and shot progression.';
+    if (/"suggestedActions"\s*:\s*\[/i.test(txt)) return 'Produced actionable edit operations for this stage.';
+    const cleaned = txt
+      .replace(/^\{+|\}+$/g, '')
+      .replace(/["\\]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned) return fallbackSummaryForAgent(String(agent || ''));
+    return cleaned.slice(0, 180);
   };
 
   const prettifyAgentName = (agent: string) => {
@@ -515,11 +578,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
 	            }
-	            if (ev.type === 'success') {
+		            if (ev.type === 'success') {
               storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl, ev.meta);
-	              done = ev.done;
-	              setAssetDone(ev.done);
-	              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+		              done = ev.done;
+		              setAssetDone(ev.done);
+                  if (ev.done === 1) setInsightPanel('assets');
+		              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
                 setAssetPreviewFeed((prev) => {
                   const next: AssetPreviewCard = {
                     id: `asset-prev-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
@@ -654,7 +718,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                       title: `Scaffold • ${prettifyAgentName(agent || 'agent')}`,
                       summary:
                         ev.data?.ok === true
-                          ? 'Completed this stage.'
+                          ? fallbackSummaryForAgent(agent || 'agent')
                           : ev.data?.ok === false
                             ? String(ev.data?.error || 'Stage failed').slice(0, 180)
                             : 'Processing stage update.',
@@ -736,9 +800,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
         if (teamMessages.length) {
           for (const tm of teamMessages) {
             const agent = String(tm?.agent || '');
-            const summary = summarizeTeamMessagePreview(tm?.responsePreview) || summarizeTeamMessagePreview(tm?.notes);
+            const summary =
+              summarizeTeamMessagePreview(tm?.responsePreview, agent) ||
+              summarizeTeamMessagePreview(tm?.notes, agent) ||
+              fallbackSummaryForAgent(agent);
             upsertStageDigest({
-              id: `team-${agent || Math.random().toString(16).slice(2, 8)}`,
+              id: `scaffold-${agent || Math.random().toString(16).slice(2, 8)}`,
               title: `Agent • ${prettifyAgentName(agent || 'specialist')}`,
               summary: summary || 'Returned stage output.',
               status: tm?.ok === false ? 'error' : 'done',
@@ -1126,89 +1193,84 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                             </div>
                         </div>
                     )}
-                    {plan && (
-                        <div className="max-w-xl mx-auto space-y-3">
-                            <div className="text-[10px] font-black uppercase tracking-[0.35em] text-white/30">Plan</div>
-                            <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 text-left space-y-2">
-                                <div className="text-white/80 text-sm font-medium mb-2">{plan.summary}</div>
-                                <div className="space-y-2">
-                                    {plan.steps.map(step => (
-                                        <div key={step.id} className="flex items-center gap-3 text-sm text-white/70">
-                                            {step.status === 'done' ? (
-                                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                                            ) : step.status === 'error' ? (
-                                                <AlertTriangle className="w-4 h-4 text-rose-400" />
-                                            ) : (
-                                                <Loader2 className="w-4 h-4 animate-spin text-white/40" />
-                                            )}
-                                            <span>{step.title}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                    )}
                     {(stageDigestView.length > 0 || assetPreviewFeed.length > 0) && (
-                      <div className="max-w-4xl mx-auto overflow-x-auto pcw-scroll pb-2">
-                        <div className="flex gap-4 min-w-max">
-                          <section className="w-[460px] rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 text-left">
-                            <div className="text-[10px] font-black uppercase tracking-[0.32em] text-white/35 mb-3">Stage Briefs</div>
-                            <div className="space-y-2 max-h-48 overflow-y-auto pcw-scroll pr-1">
-                              {stageDigestView.length === 0 ? (
-                                <div className="text-[12px] text-white/45">Waiting for stage signals…</div>
-                              ) : (
-                                stageDigestView.map((d) => (
-                                  <div key={d.id} className="rounded-xl border border-white/10 bg-black/25 px-3 py-2.5">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <div className="text-[11px] font-black uppercase tracking-[0.15em] text-white/75">{d.title}</div>
-                                      <span
-                                        className={`text-[9px] uppercase tracking-[0.16em] ${
-                                          d.status === 'done'
-                                            ? 'text-emerald-300'
-                                            : d.status === 'error'
-                                              ? 'text-rose-300'
-                                              : 'text-zinc-300'
-                                        }`}
-                                      >
-                                        {d.status}
-                                      </span>
-                                    </div>
-                                    <div className="mt-1 text-[12px] leading-relaxed text-white/68">{d.summary}</div>
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          </section>
+                      <section className="max-w-2xl mx-auto rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 text-left">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="inline-flex items-center rounded-full border border-white/15 bg-black/35 p-0.5">
+                            <button
+                              type="button"
+                              onClick={() => setInsightPanel('briefs')}
+                              className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.2em] transition-colors ${
+                                insightPanel === 'briefs' ? 'bg-white text-black' : 'text-white/60 hover:text-white'
+                              }`}
+                            >
+                              Stage Briefs
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setInsightPanel('assets')}
+                              className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.2em] transition-colors ${
+                                insightPanel === 'assets' ? 'bg-white text-black' : 'text-white/60 hover:text-white'
+                              }`}
+                            >
+                              Asset Reel
+                            </button>
+                          </div>
+                        </div>
 
-                          <section className="w-[360px] rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 text-left">
-                            <div className="flex items-center justify-between mb-3">
-                              <div className="text-[10px] font-black uppercase tracking-[0.32em] text-white/35">Asset Reel</div>
-                              {assetPreviewFeed.length > 1 && (
-                                <div className="flex items-center gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => setAssetCarouselIndex((i) => (i - 1 + assetPreviewFeed.length) % assetPreviewFeed.length)}
-                                    className="w-6 h-6 rounded-full bg-white/10 border border-white/15 text-white/80 flex items-center justify-center hover:bg-white/15"
-                                    title="Previous asset"
-                                  >
-                                    <ChevronLeft className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setAssetCarouselIndex((i) => (i + 1) % assetPreviewFeed.length)}
-                                    className="w-6 h-6 rounded-full bg-white/10 border border-white/15 text-white/80 flex items-center justify-center hover:bg-white/15"
-                                    title="Next asset"
-                                  >
-                                    <ChevronRight className="w-3.5 h-3.5" />
-                                  </button>
+                        {insightPanel === 'briefs' ? (
+                          <div className="space-y-2 max-h-56 overflow-y-auto pcw-scroll pr-1">
+                            {stageDigestView.length === 0 ? (
+                              <div className="text-[12px] text-white/45">Waiting for stage signals…</div>
+                            ) : (
+                              stageDigestView.map((d) => (
+                                <div key={d.id} className="rounded-xl border border-white/10 bg-black/25 px-3 py-2.5">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="text-[11px] font-black uppercase tracking-[0.15em] text-white/75">{d.title}</div>
+                                    <span
+                                      className={`text-[9px] uppercase tracking-[0.16em] ${
+                                        d.status === 'done'
+                                          ? 'text-emerald-300'
+                                          : d.status === 'error'
+                                            ? 'text-rose-300'
+                                            : 'text-zinc-300'
+                                      }`}
+                                    >
+                                      {d.status}
+                                    </span>
+                                  </div>
+                                  <div className="mt-1 text-[12px] leading-relaxed text-white/68">{d.summary}</div>
                                 </div>
-                              )}
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-black/35 overflow-hidden h-44 flex items-center justify-center">
+                              ))
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            <div className="relative rounded-2xl border border-white/10 bg-black/35 overflow-hidden h-44 flex items-center justify-center">
                               {activeAssetPreview?.url ? (
                                 <img src={activeAssetPreview.url} alt={activeAssetPreview.label} className="w-full h-full object-cover" />
                               ) : (
                                 <div className="text-[12px] text-white/45 px-4 text-center">Generated assets will appear here while rendering.</div>
+                              )}
+                              {assetPreviewFeed.length > 1 && (
+                                <div className="absolute inset-y-0 left-0 right-0 flex items-center justify-between px-2 pointer-events-none">
+                                  <button
+                                    type="button"
+                                    onClick={() => setAssetCarouselIndex((i) => (i - 1 + assetPreviewFeed.length) % assetPreviewFeed.length)}
+                                    className="pointer-events-auto w-8 h-8 rounded-full bg-black/45 border border-white/15 text-white/85 flex items-center justify-center hover:bg-black/65"
+                                    title="Previous asset"
+                                  >
+                                    <ChevronLeft className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setAssetCarouselIndex((i) => (i + 1) % assetPreviewFeed.length)}
+                                    className="pointer-events-auto w-8 h-8 rounded-full bg-black/45 border border-white/15 text-white/85 flex items-center justify-center hover:bg-black/65"
+                                    title="Next asset"
+                                  >
+                                    <ChevronRight className="w-4 h-4" />
+                                  </button>
+                                </div>
                               )}
                             </div>
                             <div className="mt-2 min-h-[2rem]">
@@ -1227,9 +1289,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                 ))}
                               </div>
                             )}
-                          </section>
-                        </div>
-                      </div>
+                          </>
+                        )}
+                      </section>
                     )}
 	                    <div className="flex flex-col gap-2 max-w-xs mx-auto">
 	                        <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
