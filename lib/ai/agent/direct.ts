@@ -79,6 +79,23 @@ const parseSse = async (res: Response, onEvent: (ev: DirectorStreamEvent) => voi
   if (!reader) throw new Error('Streaming not supported in this environment');
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+  const processChunk = (rawChunk: string) => {
+    const chunk = String(rawChunk || '').trim();
+    if (!chunk) return;
+    let eventName = 'message';
+    let dataLine = '';
+    for (const line of chunk.split('\n')) {
+      if (line.startsWith('event:')) eventName = line.slice(6).trim();
+      if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+    }
+    if (!dataLine) return;
+    try {
+      const data = JSON.parse(dataLine);
+      onEvent({ event: eventName as any, data } as DirectorStreamEvent);
+    } catch {
+      // ignore malformed chunk
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -86,24 +103,13 @@ const parseSse = async (res: Response, onEvent: (ev: DirectorStreamEvent) => voi
     buffer += decoder.decode(value, { stream: true });
     let idx: number;
     while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      const chunk = buffer.slice(0, idx).trim();
+      const chunk = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 2);
-      if (!chunk) continue;
-      let eventName = 'message';
-      let dataLine = '';
-      for (const line of chunk.split('\n')) {
-        if (line.startsWith('event:')) eventName = line.slice(6).trim();
-        if (line.startsWith('data:')) dataLine += line.slice(5).trim();
-      }
-      if (!dataLine) continue;
-      try {
-        const data = JSON.parse(dataLine);
-        onEvent({ event: eventName as any, data } as DirectorStreamEvent);
-      } catch {
-        // ignore malformed chunk
-      }
+      processChunk(chunk);
     }
   }
+  // Some servers end stream without a final double newline; process tail as one last event.
+  processChunk(buffer);
 };
 
 const includesAny = (text: string, phrases: string[]) => phrases.some((p) => text.includes(p));
@@ -254,6 +260,34 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
   // Shot structure edits: time/location/cast
   const selected = getSelectedShot();
   if (selected) {
+    const wantsNine = includesAny(msg, ['9 grid', '9-grid', '3x3', '九宫格']);
+    const wantsFour = includesAny(msg, ['4 grid', '4-grid', '2x2', '四宫格']);
+    const beatsMatch =
+      raw.match(/(?:panel\s*beats?|micro[-\s]*beats?|分镜要点|镜头要点)\s*[:：]\s*([\s\S]+)$/i) ||
+      raw.match(/(?:beats?)\s*[:：]\s*([\s\S]+)$/i);
+    const beatLines = beatsMatch?.[1]
+      ? String(beatsMatch[1] || '')
+          .split(/\n|[,，;；]/g)
+          .map((s) => s.trim())
+          .filter((s) => s.length >= 4)
+      : [];
+    if (wantsNine || wantsFour || beatLines.length > 0) {
+      actions.push({
+        type: 'UPDATE_ELEMENT',
+        payload: {
+          shotId: selected.shot.id,
+          sequenceId: selected.seqId,
+          elementType: ElementType.CAMERA,
+          prompt: String((selected.shot.elements as any)?.[ElementType.CAMERA]?.prompt || ''),
+          metadata: {
+            panelCount: wantsNine ? 9 : wantsFour ? 4 : undefined,
+            panelBeats: beatLines.length ? beatLines.slice(0, 9) : undefined,
+          },
+        },
+      });
+      notes.push('update keyframe contact-sheet plan');
+    }
+
     if (includesAny(msg, ['night', '夜'])) {
       actions.push({ type: 'UPDATE_SHOT', payload: { shotId: selected.shot.id, sequenceId: selected.seqId, patch: { timeOfDay: 'Night' } } });
       notes.push('shot time → night');
@@ -540,6 +574,16 @@ export const runDirectorCommandStream = async (
     if (ev.event === 'result') final = ev.data as DirectorCommandResponse;
     onEvent(ev);
   });
-  if (!final) throw new Error('Streaming ended without result');
+  if (!final) {
+    addDebugEvent({
+      level: 'warn',
+      scope: 'agent.direct',
+      message: 'Stream ended without result, fallback to non-streaming',
+      data: { endpoint, provider: req.settings.provider, model: req.settings.model },
+    });
+    const fallback = await runDirectorCommand(req);
+    onEvent({ event: 'result', data: fallback });
+    return fallback;
+  }
   return final;
 };

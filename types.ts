@@ -164,6 +164,11 @@ export interface Shot {
   activeVersionId: string;
   versions: ShotVersion[];
   elements: { [key in ElementType]: DirectorElement };
+  // Optional storyboard-contact-sheet planning hints for keyframe generation.
+  keyframePlan?: {
+    panelCount?: 4 | 9;
+    panelGuidance?: string[];
+  };
   aiState?: 'idle' | 'thinking' | 'rendering';
   aiPrompt?: string;
   assetState?: AssetGenerationState;

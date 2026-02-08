@@ -28,7 +28,8 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `    locationName, castNames[],\n` +
     `    script,          // screenplay-style for this shot: action + dialogue lines\n` +
     `    camera, lighting, audio,\n` +
-    `    videoPrompt      // FULL prompt for video generation, consistent style, includes env/cast/action/camera/lighting\n` +
+    `    videoPrompt,     // FULL prompt for video generation, consistent style, includes env/cast/action/camera/lighting\n` +
+    `    keyframePlan?    // optional: { panelCount?: 4|9, panelGuidance?: string[] } for contact-sheet keyframe\n` +
     `  }\n` +
     `Rules:\n` +
     `- If intent explicitly specifies rendering medium/style, treat it as HARD CONSTRAINT and keep it verbatim.\n` +
@@ -45,9 +46,12 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `- If the Intent includes a "Reference Assignments" section, treat it as hard constraints and preserve those mappings through Director -> Casting/Environment decisions.\n` +
     `- For character-assigned references, ensure corresponding character entries/looks are created or updated to match those references.\n` +
     `- For location-assigned references, ensure corresponding location entries/style reflect those references.\n` +
+    `- Location/environment assets are set-reference plates: avoid hero people in frame (background extras only when necessary).\n` +
     `- Maintain strong continuity: same character identity across looks; same environment logic across shots.\n` +
     `- LOOKS: Only create a character look when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- The "videoPrompt" MUST be production-ready and self-contained.\n` +
+    `- For keyframe planning, choose panelCount by shot duration: 8s -> 9 panels (3x3), 4/6s -> 4 panels (2x2).\n` +
+    `- If a shot has important micro-actions, add keyframePlan.panelGuidance with concise beat lines; if not, omit it.\n` +
     `- Do NOT default to glossy CG/3D-render language unless user explicitly asks for that medium.\n` +
     `\n` +
     `Intent: ${intent}\n` +

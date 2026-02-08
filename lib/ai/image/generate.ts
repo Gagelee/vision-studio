@@ -61,7 +61,11 @@ export const generateImageFromPrompt = async (req: {
     const abortFromExternal = () => controller.abort((externalSignal as any)?.reason || new DOMException('Aborted', 'AbortError'));
     if (externalSignal?.aborted) abortFromExternal();
     externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
-    const timeout = setTimeout(() => controller.abort(), 60_000);
+    const timeoutMs = 180_000;
+    const timeout = setTimeout(
+      () => controller.abort(new Error(`Image generation timeout after ${Math.round(timeoutMs / 1000)}s`)),
+      timeoutMs,
+    );
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

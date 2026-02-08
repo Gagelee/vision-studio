@@ -1399,8 +1399,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                 onChange={(e) => (isPreflightOpen ? setPreflightInput(e.target.value) : setIntent(e.target.value))}
                                 onPaste={async (e) => {
                                   if (!isPreflightOpen) return;
-                                  const files = Array.from(e.clipboardData?.files || []);
-                                  if (!files.length) return;
+                                  const files = e.clipboardData?.files;
+                                  if (!files?.length) return;
                                   const refs = await readReferenceFiles(files);
                                   if (!refs.length) return;
                                   e.preventDefault();

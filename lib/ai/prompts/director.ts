@@ -38,7 +38,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `   payload: { name?: string, description?: string }\n` +
     `\n` +
     `E) UPDATE_CHARACTER\n` +
-    `   payload: { characterId: string, patch: { name?: string, description?: string, status?: "draft"|"locked", referenceMode?: "auto"|"off", referenceImages?: Array<{ url: string, name?: string }> } }\n` +
+    `   payload: { characterId: string, patch: { name?: string, description?: string, status?: "draft"|"locked", referenceMode?: "auto"|"off", referenceImages?: Array<{ url: string, name?: string }> }, regenerateDependents?: boolean }\n` +
     `\n` +
     `E2) DELETE_CHARACTER\n` +
     `   payload: { characterId: string }\n` +
@@ -121,9 +121,12 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- Prefer UPDATE_SHOT / SET_CAST for structural edits; prefer UPDATE_ELEMENT for camera/lighting/audio/script prompt edits.\n` +
     `- For screenplay requests, write SCRIPT prompts in screenplay style (action lines + dialogue).\n` +
     `- For "video prompt" requests, put the production-ready prompt into UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.videoPrompt=string).\n` +
+    `- For storyboard contact-sheet planning requests (4-grid/9-grid/micro-beats), use UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.panelBeats=string[]).\n` +
     `- Infer style intent from user wording and translate it into executable prompt terms. Example: cinematic -> filmic framing/contrast/depth; epic -> monumental scale/wide establishing/strong silhouettes.\n` +
     `- Keep abstract style words and concrete execution words together in updates (camera/lighting/styleGuide/videoPrompt).\n` +
     `- Keep the action list short (1-5 actions). For bulk generation, use GENERATE_PROJECT_ASSETS.\n` +
+    `- For bundled requests (e.g., "改人设并同步分镜"), include both mutation + generation intent in one action set.\n` +
+    `- For conditional requests ("only if/如果...才..."), encode condition as payload flags (e.g., regenerateDependents=true) and avoid unconditional bulk generation.\n` +
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
     `- If user asks to update/regenerate master KV through director, prefer GENERATE_MASTER_KV_PROPOSAL (not GENERATE_PROJECT_ASSETS masterkv).\n` +
     `- If user says accept/update the new KV proposal, use ACCEPT_KV_PROPOSAL.\n` +
@@ -131,6 +134,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- If user says retry/regenerate KV proposal, output DISCARD_KV_PROPOSAL then GENERATE_MASTER_KV_PROPOSAL.\n` +
     `- For global visual language/style changes, update UPDATE_STORY.patch.styleGuide (concise style bible).\n` +
     `- For UPDATE_CHARACTER_LOOK, you MUST include characterId + lookId and put changes under patch (do NOT use a top-level id).\n` +
+    `- If user explicitly asks to sync/regenerate all dependent keyframes after character identity changes, set UPDATE_CHARACTER.payload.regenerateDependents = true.\n` +
     `- To clear character reference images, use UPDATE_CHARACTER with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- To clear Master KV references, use UPDATE_STORY with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- To clear environment references, use UPDATE_LOCATION with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +

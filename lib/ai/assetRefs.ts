@@ -1,4 +1,4 @@
-import type { Character, CharacterLook, Location, Story } from '../../types';
+import type { Character, CharacterLook, Location, Shot, ShotProductionVariant, ShotVersion, Story } from '../../types';
 
 export const isLikelyPlaceholderImageUrl = (url: string) => {
   const s = String(url || '').trim();
@@ -91,4 +91,81 @@ export const getLookActivePreviewUrl = (lk: CharacterLook | null | undefined, op
     fallbackUrl: lk.previewUrl,
     activeOnly: opts?.activeOnly,
   });
+};
+
+const getShotLegacyFallbackVariants = (shot: Shot): ShotProductionVariant[] => {
+  const production = (shot as any)?.production;
+  const productionVariants = Array.isArray(production?.variants) ? (production.variants as ShotProductionVariant[]) : [];
+  if (productionVariants.length) return productionVariants;
+  const videoUrl = String(production?.videoUrl || '').trim();
+  if (!videoUrl) return [];
+  return [
+    {
+      id: 'pv-legacy',
+      videoUrl,
+      createdAt: Number(production?.lastCompletedAt || Date.now()),
+      durationSeconds: production?.durationSeconds,
+      resolution: production?.resolution,
+      operationName: production?.operationName,
+    },
+  ];
+};
+
+export const getShotActiveVersion = (shot: Shot | null | undefined): ShotVersion | null => {
+  if (!shot) return null;
+  const versions = Array.isArray((shot as any).versions) ? ((shot as any).versions as ShotVersion[]) : [];
+  if (!versions.length) return null;
+  return versions.find((v) => String(v?.id || '') === String((shot as any).activeVersionId || '')) || versions[versions.length - 1] || null;
+};
+
+const isVariantBoundToVersion = (variant: ShotProductionVariant, version: ShotVersion | null) => {
+  if (!variant || !version) return false;
+  const sourceVersionId = String((variant as any)?.metadata?.sourceShotVersionId || '').trim();
+  if (sourceVersionId) return sourceVersionId === String(version.id || '').trim();
+  const sourceImageUrl = String((variant as any)?.metadata?.sourceImageUrl || '').trim();
+  const versionImageUrl = String(version.imageUrl || '').trim();
+  if (sourceImageUrl && versionImageUrl) return sourceImageUrl === versionImageUrl;
+  return false;
+};
+
+export const getShotVideoVariantsForVersion = (
+  shot: Shot | null | undefined,
+  version: ShotVersion | null,
+  opts?: { allowLegacyUnboundFallback?: boolean },
+): ShotProductionVariant[] => {
+  if (!shot || !version) return [];
+  const all = getShotLegacyFallbackVariants(shot);
+  if (!all.length) return [];
+  const matched = all.filter((v) => isVariantBoundToVersion(v, version));
+  if (matched.length) return matched;
+  const allowLegacyUnboundFallback = Boolean(opts?.allowLegacyUnboundFallback);
+  if (!allowLegacyUnboundFallback) return [];
+  const hasAnyExplicitBinding = all.some((v) => {
+    const sourceVersionId = String((v as any)?.metadata?.sourceShotVersionId || '').trim();
+    const sourceImageUrl = String((v as any)?.metadata?.sourceImageUrl || '').trim();
+    return Boolean(sourceVersionId || sourceImageUrl);
+  });
+  if (hasAnyExplicitBinding) return [];
+  return all;
+};
+
+export const resolveShotActiveVideo = (
+  shot: Shot | null | undefined,
+  opts?: { allowLegacyUnboundFallback?: boolean },
+): {
+  activeVersion: ShotVersion | null;
+  variants: ShotProductionVariant[];
+  activeVariant: ShotProductionVariant | null;
+  videoUrl: string;
+} => {
+  const activeVersion = getShotActiveVersion(shot);
+  const variants = getShotVideoVariantsForVersion(shot, activeVersion, opts);
+  const activeVariantId = String((shot as any)?.production?.activeVariantId || '').trim();
+  const activeVariant = variants.find((v) => String(v?.id || '') === activeVariantId) || variants[variants.length - 1] || null;
+  return {
+    activeVersion,
+    variants,
+    activeVariant,
+    videoUrl: String(activeVariant?.videoUrl || '').trim(),
+  };
 };

@@ -118,6 +118,8 @@ export const buildTeamScaffoldEnvironmentDirectorPrompt = (args: { directorBrief
     `Rules:\n` +
     `- Each location description should be filmable, concrete, and consistent with the style bible.\n` +
     `- Only include locations mentioned by director (you may rename slightly for clarity).\n` +
+    `- Environment outputs are reference plates for downstream generation: avoid making people the subject.\n` +
+    `- Prefer empty sets. If humans are needed, keep them as tiny background extras only (non-identifiable, non-primary).\n` +
     `DirectorBrief: ${brief}\n`
   );
 };
@@ -158,6 +160,7 @@ export const buildTeamScaffoldEditorPrompt = (args: {
     `- Sequence boundaries should follow narrative turns and dramatic purpose, not simple location switches.\n` +
     `- A sequence may include multiple locations, and locations may intercut within one sequence.\n` +
     `- Use location names that exist in environment list.\n` +
+    `- Ensure every declared location appears in at least one shot unless explicitly marked unused.\n` +
     `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
     `DirectorBrief: ${brief}\n` +
     `Script: ${script}\n` +
@@ -187,7 +190,8 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
     `        "camera": string,\n` +
     `        "lighting": string,\n` +
     `        "audio": string,\n` +
-    `        "videoPrompt": string\n` +
+    `        "videoPrompt": string,\n` +
+    `        "keyframePlan"?: { "panelCount"?: 4|9, "panelGuidance"?: string[] }\n` +
     `      }>\n` +
     `    }>\n` +
     `  }>\n` +
@@ -198,6 +202,8 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
     `- Translate abstract user adjectives into executable visual terms (camera language, composition scale, lighting behavior, motion quality).\n` +
     `- Include environment + cast + action + lens/camera + lighting cues.\n` +
     `- Start each "videoPrompt" with a short STYLE header derived from director style bible (rendering style/medium, palette, lighting mood, camera language).\n` +
+    `- Also prepare optional keyframePlan for storyboard contact-sheet generation: panelCount by duration (8s -> 9 panels; 4/6s -> 4 panels).\n` +
+    `- keyframePlan.panelGuidance should only include important micro-beats; keep concise and optional.\n` +
     `- No text/watermarks.\n` +
     `AspectRatio: ${aspectRatio}\n` +
     `DirectorBrief: ${brief}\n` +
@@ -234,7 +240,8 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `       "camera": string, "lighting": string, "audio": string,\n` +
     `       "locationName": string, "castNames": string[],\n` +
     `       "script": string,\n` +
-    `       "videoPrompt": string\n` +
+    `       "videoPrompt": string,\n` +
+    `       "keyframePlan"?: { "panelCount"?: 4|9, "panelGuidance"?: string[] }\n` +
     `  }> }> }>\n` +
     `}\n` +
     `Rules:\n` +
@@ -294,7 +301,8 @@ export const buildTeamDirectSpecialistPrompt = (args: {
     casting_director: 'Prioritize character identity/look consistency.',
     editor: 'Prioritize story-part (sequence)/shot structure and continuity.',
     environment_director: 'Prioritize location/set updates.',
-    camera_art: 'For video prompt updates, use UPDATE_ELEMENT with elementType="CAMERA" and payload.metadata.videoPrompt.',
+    camera_art:
+      'For video prompt updates, use UPDATE_ELEMENT with elementType="CAMERA" and payload.metadata.videoPrompt. For storyboard contact-sheet planning, store optional panel guidance in payload.metadata.panelBeats (string[]).',
   };
 
   return (
@@ -304,6 +312,10 @@ export const buildTeamDirectSpecialistPrompt = (args: {
     `Rules:\n` +
     `- Only allowed app action types.\n` +
     `- Be conservative: 0-4 actions.\n` +
+    `- For GENERATE_CHARACTER_LOOK, payload MUST be { characterId: string, lookId: string } (do not use payload.id).\n` +
+    `- If the directive explicitly asks to sync/regenerate dependent keyframes after character identity updates, set UPDATE_CHARACTER.payload.regenerateDependents = true.\n` +
+    `- For bundled requests, output all required actions in one response (mutation first, generation second).\n` +
+    `- For conditional requests, express the condition via payload flags instead of broad GENERATE_PROJECT_ASSETS.\n` +
     `${roleRule[agent] || ''}\n` +
     `Focus: ${focus}\n` +
     `Selection: ${selectionJson}\n` +
@@ -338,9 +350,15 @@ export const buildTeamDirectMergePrompt = (args: {
     `- Use IDs that exist in the Story JSON.\n` +
     `- Keep actions 0-6.\n` +
     `- Do NOT output unknown payload fields.\n` +
+    `- For GENERATE_CHARACTER_LOOK, payload MUST be { characterId: string, lookId: string } (do not use payload.id).\n` +
+    `- If the directive explicitly asks to sync/regenerate dependent keyframes after character identity updates, set UPDATE_CHARACTER.payload.regenerateDependents = true.\n` +
+    `- For bundled requests, ensure action order is mutation first, generation second.\n` +
+    `- For conditional requests, keep generation scoped and flag-driven (avoid unconditional all-scope generation).\n` +
     `- For scene-level edits, prefer CREATE_SCENE/RENAME_SCENE/UPDATE_SCENE/DELETE_SCENE and MOVE_SHOT_TO_SCENE.\n` +
     `- For CREATE_SHOT include sequenceId (and sceneId when known) plus concrete visual fields (description/location/time/camera/lighting/script/videoPrompt/cast when relevant).\n` +
-    `- If the user asks to generate storyboard images / 出图 / 渲染, and you create or update shots, include GENERATE_PROJECT_ASSETS with payload.scope=\"shots\" (so newly-created shot IDs don't matter).\n` +
+    `- Prefer targeted generation to avoid regenerating unrelated variants:\n` +
+    `  - If a specific existing shot is being edited/generated, use GENERATE_SHOT_IMAGE for that shot.\n` +
+    `  - Only use GENERATE_PROJECT_ASSETS(scope=\"shots\") when many new shots are created and exact IDs are not stable.\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +
     `Directive: ${directive}\n` +

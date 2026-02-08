@@ -8,13 +8,24 @@ const normalizeSceneShots = (shots: Shot[]): Shot[] =>
     sequence: idx + 1,
   }));
 
+const inferSceneTitle = (rawTitle: string, idx: number, shots: Shot[]) => {
+  const title = String(rawTitle || '').trim();
+  const generic = !title || /^scene\s*\d+$/i.test(title);
+  if (!generic) return title;
+  const first = Array.isArray(shots) ? shots[0] : null;
+  const desc = String(first?.description || '').trim().replace(/\s+/g, ' ');
+  if (!desc) return `Scene ${idx + 1}`;
+  const brief = desc.split(' ').slice(0, 6).join(' ').trim();
+  return brief ? `${brief}${desc.length > brief.length ? '...' : ''}` : `Scene ${idx + 1}`;
+};
+
 const normalizeSequence = (seq: Sequence): Sequence => {
   const rawScenes = Array.isArray((seq as any).scenes) ? ((seq as any).scenes as Scene[]) : [];
   const rawShots = Array.isArray((seq as any).shots) ? ((seq as any).shots as Shot[]) : [];
   const scenes: Scene[] = rawScenes.length
     ? rawScenes.map((sc, idx) => ({
         id: String(sc?.id || toSceneId(seq.id, idx)),
-        title: String(sc?.title || `Scene ${idx + 1}`),
+        title: inferSceneTitle(String(sc?.title || ''), idx, normalizeSceneShots(Array.isArray(sc?.shots) ? sc.shots : [])),
         summary: sc?.summary ? String(sc.summary) : undefined,
         shots: normalizeSceneShots(Array.isArray(sc?.shots) ? sc.shots : []),
       }))

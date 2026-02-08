@@ -145,7 +145,7 @@ export const PROMPT_REGISTRY: PromptMeta[] = [
   },
   {
     id: 'asset.shotImage',
-    version: v('2026-02-04.1'),
+    version: v('2026-02-08.1'),
     title: 'Asset: Shot image prompt',
     fileHint: 'lib/ai/prompts/assetAuto.ts',
     usedByAgents: ['assetExecutor.shot'],
@@ -203,4 +203,3 @@ export const getPromptMetaForAgent = (domain: PromptDomain, agent: string): Prom
 
   return null;
 };
-

@@ -9,6 +9,7 @@ import {
   buildShotImagePrompt,
   buildShotKeyframePrompt,
 } from './prompts';
+import { selectContactSheetPanelCount } from './prompts/image';
 
 export type AssetScope = 'all' | 'shots' | 'locations' | 'characters' | 'looks' | 'masterkv';
 
@@ -809,10 +810,14 @@ export const executeAssetJobs = async (args: {
                 .filter(Boolean)
             : [];
           const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
+          const panelCount = selectContactSheetPanelCount(Number(shot.duration || 0));
           const promptSpec = {
             kind: 'shot',
             styleGuide,
             aspectRatio: args.aspectRatio,
+            keyframeMode: 'contact_sheet',
+            panelCount,
+            grid: panelCount === 9 ? '3x3' : '2x2',
             environment: loc ? { name: loc.name, description: loc.description, visualStyle: loc.visualStyle } : null,
             cast: castNames,
             shot: {
@@ -827,6 +832,7 @@ export const executeAssetJobs = async (args: {
             },
             requirements: {
               keyframeNotPoster: true,
+              keyframeContactSheet: true,
               avoidPosed: true,
               avoidLookingAtCamera: true,
               emphasizeNarrativeComposition: true,

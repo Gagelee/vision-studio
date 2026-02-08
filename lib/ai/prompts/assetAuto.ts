@@ -44,6 +44,10 @@ export const buildLocationPreviewPrompt = (loc: Location, styleGuide?: string) =
   return (
     `Environment keyframe still for production continuity. ${baseRulesCinematic()}\n` +
     styleBlock(styleGuide) +
+    `Subject policy (strict): this is an environment plate, not a character shot.\n` +
+    `- Prefer no people in frame.\n` +
+    `- If people are unavoidable, allow only tiny background extras used to suggest scale/activity.\n` +
+    `- Never let any person become a primary subject (no foreground portraits, no readable faces, no hero characters).\n` +
     `Name: ${loc.name}\n` +
     `Description: ${loc.description}\n` +
     `VisualStyle: ${loc.visualStyle}\n`

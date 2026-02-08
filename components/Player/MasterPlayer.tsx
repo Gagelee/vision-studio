@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Story, Shot } from '../../types';
 import { X, Play, Pause, Maximize2, SkipForward, Volume2, AlertCircle } from 'lucide-react';
 import { openLightbox } from '../../lib/ui/lightboxStore';
+import { resolveShotActiveVideo } from '../../lib/ai/assetRefs';
 
 interface MasterPlayerProps {
   story: Story;
@@ -23,12 +24,8 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, shots, onClos
   const currentShot = allShots[currentShotIndex];
   const currentVideoUrl = useMemo(() => {
     if (!currentShot) return '';
-    const variants = Array.isArray((currentShot as any)?.production?.variants)
-      ? ((currentShot as any).production.variants as any[])
-      : [];
-    const activeId = String((currentShot as any)?.production?.activeVariantId || '').trim();
-    const active = variants.find((v: any) => String(v?.id || '') === activeId) || variants[variants.length - 1];
-    return String(active?.videoUrl || (currentShot as any)?.production?.videoUrl || '').trim();
+    const resolved = resolveShotActiveVideo(currentShot, { allowLegacyUnboundFallback: true });
+    return String(resolved.videoUrl || '').trim();
   }, [currentShot]);
   
   // Reset error state when shot changes

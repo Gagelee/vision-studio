@@ -792,7 +792,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
 
     if (action.type === 'UPDATE_CHARACTER') {
       const characterId = String(action.payload?.characterId || '');
-      const patch = action.payload?.patch || {};
+      const patch = action.payload?.patch || action.payload || {};
       if (!characterId) return acc;
       return {
         ...acc,
@@ -2049,21 +2049,244 @@ export default function App() {
       return { ok: false, reason: `Unknown action type: ${String(t)}` };
     };
 
+    const lookOwnerById = new Map<string, string>();
+    for (const ch of Array.isArray(story?.characters) ? story.characters : []) {
+      const characterId = String((ch as any)?.id || '').trim();
+      if (!characterId) continue;
+      for (const lk of Array.isArray((ch as any)?.looks) ? (ch as any).looks : []) {
+        const lookId = String((lk as any)?.id || '').trim();
+        if (!lookId || lookOwnerById.has(lookId)) continue;
+        lookOwnerById.set(lookId, characterId);
+      }
+    }
+
+    const parseRawObject = (v: any): Record<string, any> => {
+      if (!v) return {};
+      if (typeof v === 'object' && !Array.isArray(v)) return v as Record<string, any>;
+      if (typeof v !== 'string') return {};
+      const s = String(v || '').trim();
+      if (!s) return {};
+      try {
+        const parsed = JSON.parse(s);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, any>) : {};
+      } catch {
+        return {};
+      }
+    };
+
+    const normalizeActionPayload = (a: AgentAction): AgentAction => {
+      const payload: any = (a as any)?.payload || {};
+      const payloadRaw = parseRawObject(payload?._raw);
+      const metadataRaw = parseRawObject(payload?.metadata?._raw);
+      const mergedPayload = { ...payloadRaw, ...payload, ...metadataRaw };
+      const patchRaw = parseRawObject(mergedPayload?.patch?._raw);
+      const mergedPatch =
+        mergedPayload?.patch && typeof mergedPayload.patch === 'object'
+          ? { ...patchRaw, ...mergedPayload.patch }
+          : { ...patchRaw };
+      const withPatch = Object.keys(mergedPatch).length ? { ...mergedPayload, patch: mergedPatch } : mergedPayload;
+
+      const normalizeByType = () => {
+        if (a.type === 'UPDATE_STORY') {
+          const patch = Object.keys(mergedPatch).length ? mergedPatch : mergedPayload?.patch || {};
+          return { ...withPatch, patch };
+        }
+        if (a.type === 'UPDATE_LOCATION') {
+          return {
+            ...withPatch,
+            locationId: String(withPatch.locationId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'DELETE_LOCATION') {
+          return {
+            ...withPatch,
+            locationId: String(withPatch.locationId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'UPDATE_CHARACTER') {
+          const patch = {
+            ...(mergedPatch || {}),
+            ...(typeof withPatch?.name === 'string' ? { name: withPatch.name } : {}),
+            ...(typeof withPatch?.description === 'string' ? { description: withPatch.description } : {}),
+          };
+          const normalized: any = {
+            ...withPatch,
+            characterId: String(withPatch.characterId || withPatch.id || '').trim(),
+            patch,
+          };
+          if (typeof withPatch?.regenerateDependents === 'boolean') normalized.regenerateDependents = withPatch.regenerateDependents;
+          if (typeof withPatch?.syncDependents === 'boolean') normalized.syncDependents = withPatch.syncDependents;
+          return normalized;
+        }
+        if (a.type === 'DELETE_CHARACTER') {
+          return {
+            ...withPatch,
+            characterId: String(withPatch.characterId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'UPDATE_CHARACTER_LOOK') {
+          const patch = {
+            ...(mergedPatch || {}),
+            ...(typeof withPatch?.name === 'string' ? { name: withPatch.name } : {}),
+            ...(typeof withPatch?.description === 'string' ? { description: withPatch.description } : {}),
+          };
+          const normalized: any = {
+            ...withPatch,
+            characterId: String(withPatch.characterId || '').trim(),
+            lookId: String(withPatch.lookId || withPatch.id || '').trim(),
+            patch,
+          };
+          if (typeof withPatch?.regenerateDependents === 'boolean') normalized.regenerateDependents = withPatch.regenerateDependents;
+          if (typeof withPatch?.syncDependents === 'boolean') normalized.syncDependents = withPatch.syncDependents;
+          return normalized;
+        }
+        if (a.type === 'DELETE_SHOT' || a.type === 'MOVE_SHOT' || a.type === 'MOVE_SHOT_TO_SCENE') {
+          return {
+            ...withPatch,
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+            shotId: String(withPatch.shotId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'UPDATE_SHOT') {
+          return {
+            ...withPatch,
+            shotId: String(withPatch.shotId || withPatch.id || '').trim(),
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+            patch: mergedPatch,
+          };
+        }
+        if (a.type === 'UPDATE_ELEMENT' || a.type === 'SET_CAST' || a.type === 'GENERATE_SHOT_IMAGE') {
+          return {
+            ...withPatch,
+            shotId: String(withPatch.shotId || withPatch.id || '').trim(),
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+          };
+        }
+        if (a.type === 'GENERATE_LOCATION_PREVIEW') {
+          return {
+            ...withPatch,
+            locationId: String(withPatch.locationId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'GENERATE_CHARACTER_AVATAR') {
+          return {
+            ...withPatch,
+            characterId: String(withPatch.characterId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'RENAME_SEQUENCE') {
+          return {
+            ...withPatch,
+            sequenceId: String(withPatch.sequenceId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'RENAME_SCENE' || a.type === 'UPDATE_SCENE' || a.type === 'DELETE_SCENE') {
+          return {
+            ...withPatch,
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+            sceneId: String(withPatch.sceneId || withPatch.id || '').trim(),
+            patch: mergedPatch,
+          };
+        }
+        if (a.type === 'CREATE_SCENE' || a.type === 'CREATE_SHOT') {
+          return {
+            ...withPatch,
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+          };
+        }
+        return withPatch;
+      };
+
+      const normalizedByType = normalizeByType();
+
+      if (a.type === 'UPDATE_CHARACTER') {
+        const patch = {
+          ...(normalizedByType?.patch || {}),
+          ...(typeof normalizedByType?.name === 'string' ? { name: normalizedByType.name } : {}),
+          ...(typeof normalizedByType?.description === 'string' ? { description: normalizedByType.description } : {}),
+        };
+        const normalized: any = {
+          ...normalizedByType,
+          patch,
+        };
+        if (typeof normalizedByType?.regenerateDependents === 'boolean') normalized.regenerateDependents = normalizedByType.regenerateDependents;
+        if (typeof normalizedByType?.syncDependents === 'boolean') normalized.syncDependents = normalizedByType.syncDependents;
+        return { ...a, payload: normalized };
+      }
+
+      if (a.type === 'UPDATE_CHARACTER_LOOK') {
+        const patch = {
+          ...(normalizedByType?.patch || {}),
+          ...(typeof normalizedByType?.name === 'string' ? { name: normalizedByType.name } : {}),
+          ...(typeof normalizedByType?.description === 'string' ? { description: normalizedByType.description } : {}),
+        };
+        return {
+          ...a,
+          payload: {
+            ...normalizedByType,
+            patch,
+          },
+        };
+      }
+
+      if (a.type === 'GENERATE_CHARACTER_LOOK') {
+        const lookId = String(normalizedByType.lookId || normalizedByType.id || '').trim();
+        const characterId = String(normalizedByType.characterId || '').trim() || (lookId ? String(lookOwnerById.get(lookId) || '') : '');
+        if (
+          lookId &&
+          characterId &&
+          (normalizedByType.lookId !== lookId || normalizedByType.characterId !== characterId || normalizedByType.id)
+        ) {
+          return {
+            ...a,
+            payload: {
+              ...normalizedByType,
+              lookId,
+              characterId,
+            },
+          };
+        }
+      }
+      if (Object.keys(payloadRaw).length || Object.keys(metadataRaw).length || normalizedByType !== payload) {
+        return { ...a, payload: normalizedByType };
+      }
+      return a;
+    };
+
+    const normalizedActions = actions.map(normalizeActionPayload);
+    const repaired = normalizedActions.filter((a, i) => {
+      const before = actions[i] as any;
+      const after = a as any;
+      return JSON.stringify(before?.payload || {}) !== JSON.stringify(after?.payload || {});
+    });
+    if (repaired.length) {
+      addDebugEvent({
+        level: 'info',
+        scope: 'agent.direct',
+        message: 'Repaired action payloads',
+        data: { repaired },
+      });
+    }
+
     const invalid: AgentAction[] = [];
-    const validActions = actions.filter((a) => {
+    const invalidReasons: Array<{ action: AgentAction; reason?: string }> = [];
+    const validActions = normalizedActions.filter((a) => {
       const v = validateAction(a);
-      if (!v.ok) invalid.push(a);
+      if (!v.ok) {
+        invalid.push(a);
+        invalidReasons.push({ action: a, reason: v.reason });
+      }
       return v.ok;
     });
 
     if (!validActions.length) {
       addToast('Director actions were invalid (missing payload).', 'info');
-      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Dropped invalid actions', data: { actions } });
+      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Dropped invalid actions', data: { actions, invalidReasons } });
       return { applied: 0, dropped: invalid.length, droppedActions: invalid };
     }
 
     if (invalid.length) {
-      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Some actions dropped', data: { invalid } });
+      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Some actions dropped', data: { invalid, invalidReasons } });
     }
 
     const navigateActions = validActions.filter((a) => a.type === 'NAVIGATE');
@@ -2210,6 +2433,7 @@ export default function App() {
 
     // Auto-generate look images when look descriptions are updated.
     const updatedLooks: Array<{ characterId: string; lookId: string }> = [];
+    const updatedLooksWithDependentSync: Array<{ characterId: string; lookId: string }> = [];
     for (const a of mutationActions) {
       if (a.type !== 'UPDATE_CHARACTER_LOOK') continue;
       const payload = (a as any).payload || {};
@@ -2221,11 +2445,19 @@ export default function App() {
         typeof patch.name === 'string' ||
         typeof payload.description === 'string' ||
         typeof payload.name === 'string';
+      const wantsDependentSync =
+        payload.regenerateDependents === true ||
+        payload.syncDependents === true ||
+        patch.regenerateDependents === true ||
+        patch.syncDependents === true;
       if (!characterId && lookId) {
         const found = storyAfterUpdates.characters.find((c) => (c.looks || []).some((l) => String(l.id) === lookId));
         if (found) characterId = String(found.id || '').trim();
       }
-      if (characterId && lookId && hasVisualChange) updatedLooks.push({ characterId, lookId });
+      if (characterId && lookId && hasVisualChange) {
+        updatedLooks.push({ characterId, lookId });
+        if (wantsDependentSync) updatedLooksWithDependentSync.push({ characterId, lookId });
+      }
     }
     if (updatedLooks.length) {
       const styleGuide = (storyAfterUpdates as any)?.styleGuide;
@@ -2240,6 +2472,85 @@ export default function App() {
           prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
           avatarVersionId: getAvatarVersionId(ch),
         });
+      }
+    }
+    if (updatedLooksWithDependentSync.length) {
+      scopeLabel = scopeLabel === 'director' ? 'director:look->dependent-shots' : scopeLabel;
+      for (const { characterId, lookId } of updatedLooksWithDependentSync) {
+        for (const seq of storyAfterUpdates.sequences || []) {
+          for (const shot of seq.shots || []) {
+            const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+            const castArr = Array.isArray(cast) ? cast : [];
+            const included = castArr.some(
+              (c: any) =>
+                String(c?.id || '').trim() === characterId &&
+                String(c?.activeLookId || '').trim() === lookId,
+            );
+            if (!included) continue;
+            addJob(`shot:${seq.id}:${shot.id}`, {
+              kind: 'shot',
+              sequenceId: String(seq.id || ''),
+              shot,
+            });
+          }
+        }
+      }
+    }
+
+    // Auto-generate dependent assets when character identity is updated.
+    // This makes directives like "rename character + remove minor traits + sync keyframes" executable in one step.
+    const updatedCharacterIds = new Set<string>();
+    for (const a of mutationActions) {
+      if (a.type !== 'UPDATE_CHARACTER') continue;
+      const payload = (a as any).payload || {};
+      const characterId = String(payload.characterId || '').trim();
+      const patch = payload.patch || payload || {};
+      const hasIdentityChange = typeof patch.name === 'string' || typeof patch.description === 'string';
+      const wantsDependentSync =
+        payload.regenerateDependents === true ||
+        payload.syncDependents === true ||
+        patch.regenerateDependents === true ||
+        patch.syncDependents === true;
+      if (characterId && hasIdentityChange && wantsDependentSync) updatedCharacterIds.add(characterId);
+    }
+    if (updatedCharacterIds.size) {
+      scopeLabel = scopeLabel === 'director' ? 'director:character->dependents' : scopeLabel;
+      const styleGuide = String((storyAfterUpdates as any)?.styleGuide || '').trim();
+      for (const characterId of updatedCharacterIds) {
+        const ch = storyAfterUpdates.characters.find((c) => String(c.id || '') === characterId);
+        if (!ch) continue;
+
+        addJob(`character:${characterId}`, {
+          kind: 'character',
+          characterId,
+          prompt: buildCharacterAvatarPrompt(ch, styleGuide),
+        });
+
+        for (const lk of ch.looks || []) {
+          const lookId = String((lk as any)?.id || '').trim();
+          if (!lookId) continue;
+          addJob(`look:${characterId}:${lookId}`, {
+            kind: 'look',
+            characterId,
+            lookId,
+            prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+            avatarVersionId: getAvatarVersionId(ch),
+          });
+        }
+
+        for (const seq of storyAfterUpdates.sequences || []) {
+          for (const shot of seq.shots || []) {
+            const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+            const castArr = Array.isArray(cast) ? cast : [];
+            const included = castArr.some((c: any) => String(c?.id || '').trim() === characterId);
+            if (!included) continue;
+            addJob(`shot:${seq.id}:${shot.id}`, {
+              kind: 'shot',
+              sequenceId: String(seq.id || ''),
+              shot,
+            });
+          }
+        }
       }
     }
 
@@ -2352,12 +2663,34 @@ export default function App() {
             characterId,
             lookId,
             prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
-            avatarVersionId: getAvatarVersionId(ch),
+            // Do not pin to a possibly stale avatar version in shot prerequisite batches.
+            // If character jobs run in the same batch, look jobs must bind to the latest active avatar.
+            avatarVersionId: undefined,
           });
         }
       }
     };
     ensurePrerequisiteJobs();
+
+    // If a character avatar job exists in this batch, clear look-job avatar pinning for that character.
+    // This prevents "look not bound to active avatar" blocks when active avatar changes during the same batch.
+    const queuedCharacterIds = new Set(
+      Array.from(deduped.values())
+        .filter((j): j is Extract<AssetJob, { kind: 'character' }> => j.kind === 'character')
+        .map((j) => String(j.characterId || '').trim())
+        .filter(Boolean),
+    );
+    if (queuedCharacterIds.size) {
+      for (const [key, job] of deduped.entries()) {
+        if (job.kind !== 'look') continue;
+        const characterId = String(job.characterId || '').trim();
+        if (!characterId || !queuedCharacterIds.has(characterId)) continue;
+        deduped.set(key, {
+          ...job,
+          avatarVersionId: undefined,
+        });
+      }
+    }
 
     const jobs = Array.from(deduped.values());
     if (jobs.length && opts?.deferGeneration) {
@@ -2512,6 +2845,32 @@ export default function App() {
       concurrency: pending.concurrency,
     });
     setPendingInteractionGeneration(null);
+  };
+
+  const narrowShotScopedGenerateActions = (actions: AgentAction[], sel: SelectionState): AgentAction[] => {
+    if (sel.type !== 'shot') return actions;
+    const sequenceId = String(sel.parentId || '').trim();
+    const shotId = String(sel.id || '').trim();
+    if (!sequenceId || !shotId) return actions;
+    // If new shots are being created, keep broad generation because IDs may be unstable.
+    if (actions.some((a) => a.type === 'CREATE_SHOT')) return actions;
+
+    let injected = false;
+    const next: AgentAction[] = [];
+    for (const a of actions) {
+      if (a.type === 'GENERATE_PROJECT_ASSETS') {
+        const scope = String((a as any)?.payload?.scope || 'all').toLowerCase();
+        if (scope === 'shots' || scope === 'all') {
+          if (!injected) {
+            next.push({ type: 'GENERATE_SHOT_IMAGE', payload: { sequenceId, shotId } } as any);
+            injected = true;
+          }
+          continue;
+        }
+      }
+      next.push(a);
+    }
+    return next;
   };
 
   // ----- Director Console -----
@@ -2701,7 +3060,8 @@ export default function App() {
           return;
         }
 		
-        const exec = applyDirectorActions(projectId, storyWithAttachments, res.actions, {
+        const scopedActions = narrowShotScopedGenerateActions(res.actions || [], selectionSnapshot);
+        const exec = applyDirectorActions(projectId, storyWithAttachments, scopedActions, {
           deferGeneration: isInteractionMode,
         });
         if (isInteractionMode && exec.deferredJobs?.length) {
@@ -2845,7 +3205,8 @@ export default function App() {
             return;
           }
 
-          const exec = applyDirectorActions(projectId, activeStory, res.actions, {
+          const scopedActions = narrowShotScopedGenerateActions(res.actions || [], selectionSnapshot);
+          const exec = applyDirectorActions(projectId, activeStory, scopedActions, {
             deferGeneration: isInteractionMode,
           });
           if (isInteractionMode && exec.deferredJobs?.length) {
