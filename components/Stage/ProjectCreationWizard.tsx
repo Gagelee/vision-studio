@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Sparkles, ArrowLeft, ArrowUp, Rocket, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle, Paperclip } from 'lucide-react';
+import { Sparkles, ArrowLeft, ArrowUp, Rocket, Smartphone, Tv, Instagram, Clapperboard, Loader2, X, CheckCircle2, AlertTriangle, Paperclip, ChevronLeft, ChevronRight } from 'lucide-react';
 import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
 import { createLocalMockProject, scaffoldProjectStream, scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
 import { runDirectorCommand } from '../../lib/ai/agent/direct';
@@ -15,6 +15,19 @@ type PreflightAttachment = {
   createdAt?: number;
   sourceMessageId?: string;
   assignedTo: string; // unassigned | global | character:<name> | location:<name>
+};
+type StageDigest = {
+  id: string;
+  title: string;
+  summary: string;
+  status: 'pending' | 'running' | 'done' | 'error';
+  timestamp: number;
+};
+type AssetPreviewCard = {
+  id: string;
+  url: string;
+  label: string;
+  createdAt: number;
 };
 
 interface ProjectCreationWizardProps {
@@ -79,6 +92,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const [pendingAttachments, setPendingAttachments] = useState<Array<{ id: string; url: string; name?: string; createdAt?: number }>>([]);
   const [knownTargets, setKnownTargets] = useState<string[]>(['global']);
   const [plan, setPlan] = useState<AgentPlan | null>(null);
+  const [stageDigests, setStageDigests] = useState<StageDigest[]>([]);
+  const [assetPreviewFeed, setAssetPreviewFeed] = useState<AssetPreviewCard[]>([]);
+  const [assetCarouselIndex, setAssetCarouselIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [mockFallbackConfirmArmed, setMockFallbackConfirmArmed] = useState(false);
   const [singleFallbackConfirmArmed, setSingleFallbackConfirmArmed] = useState(false);
@@ -116,6 +132,14 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     const denom = Math.max(1, assetTotal);
     return 30 + Math.round((assetDone / denom) * 70);
   }, [assetDone, assetTotal, isProcessing, phase]);
+  useEffect(() => {
+    if (!isProcessing || phase !== 'assets') return;
+    if (assetPreviewFeed.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setAssetCarouselIndex((i) => (i + 1) % assetPreviewFeed.length);
+    }, 2600);
+    return () => window.clearInterval(timer);
+  }, [assetPreviewFeed.length, isProcessing, phase]);
   useEffect(() => {
     if (!isPreflightOpen) return;
     const el = preflightMessagesRef.current;
@@ -188,11 +212,56 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     setPreflightAttachments([]);
     setPendingAttachments([]);
     setKnownTargets(['global']);
+    setStageDigests([]);
+    setAssetPreviewFeed([]);
+    setAssetCarouselIndex(0);
     storyRef.current = null;
     lastScaffoldRef.current = null;
     lastScaffoldArgsRef.current = null;
     completedRef.current = false;
     stopUiUpdatesRef.current = false;
+  };
+
+  const upsertStageDigest = (next: StageDigest) => {
+    setStageDigests((prev) => {
+      const idx = prev.findIndex((x) => x.id === next.id);
+      if (idx < 0) return [...prev, next];
+      const out = prev.slice();
+      out[idx] = {
+        ...out[idx],
+        ...next,
+        summary: next.summary || out[idx].summary,
+      };
+      return out;
+    });
+  };
+
+  const summarizeTeamMessagePreview = (raw: unknown): string => {
+    const txt = String(raw || '').trim();
+    if (!txt) return '';
+    try {
+      const parsed = JSON.parse(txt) as any;
+      const pick =
+        String(parsed?.notes || '').trim() ||
+        String(parsed?.reply || '').trim() ||
+        String(parsed?.summary || '').trim() ||
+        (Array.isArray(parsed?.suggestedActions) ? `${parsed.suggestedActions.length} action(s) proposed.` : '');
+      if (!pick) return txt.slice(0, 120);
+      return pick.replace(/\s+/g, ' ').slice(0, 180);
+    } catch {
+      return txt.replace(/\s+/g, ' ').slice(0, 180);
+    }
+  };
+
+  const prettifyAgentName = (agent: string) => {
+    const a = String(agent || '').trim();
+    if (!a) return 'Agent';
+    return a
+      .replace(/[._-]+/g, ' ')
+      .split(' ')
+      .filter(Boolean)
+      .map((x) => x[0]?.toUpperCase() + x.slice(1))
+      .join(' ');
   };
 
   const finishCreation = (project: Story, planArg: AgentPlan, debug?: any) => {
@@ -419,11 +488,30 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	          maxAttempts: 3,
 	          stopAfterMasterKvFailure: false,
 		          onEvent: (ev) => {
-                if (stopUiUpdatesRef.current) return;
-		            const currentStory = storyRef.current || res.story;
-		            if (ev.type === 'start') {
-		              storyRef.current = applyAssetStart(currentStory, ev.job);
-	              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+			            const currentStory = storyRef.current || res.story;
+                if (stopUiUpdatesRef.current) {
+                  if (ev.type === 'start') {
+                    storyRef.current = applyAssetStart(currentStory, ev.job);
+                  } else if (ev.type === 'success') {
+                    storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl, ev.meta);
+                  } else if (ev.type === 'blocked') {
+                    storyRef.current = applyAssetBlocked(currentStory, ev.job, ev.reason);
+                  } else {
+                    storyRef.current = applyAssetError(currentStory, ev.job, ev.error);
+                  }
+                  if (storyRef.current) onDraftProject?.(storyRef.current);
+                  return;
+                }
+			            if (ev.type === 'start') {
+			              storyRef.current = applyAssetStart(currentStory, ev.job);
+		              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                upsertStageDigest({
+                  id: `asset-${ev.job.kind}-${(ev.job as any).characterId || (ev.job as any).locationId || (ev.job as any).lookId || (ev.job as any).shot?.id || 'job'}`,
+                  title: `Asset • ${ev.job.kind.toUpperCase()}`,
+                  summary: `Working on ${getJobLabel(ev.job, storyRef.current)}.`,
+                  status: 'running',
+                  timestamp: Date.now(),
+                });
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
 	            }
@@ -432,6 +520,24 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	              done = ev.done;
 	              setAssetDone(ev.done);
 	              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                setAssetPreviewFeed((prev) => {
+                  const next: AssetPreviewCard = {
+                    id: `asset-prev-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+                    url: String(ev.imageUrl || ''),
+                    label: getJobLabel(ev.job, storyRef.current),
+                    createdAt: Date.now(),
+                  };
+                  const merged = [next, ...prev].slice(0, 18);
+                  if (merged.length > 0) setAssetCarouselIndex((i) => Math.min(i, merged.length - 1));
+                  return merged;
+                });
+                upsertStageDigest({
+                  id: `asset-${ev.job.kind}-${(ev.job as any).characterId || (ev.job as any).locationId || (ev.job as any).lookId || (ev.job as any).shot?.id || 'job'}`,
+                  title: `Asset • ${ev.job.kind.toUpperCase()}`,
+                  summary: `${getJobLabel(ev.job, storyRef.current)} generated.`,
+                  status: 'done',
+                  timestamp: Date.now(),
+                });
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
 	            }
@@ -441,6 +547,13 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	              setAssetDone(ev.done);
 	              setAssetErrors((n) => n + 1);
 	              setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                upsertStageDigest({
+                  id: `asset-${ev.job.kind}-${(ev.job as any).characterId || (ev.job as any).locationId || (ev.job as any).lookId || (ev.job as any).shot?.id || 'job'}`,
+                  title: `Asset • ${ev.job.kind.toUpperCase()}`,
+                  summary: `${getJobLabel(ev.job, storyRef.current)} blocked: ${String(ev.reason || 'dependency').slice(0, 120)}`,
+                  status: 'error',
+                  timestamp: Date.now(),
+                });
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
 	            }
@@ -451,6 +564,13 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	            setAssetDone(ev.done);
 	            setAssetErrors((n) => n + 1);
 	            setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+              upsertStageDigest({
+                id: `asset-${ev.job.kind}-${(ev.job as any).characterId || (ev.job as any).locationId || (ev.job as any).lookId || (ev.job as any).shot?.id || 'job'}`,
+                title: `Asset • ${ev.job.kind.toUpperCase()}`,
+                summary: `${getJobLabel(ev.job, storyRef.current)} failed: ${String(ev.error || 'error').slice(0, 120)}`,
+                status: 'error',
+                timestamp: Date.now(),
+              });
               if (storyRef.current) onDraftProject?.(storyRef.current);
 		          },
 		        });
@@ -517,14 +637,40 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                     const provider = String(ev.data?.provider || '');
                     const model = String(ev.data?.model || '');
                     setScaffoldCurrent([agent, provider && model ? `${provider}/${model}` : ''].filter(Boolean).join(' • '));
+                    upsertStageDigest({
+                      id: `scaffold-${agent || 'progress'}`,
+                      title: `Scaffold • ${prettifyAgentName(agent || 'agent')}`,
+                      summary: provider && model ? `Running on ${provider}/${model}.` : 'Running.',
+                      status: 'running',
+                      timestamp: Date.now(),
+                    });
                   }
                   if (ev.event === 'trace') {
                     const agent = String(ev.data?.agent || '');
                     const ok = ev.data?.ok === true ? 'ok' : ev.data?.ok === false ? 'fail' : '';
                     setScaffoldCurrent([agent, ok].filter(Boolean).join(' • '));
+                    upsertStageDigest({
+                      id: `scaffold-${agent || 'trace'}`,
+                      title: `Scaffold • ${prettifyAgentName(agent || 'agent')}`,
+                      summary:
+                        ev.data?.ok === true
+                          ? 'Completed this stage.'
+                          : ev.data?.ok === false
+                            ? String(ev.data?.error || 'Stage failed').slice(0, 180)
+                            : 'Processing stage update.',
+                      status: ev.data?.ok === true ? 'done' : ev.data?.ok === false ? 'error' : 'running',
+                      timestamp: Date.now(),
+                    });
                   }
                   if (ev.event === 'hello') {
                     setScaffoldCurrent('Starting multi-agent scaffold…');
+                    upsertStageDigest({
+                      id: 'scaffold-hello',
+                      title: 'Scaffold • Startup',
+                      summary: 'Initializing multi-agent planning and context.',
+                      status: 'done',
+                      timestamp: Date.now(),
+                    });
                   }
                 },
               },
@@ -584,6 +730,32 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	      lastScaffoldRef.current = enrichedRes;
 	      storyRef.current = enrichedStory;
 	      setPlan(enrichedRes.plan);
+        const teamMessages = Array.isArray((enrichedRes as any)?.debug?.teamMessages)
+          ? ((enrichedRes as any).debug.teamMessages as any[])
+          : [];
+        if (teamMessages.length) {
+          for (const tm of teamMessages) {
+            const agent = String(tm?.agent || '');
+            const summary = summarizeTeamMessagePreview(tm?.responsePreview) || summarizeTeamMessagePreview(tm?.notes);
+            upsertStageDigest({
+              id: `team-${agent || Math.random().toString(16).slice(2, 8)}`,
+              title: `Agent • ${prettifyAgentName(agent || 'specialist')}`,
+              summary: summary || 'Returned stage output.',
+              status: tm?.ok === false ? 'error' : 'done',
+              timestamp: Date.now(),
+            });
+          }
+        } else if (enrichedRes.plan?.steps?.length) {
+          for (const step of enrichedRes.plan.steps) {
+            upsertStageDigest({
+              id: `plan-${step.id}`,
+              title: `Plan • ${step.title}`,
+              summary: step.status === 'done' ? 'Completed.' : 'In progress.',
+              status: step.status === 'done' ? 'done' : step.status === 'error' ? 'error' : 'running',
+              timestamp: Date.now(),
+            });
+          }
+        }
         onDraftProject?.(enrichedStory);
 	      await runAssets(enrichedRes);
     } catch (e) {
@@ -700,6 +872,11 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const hasPreflightFooterContent = preflightAttachments.length > 0;
   const isInteractionMode = workflowMode === 'interaction';
   const isPreflightTransition = isPreflightOpen && !isProcessing;
+  const stageDigestView = useMemo(
+    () => [...stageDigests].sort((a, b) => b.timestamp - a.timestamp).slice(0, 8),
+    [stageDigests],
+  );
+  const activeAssetPreview = assetPreviewFeed[Math.max(0, Math.min(assetCarouselIndex, Math.max(0, assetPreviewFeed.length - 1)))] || null;
   const submitLabel = isInteractionMode ? 'Start Interaction' : 'Start Production';
   const submitHint = isInteractionMode
     ? 'Open Director preflight and align references before scaffold.'
@@ -970,6 +1147,89 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                 </div>
                             </div>
                         </div>
+                    )}
+                    {(stageDigestView.length > 0 || assetPreviewFeed.length > 0) && (
+                      <div className="max-w-4xl mx-auto overflow-x-auto pcw-scroll pb-2">
+                        <div className="flex gap-4 min-w-max">
+                          <section className="w-[460px] rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 text-left">
+                            <div className="text-[10px] font-black uppercase tracking-[0.32em] text-white/35 mb-3">Stage Briefs</div>
+                            <div className="space-y-2 max-h-48 overflow-y-auto pcw-scroll pr-1">
+                              {stageDigestView.length === 0 ? (
+                                <div className="text-[12px] text-white/45">Waiting for stage signals…</div>
+                              ) : (
+                                stageDigestView.map((d) => (
+                                  <div key={d.id} className="rounded-xl border border-white/10 bg-black/25 px-3 py-2.5">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="text-[11px] font-black uppercase tracking-[0.15em] text-white/75">{d.title}</div>
+                                      <span
+                                        className={`text-[9px] uppercase tracking-[0.16em] ${
+                                          d.status === 'done'
+                                            ? 'text-emerald-300'
+                                            : d.status === 'error'
+                                              ? 'text-rose-300'
+                                              : 'text-zinc-300'
+                                        }`}
+                                      >
+                                        {d.status}
+                                      </span>
+                                    </div>
+                                    <div className="mt-1 text-[12px] leading-relaxed text-white/68">{d.summary}</div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </section>
+
+                          <section className="w-[360px] rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 text-left">
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="text-[10px] font-black uppercase tracking-[0.32em] text-white/35">Asset Reel</div>
+                              {assetPreviewFeed.length > 1 && (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => setAssetCarouselIndex((i) => (i - 1 + assetPreviewFeed.length) % assetPreviewFeed.length)}
+                                    className="w-6 h-6 rounded-full bg-white/10 border border-white/15 text-white/80 flex items-center justify-center hover:bg-white/15"
+                                    title="Previous asset"
+                                  >
+                                    <ChevronLeft className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setAssetCarouselIndex((i) => (i + 1) % assetPreviewFeed.length)}
+                                    className="w-6 h-6 rounded-full bg-white/10 border border-white/15 text-white/80 flex items-center justify-center hover:bg-white/15"
+                                    title="Next asset"
+                                  >
+                                    <ChevronRight className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-black/35 overflow-hidden h-44 flex items-center justify-center">
+                              {activeAssetPreview?.url ? (
+                                <img src={activeAssetPreview.url} alt={activeAssetPreview.label} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="text-[12px] text-white/45 px-4 text-center">Generated assets will appear here while rendering.</div>
+                              )}
+                            </div>
+                            <div className="mt-2 min-h-[2rem]">
+                              <div className="text-[11px] text-white/70 line-clamp-2">{activeAssetPreview?.label || assetCurrent || 'Waiting for first asset…'}</div>
+                            </div>
+                            {assetPreviewFeed.length > 1 && (
+                              <div className="mt-1 flex gap-1">
+                                {assetPreviewFeed.slice(0, 8).map((a, idx) => (
+                                  <button
+                                    key={a.id}
+                                    type="button"
+                                    onClick={() => setAssetCarouselIndex(idx)}
+                                    className={`h-1.5 rounded-full transition-all ${idx === assetCarouselIndex ? 'w-5 bg-white/85' : 'w-2.5 bg-white/25'}`}
+                                    title={`Asset ${idx + 1}`}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </section>
+                        </div>
+                      </div>
                     )}
 	                    <div className="flex flex-col gap-2 max-w-xs mx-auto">
 	                        <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
