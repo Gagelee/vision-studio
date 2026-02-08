@@ -16,7 +16,7 @@ export type AssetJob =
   | { kind: 'masterkv'; prompt: string }
   | { kind: 'location'; locationId: string; prompt: string }
   | { kind: 'character'; characterId: string; prompt: string }
-  | { kind: 'look'; characterId: string; lookId: string; prompt: string }
+  | { kind: 'look'; characterId: string; lookId: string; prompt: string; avatarVersionId?: string }
   | { kind: 'shot'; sequenceId: string; shot: Shot };
 
 export type AssetJobEvent =
@@ -52,7 +52,13 @@ export const buildAssetJobs = (story: Story, scope: AssetScope = 'all'): AssetJo
       if (wantCharacters) jobs.push({ kind: 'character', characterId: ch.id, prompt: buildCharacterAvatarPrompt(ch, styleGuide) });
       if (wantLooks) {
         for (const lk of ch.looks || []) {
-          jobs.push({ kind: 'look', characterId: ch.id, lookId: lk.id, prompt: buildCharacterLookPrompt(ch, lk, styleGuide) });
+          jobs.push({
+            kind: 'look',
+            characterId: ch.id,
+            lookId: lk.id,
+            prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+            avatarVersionId: String((ch as any)?.activeAvatarVersionId || '').trim() || undefined,
+          });
         }
       }
     }
@@ -123,6 +129,59 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
             ? { ...s, aiState: 'rendering', aiPrompt: 'AUTO', assetState: bumpState((s as any).assetState, { status: 'running', lastAttemptAt: now }) }
             : s,
         ),
+      };
+    }),
+  };
+};
+
+export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
+  const patch = { status: 'queued' };
+
+  if (job.kind === 'masterkv') {
+    return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
+  }
+
+  if (job.kind === 'location') {
+    return {
+      ...story,
+      locations: (story.locations || []).map((l) =>
+        l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, patch) } : l,
+      ),
+    };
+  }
+
+  if (job.kind === 'character') {
+    return {
+      ...story,
+      characters: (story.characters || []).map((c) =>
+        c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, patch) } : c,
+      ),
+    };
+  }
+
+  if (job.kind === 'look') {
+    return {
+      ...story,
+      characters: (story.characters || []).map((c) => {
+        if (c.id !== job.characterId) return c;
+        return {
+          ...c,
+          looks: (c.looks || []).map((lk) =>
+            lk.id === job.lookId ? { ...lk, assetState: bumpState((lk as any).assetState, patch) } : lk,
+          ),
+        };
+      }),
+    };
+  }
+
+  // shot
+  return {
+    ...story,
+    sequences: story.sequences.map((seq) => {
+      if (seq.id !== job.sequenceId) return seq;
+      return {
+        ...seq,
+        shots: seq.shots.map((s) => (s.id === job.shot.id ? { ...s, assetState: bumpState((s as any).assetState, patch) } : s)),
       };
     }),
   };
@@ -248,7 +307,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
     const baseRaw = existing.length ? existing : seededBase;
     const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
     const id = `kv-${now}-${rand()}`;
-    const versions = [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }];
+    const versions = [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base', metadata: meta }];
     return {
       ...story,
       keyVisualUrl: imageUrl,
@@ -283,7 +342,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
                 const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
                 const id = `pv-${now}-${rand()}`;
                 return {
-                  previewVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' }],
+                  previewVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base', metadata: meta }],
                   activePreviewVersionId: id,
                 };
               })(),
@@ -349,6 +408,10 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
         const activeAvatarId = String((c as any).activeAvatarVersionId || '').trim();
+        const desiredAvatarId = String(job.avatarVersionId || '').trim();
+        const avatarVersions = Array.isArray((c as any).avatarVersions) ? (c as any).avatarVersions : [];
+        const hasDesired = desiredAvatarId && avatarVersions.some((v: any) => String(v?.id || '') === desiredAvatarId);
+        const avatarVersionId = hasDesired ? desiredAvatarId : activeAvatarId;
         return {
           ...c,
           looks: (c.looks || []).map((lk) =>
@@ -373,17 +436,20 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
                     const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
                     const id = `lv-${now}-${rand()}`;
                     return {
-                      previewVersions: [
-                        ...base,
-                        {
-                          id,
-                          imageUrl,
-                          createdAt: now,
-                          type: base.length ? 'variation' : 'base',
-                          metadata: activeAvatarId ? { sourceAvatarVersionId: activeAvatarId } : undefined,
-                        },
-                      ],
-                      activePreviewVersionId: id,
+                  previewVersions: [
+                    ...base,
+                    {
+                      id,
+                      imageUrl,
+                      createdAt: now,
+                      type: base.length ? 'variation' : 'base',
+                      metadata: {
+                        ...(meta || {}),
+                        ...(avatarVersionId ? { sourceAvatarVersionId: avatarVersionId } : {}),
+                      },
+                    },
+                  ],
+                  activePreviewVersionId: id,
                     };
                   })(),
                   assetState: bumpState((lk as any).assetState, { status: 'done', lastError: '' }),
@@ -626,6 +692,14 @@ export const executeAssetJobs = async (args: {
     return refs;
   };
 
+  const getAvatarUrlByVersionId = (ch: any, versionId?: string) => {
+    const id = String(versionId || '').trim();
+    if (!ch || !id) return '';
+    const versions = Array.isArray(ch.avatarVersions) ? ch.avatarVersions : [];
+    const hit = versions.find((v: any) => String(v?.id || '') === id);
+    return hit?.imageUrl ? String(hit.imageUrl) : '';
+  };
+
   const buildShotPromptWithContext = (story: Story | null, shot: Shot) => {
     const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
     const loc = story ? (story.locations || []).find((l) => l.id === shot.locationId) : null;
@@ -668,13 +742,30 @@ export const executeAssetJobs = async (args: {
 
       const attemptOnce = async () => {
         if (job.kind === 'masterkv') {
+          const story = args.getStoryForRefs?.() || null;
+          const refsRaw = Array.isArray((story as any)?.referenceImages) ? (story as any).referenceImages : [];
+          const useRefs = (story as any)?.referenceMode !== 'off';
+          const references = useRefs
+            ? refsRaw
+                .slice(0, 4)
+                .map((r: any) => ({ url: String(r?.url || ''), label: r?.name ? String(r.name) : 'master kv reference' }))
+                .filter((r: any) => r.url)
+            : [];
           const out = await generateImageFromPrompt({
             prompt: job.prompt,
             settings: args.settings,
             aspectRatio: args.aspectRatio,
+            references,
             strict: true,
+            requireAllReferences: false,
           });
-          return { imageUrl: out.imageUrl, debug: out.debug };
+          const meta = {
+            prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
+            references: references.map((r) => ({ url: r.url, label: r.label })),
+            settings: { provider: args.settings.provider, model: args.settings.model, temperature: args.settings.temperature },
+            aspectRatio: args.aspectRatio,
+          };
+          return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }
 
         if (job.kind === 'shot') {
@@ -716,7 +807,7 @@ export const executeAssetJobs = async (args: {
               keyframeNotPoster: true,
               avoidPosed: true,
               avoidLookingAtCamera: true,
-              emphasizeCinematicComposition: true,
+              emphasizeNarrativeComposition: true,
             },
           };
           const out = await generateImageFromPrompt({
@@ -744,41 +835,87 @@ export const executeAssetJobs = async (args: {
         }
 
         if (job.kind === 'location') {
+          const story = args.getStoryForRefs?.() || null;
+          const loc = story ? (story.locations || []).find((l) => l.id === job.locationId) : null;
+          const refsRaw = Array.isArray((loc as any)?.referenceImages) ? (loc as any).referenceImages : [];
+          const useRefs = (loc as any)?.referenceMode !== 'off';
+          const references = useRefs
+            ? refsRaw
+                .slice(0, 4)
+                .map((r: any) => ({ url: String(r?.url || ''), label: r?.name ? String(r.name) : 'environment reference' }))
+                .filter((r: any) => r.url)
+            : [];
+          const kvUrl = story ? getStoryActiveKvUrl(story, { activeOnly: true }) : '';
+          if (!references.length && kvUrl && !isLikelyPlaceholderImageUrl(kvUrl)) {
+            references.push({ url: kvUrl, label: 'master kv reference' });
+          }
           const out = await generateImageFromPrompt({
             prompt: job.prompt,
             settings: args.settings,
             aspectRatio: args.aspectRatio,
+            references,
             strict: true,
+            requireAllReferences: false,
           });
-          return { imageUrl: out.imageUrl, debug: out.debug };
+          const meta = {
+            prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
+            references: references.map((r) => ({ url: r.url, label: r.label })),
+            settings: { provider: args.settings.provider, model: args.settings.model, temperature: args.settings.temperature },
+            aspectRatio: args.aspectRatio,
+          };
+          return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }
 
         if (job.kind === 'character') {
+          const story = args.getStoryForRefs?.() || null;
+          const ch = story ? (story.characters || []).find((c) => c.id === job.characterId) : null;
+          const refsRaw = Array.isArray((ch as any)?.referenceImages) ? (ch as any).referenceImages : [];
+          const useRefs = (ch as any)?.referenceMode !== 'off';
+          const references = useRefs
+            ? refsRaw
+                .slice(0, 4)
+                .map((r: any) => ({ url: String(r?.url || ''), label: r?.name ? String(r.name) : 'character reference' }))
+                .filter((r: any) => r.url)
+            : [];
           const out = await generateImageFromPrompt({
             prompt: job.prompt,
             settings: args.settings,
             aspectRatio: '1:1',
+            references,
             strict: true,
+            requireAllReferences: false,
           });
-          return { imageUrl: out.imageUrl, debug: out.debug };
+          const meta = {
+            prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
+            references: references.map((r) => ({ url: r.url, label: r.label })),
+            settings: { provider: args.settings.provider, model: args.settings.model, temperature: args.settings.temperature },
+            aspectRatio: '1:1',
+          };
+          return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }
 
 	        // look
 	        const story = args.getStoryForRefs?.() || null;
 	        const ch = story ? (story.characters || []).find((c) => c.id === job.characterId) : null;
-	        const avatarUrl = ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch, { activeOnly: true }) : '';
+	        const desiredAvatarUrl = getAvatarUrlByVersionId(ch, (job as any).avatarVersionId);
+	        const avatarUrl =
+	          desiredAvatarUrl || (ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch, { activeOnly: true }) : '');
 	        const refs = avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : [];
 	        const out = await generateImageFromPrompt({
-	          prompt:
-	            job.prompt +
-	            '\n\nUse the provided reference image(s) to keep the exact same character identity (same person, same face). Only vary styling described for this look.',
+	          prompt: job.prompt,
 	          settings: args.settings,
 	          aspectRatio: '1:1',
 	          references: refs,
 	          strict: true,
 	          requireAllReferences: refs.length > 0,
 	        });
-	        return { imageUrl: out.imageUrl, debug: out.debug };
+          const meta = {
+            prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
+            references: refs.map((r) => ({ url: r.url, label: r.label })),
+            settings: { provider: args.settings.provider, model: args.settings.model, temperature: args.settings.temperature },
+            aspectRatio: '1:1',
+          };
+	        return { imageUrl: out.imageUrl, debug: out.debug, meta };
 	      };
 
       for (let i = 1; i <= maxAttempts; i++) {

@@ -25,6 +25,7 @@ export interface ModelRuntimeSettings {
   temperature: number;
   maxOutputTokens?: number;
   baseUrl?: string;
+  workflowMode?: 'auto' | 'interaction';
   // Opt-in for agents that can use structured tool/function calling (more reliable than raw JSON).
   useFunctionCalling?: boolean;
   // Opt-in for streaming director responses (SSE progress).
@@ -57,6 +58,8 @@ export interface Location {
   activePreviewVersionId?: string;
   status: 'draft' | 'locked';
   assetState?: AssetGenerationState;
+  referenceImages?: ReferenceImage[];
+  referenceMode?: 'auto' | 'off';
 }
 
 export interface AssetImageVersion {
@@ -77,6 +80,13 @@ export interface CharacterLook {
   assetState?: AssetGenerationState;
 }
 
+export interface ReferenceImage {
+  id: string;
+  url: string;
+  name?: string;
+  createdAt?: number;
+}
+
 export interface Character {
   id: string;
   name: string;
@@ -88,10 +98,12 @@ export interface Character {
   status?: 'draft' | 'locked';
   looks: CharacterLook[];
   assetState?: AssetGenerationState;
+  referenceImages?: ReferenceImage[];
+  referenceMode?: 'auto' | 'off';
 }
 
 export interface AssetGenerationState {
-  status: 'idle' | 'running' | 'done' | 'error' | 'blocked';
+  status: 'idle' | 'queued' | 'running' | 'done' | 'error' | 'blocked';
   lastError?: string;
   lastAttemptAt?: number;
   attempts?: number;
@@ -121,6 +133,20 @@ export interface ShotVersion {
   };
 }
 
+export interface ShotProductionVariant {
+  id: string;
+  videoUrl: string;
+  createdAt: number;
+  durationSeconds?: 4 | 6 | 8;
+  resolution?: '720p';
+  operationName?: string;
+  metadata?: {
+    prompt?: string;
+    sourceImageUrl?: string;
+    sourceShotVersionId?: string;
+  };
+}
+
 export interface DialogueLine {
   id: string;
   characterId: string;
@@ -144,6 +170,14 @@ export interface Shot {
   production?: {
     status: 'idle' | 'queued' | 'running' | 'done' | 'error';
     lastStartedAt?: number;
+    lastCompletedAt?: number;
+    lastError?: string;
+    operationName?: string;
+    durationSeconds?: 4 | 6 | 8;
+    resolution?: '720p';
+    videoUrl?: string;
+    variants?: ShotProductionVariant[];
+    activeVariantId?: string;
   };
 }
 
@@ -165,6 +199,12 @@ export interface Story {
   keyVisualVersions?: AssetImageVersion[];
   activeKeyVisualVersionId?: string;
   masterKvState?: AssetGenerationState;
+  referenceImages?: ReferenceImage[];
+  referenceMode?: 'auto' | 'off';
+  proposedStyleGuide?: string;
+  proposedStyleGuideUpdatedAt?: number;
+  proposedStyleGuideSourceKvVersionId?: string;
+  assetsSyncedKvVersionId?: string;
   aspectRatio: AspectRatio;
   status: 'scaffolding' | 'ready';
   createdAt?: number;
@@ -219,7 +259,10 @@ export type AgentActionType =
   | 'GENERATE_SHOT_IMAGE'
   | 'GENERATE_LOCATION_PREVIEW'
   | 'GENERATE_CHARACTER_AVATAR'
-  | 'GENERATE_CHARACTER_LOOK';
+  | 'GENERATE_CHARACTER_LOOK'
+  | 'GENERATE_MASTER_KV_PROPOSAL'
+  | 'ACCEPT_KV_PROPOSAL'
+  | 'DISCARD_KV_PROPOSAL';
 
 export interface AgentAction {
   type: AgentActionType;

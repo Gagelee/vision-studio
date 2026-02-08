@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { X, Sparkles, Save } from 'lucide-react';
+import { X, Save } from 'lucide-react';
 import { AiSettings, ModelProvider, ModelRuntimeSettings } from '../../types';
 
 interface AiSettingsModalProps {
@@ -42,7 +42,8 @@ const ProfileEditor: React.FC<{
   value: ModelRuntimeSettings;
   onChange: (patch: Partial<ModelRuntimeSettings>) => void;
   showFunctionCalling?: boolean;
-}> = ({ title, value, onChange, showFunctionCalling }) => {
+  showWorkflowMode?: boolean;
+}> = ({ title, value, onChange, showFunctionCalling, showWorkflowMode }) => {
   return (
     <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
       <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20">
@@ -108,6 +109,20 @@ const ProfileEditor: React.FC<{
               placeholder="(optional) e.g. http://localhost:8787"
             />
           </label>
+
+          {Boolean(showWorkflowMode) && (
+            <label className="space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Workflow Mode</div>
+              <select
+                value={String((value as any).workflowMode || 'auto')}
+                onChange={(e) => onChange({ workflowMode: e.target.value as any })}
+                className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-sm"
+              >
+                <option value="auto">Auto (single-turn execute)</option>
+                <option value="interaction">Interaction (confirm before generate)</option>
+              </select>
+            </label>
+          )}
         </div>
 
         <div className="flex items-center gap-6 pt-2">
@@ -170,8 +185,9 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ settings, onSa
       <div className="w-full max-w-5xl rounded-[32px] border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden">
         <div className="h-16 px-6 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60 backdrop-blur-xl">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-[#ee4d2d] text-white flex items-center justify-center shadow-sm shadow-orange-500/20">
-              <Sparkles className="w-5 h-5" />
+            <div className="relative w-10 h-10 min-w-10 min-h-10 aspect-square shrink-0 rounded-full border border-zinc-300/80 dark:border-white/45 bg-white/90 dark:bg-white/15 shadow-[0_0_0_1px_rgba(255,255,255,0.45),0_0_20px_rgba(255,255,255,0.45)]">
+              <div className="pointer-events-none absolute -inset-[4px] rounded-full bg-white/35 dark:bg-white/45 blur-[6px] opacity-70 animate-[pulse_2.8s_ease-in-out_infinite]"></div>
+              <div className="absolute inset-[8px] rounded-full bg-zinc-900/90 dark:bg-white/90"></div>
             </div>
             <div>
               <div className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400">AI Runtime</div>
@@ -220,6 +236,7 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ settings, onSa
             value={draft.direct}
             onChange={(patch) => setDraft((prev) => updateProfile(prev, 'direct', patch))}
             showFunctionCalling
+            showWorkflowMode
           />
 
           <ProfileEditor

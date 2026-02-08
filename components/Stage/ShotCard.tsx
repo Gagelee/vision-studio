@@ -1,8 +1,7 @@
 
 import React from 'react';
-import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2 } from 'lucide-react';
+import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2, Clock, Info } from 'lucide-react';
 import { Shot, ElementType, AspectRatio } from '../../types';
-import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ShotCardProps {
   shot: Shot;
@@ -12,7 +11,22 @@ interface ShotCardProps {
 }
 
 export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, aspectRatio = '16:9' }) => {
-  const isProcessing = shot.aiState && shot.aiState !== 'idle';
+  const normalizedDuration = [4, 6, 8].includes(Number(shot.duration))
+    ? Number(shot.duration)
+    : Number(shot.duration) <= 5
+      ? 4
+      : Number(shot.duration) <= 7
+        ? 6
+        : 8;
+  const assetStatus = shot.assetState?.status;
+  const aiBusy = shot.aiState === 'rendering' || shot.aiState === 'thinking';
+  const hasTerminalAssetState = assetStatus === 'done' || assetStatus === 'error' || assetStatus === 'blocked';
+  const isProcessing = aiBusy && !hasTerminalAssetState;
+  const isQueued = assetStatus === 'queued';
+  const isRunning = assetStatus === 'running';
+  const versions = Array.isArray((shot as any).versions) ? (shot as any).versions : [];
+  const activeVersion = versions.find((v: any) => String(v?.id || '') === String((shot as any).activeVersionId || '')) || versions[versions.length - 1];
+  const hasGenerationDetails = Boolean((activeVersion as any)?.metadata);
 
   const ratioStyles: Record<AspectRatio, string> = {
     '16:9': 'aspect-video',
@@ -44,14 +58,36 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
               {shot.aiState === 'thinking' ? 'AI Analyzing...' : 'Rendering...'}
            </span>
         )}
+        {!isProcessing && isRunning && (
+           <span className="bg-amber-500/90 text-black text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              Generating...
+           </span>
+        )}
+        {!isProcessing && isQueued && (
+           <span className="bg-amber-400/90 text-black text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm">
+              <Clock className="w-2.5 h-2.5" />
+              Queued
+           </span>
+        )}
       </div>
       
       {/* Duration Badge */}
       <div className="absolute top-2 right-2 z-20">
-        <span className="bg-black/60 backdrop-blur-md text-zinc-300 text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 border border-white/10 shadow-sm">
-          <MonitorPlay className="w-3 h-3" />
-          {shot.duration}s
-        </span>
+        <div className="flex items-center gap-1">
+          {hasGenerationDetails && (
+            <span
+              className="bg-indigo-500/80 text-white text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 border border-indigo-300/30 shadow-sm"
+              title="Has generation details in version history"
+            >
+              <Info className="w-3 h-3" />
+            </span>
+          )}
+          <span className="bg-black/60 backdrop-blur-md text-zinc-300 text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 border border-white/10 shadow-sm">
+            <MonitorPlay className="w-3 h-3" />
+            {normalizedDuration}s
+          </span>
+        </div>
       </div>
 
       {/* Visual Preview Container */}
@@ -60,10 +96,10 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
 	        <img 
 	          src={shot.thumbnailUrl} 
 	          alt="Shot storyboard" 
-	          className={`w-full h-full object-cover transition-all duration-700 cursor-zoom-in ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
+	          className={`w-full h-full object-cover transition-all duration-700 cursor-pointer ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
 	          onClick={(e) => {
 	            e.stopPropagation();
-	            openLightbox({ url: shot.thumbnailUrl, title: `Shot #${shot.sequence}` });
+	            onSelect();
 	          }}
 	        />
 

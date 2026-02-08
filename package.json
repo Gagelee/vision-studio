@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:homework": "bash scripts/dev-homework-gemini.sh",
     "build": "vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "check:api": "node scripts/check-api.mjs --base http://127.0.0.1:3000",
     "check:api:py": "python3 scripts/check_api.py --base http://127.0.0.1:3000"
@@ -23,6 +25,7 @@
     "tailwindcss": "^3.4.17",
     "typescript": "~5.8.2",
     "undici": "^7.4.0",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "vitest": "^4.0.18"
   }
 }

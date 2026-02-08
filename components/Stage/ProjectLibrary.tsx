@@ -42,8 +42,9 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
       <div className="sticky top-0 z-30 border-b border-zinc-200 dark:border-zinc-800 bg-white/80 dark:bg-black/60 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-[#ee4d2d] rounded-xl flex items-center justify-center text-white shadow-sm shadow-orange-500/20">
-              <span className="font-black text-sm italic">S</span>
+            <div className="relative w-8 h-8 min-w-8 min-h-8 aspect-square shrink-0 rounded-full border border-zinc-300/80 dark:border-white/45 bg-white/90 dark:bg-white/15 shadow-[0_0_0_1px_rgba(255,255,255,0.45),0_0_20px_rgba(255,255,255,0.45)]">
+              <div className="pointer-events-none absolute -inset-[4px] rounded-full bg-white/35 dark:bg-white/45 blur-[5px] opacity-70 animate-[pulse_2.8s_ease-in-out_infinite]"></div>
+              <div className="absolute inset-[7px] rounded-full bg-zinc-900/90 dark:bg-white/90"></div>
             </div>
             <div className="leading-tight">
               <div className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400">Shopee Vision Studio</div>
@@ -75,7 +76,7 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
             </button>
             <button
               onClick={onCreateProject}
-              className="ml-2 flex items-center gap-2 px-4 py-2 rounded-xl bg-[#ee4d2d] hover:bg-[#f05d40] text-white font-black uppercase tracking-widest text-[11px] shadow-[0_18px_40px_rgba(238,77,45,0.25)] transition-all"
+              className="ml-2 flex items-center gap-2 px-4 py-2 rounded-xl border border-zinc-300 dark:border-white/30 bg-[linear-gradient(145deg,#ffffff_0%,#e7edf6_52%,#c0cada_100%)] text-zinc-900 font-black uppercase tracking-widest text-[11px] shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_12px_28px_rgba(0,0,0,0.22)] hover:brightness-[1.03] transition-all"
             >
               <Plus className="w-4 h-4" />
               Start Project
@@ -99,7 +100,7 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
               <div className="flex flex-col sm:flex-row gap-4">
                 <button
                   onClick={onCreateProject}
-                  className="flex items-center justify-center gap-3 px-10 py-5 bg-[#ee4d2d] hover:bg-[#f05d40] text-white rounded-2xl text-sm font-black uppercase tracking-widest transition-all shadow-[0_20px_40px_rgba(238,77,45,0.3)] hover:scale-[1.02] active:scale-[0.99]"
+                  className="flex items-center justify-center gap-3 px-10 py-5 border border-zinc-300 dark:border-white/30 bg-[linear-gradient(145deg,#ffffff_0%,#e7edf6_52%,#c0cada_100%)] text-zinc-900 rounded-2xl text-sm font-black uppercase tracking-widest transition-all shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_16px_34px_rgba(0,0,0,0.22)] hover:brightness-[1.03] hover:scale-[1.02] active:scale-[0.99]"
                 >
                   <Plus className="w-5 h-5" />
                   Start Production

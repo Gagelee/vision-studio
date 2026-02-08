@@ -35,8 +35,13 @@ export const buildTeamScaffoldDirectorBriefPrompt = (args: { intent: string; asp
     `Rules:\n` +
     `- Keep it compact but concrete. Prefer 3-6 characters, 2-5 locations, 2-4 sequences.\n` +
     `- Characters MUST be distinct and reusable across shots.\n` +
+    `- If user intent explicitly specifies rendering medium/style, treat it as a HARD CONSTRAINT and repeat it verbatim in styleBible.\n` +
+    `- Never replace an explicit user medium with a different one (e.g., realistic film -> oil painting).\n` +
+    `- Infer abstract style goals into concrete prompt vocabulary. Example: cinematic -> filmic framing/contrast/depth; epic -> monumental scale/wide establishing/strong silhouettes.\n` +
+    `- Encode that translation in styleBible.visualKeywords + styleBible.cameraLanguage so downstream agents can execute it.\n` +
     `- If user didn't specify art style, YOU must decide a clear artistic core.\n` +
-    `- styleBible.visualKeywords MUST include rendering style/medium (e.g., ink wash, anime, photoreal, watercolor), palette and texture cues.\n` +
+    `- styleBible.visualKeywords MUST include rendering style/medium (e.g., ink wash, anime cel, watercolor, oil painting, live-action), palette and texture cues.\n` +
+    `- Do not default to glossy CG/3D-render wording unless the user explicitly requests that medium.\n` +
     `Intent: ${intent}\n` +
     `AspectRatio: ${aspectRatio}\n`
   );
@@ -142,6 +147,7 @@ export const buildTeamScaffoldEditorPrompt = (args: {
     `Rules:\n` +
     `- Keep continuity strong. Keep shot descriptions visual.\n` +
     `- Use location names that exist in environment list.\n` +
+    `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
     `DirectorBrief: ${brief}\n` +
     `Script: ${script}\n` +
     `Environments: ${env}\n`
@@ -174,6 +180,8 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
     `}\n` +
     `Rules:\n` +
     `- "videoPrompt" must be self-contained and consistent with director style bible.\n` +
+    `- Treat DirectorBrief style medium as HARD LOCK; do not swap to another medium.\n` +
+    `- Translate abstract user adjectives into executable visual terms (camera language, composition scale, lighting behavior, motion quality).\n` +
     `- Include environment + cast + action + lens/camera + lighting cues.\n` +
     `- Start each "videoPrompt" with a short STYLE header derived from director style bible (rendering style/medium, palette, lighting mood, camera language).\n` +
     `- No text/watermarks.\n` +
@@ -217,6 +225,8 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `Rules:\n` +
     `- Ensure sequences/shots align across editor + camera&art (same counts and order).\n` +
     `- Ensure characters/locations match names used in shots.\n` +
+    `- Keep rendering medium/style consistent with DirectorBrief. If user intent specified medium explicitly, preserve it as hard lock.\n` +
+    `- Ensure final styleGuide and shot-level camera/lighting/videoPrompt contain concrete, generation-ready style terms (not only abstract adjectives).\n` +
     `- "styleGuide" must be a concise, production-ready style bible derived from DirectorBrief.styleBible (rendering style, palette, lighting, camera language, constraints).\n` +
     `DirectorBrief: ${brief}\n` +
     `Casting: ${casting}\n` +
@@ -231,23 +241,13 @@ export const buildTeamDirectPlannerPrompt = (args: { selectionJson: string; stor
   const storyJson = String(args.storyJson || '{}');
   const directive = String(args.directive || '').trim();
   return (
-    `You are the DIRECTOR-IN-CHIEF planner.\n` +
+    `You are the DIRECTOR planner.\n` +
     `${jsonOnly()}\n` +
-    `Decide which specialist agents to consult before producing final actions.\n` +
-    `Output schema:\n` +
-    `{\n` +
-    `  "reply": string,\n` +
-    `  "requestedAgents": TeamAgent[],\n` +
-    `  "focus": { [key in TeamAgent]?: string }\n` +
-    `}\n` +
+    `Return JSON: {"reply": string, "requestedAgents": TeamAgent[], "focus": { [key in TeamAgent]?: string }}.\n` +
     `Rules:\n` +
-    `- requestedAgents should be a subset of: ["script_writer","casting_director","editor","environment_director","camera_art"]\n` +
-    `- If directive is simple (e.g. "warmer light"), requestedAgents can be [].\n` +
-    `- Use script_writer ONLY for screenplay/dialogue changes (beats, lines, dialogue edits).\n` +
-    `- Use editor for shot description/sequence structure/continuity edits.\n` +
-    `- Use casting_director for character design/looks/identity updates.\n` +
-    `- Use environment_director for set/location/world-building changes.\n` +
-    `- Use camera_art for camera/lighting/audio/video prompt updates.\n` +
+    `- requestedAgents is subset of ["script_writer","casting_director","editor","environment_director","camera_art"].\n` +
+    `- Simple directives can use [].\n` +
+    `- screenplay/dialogue -> script_writer; shot/sequence continuity -> editor; character/look -> casting_director; location/world -> environment_director; camera/light/audio/videoPrompt -> camera_art.\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +
     `Directive: ${directive}\n`
@@ -273,22 +273,22 @@ export const buildTeamDirectSpecialistPrompt = (args: {
     environment_director: 'You are the ENVIRONMENT DIRECTOR agent.',
     camera_art: 'You are the CAMERA & ART DESIGN agent.',
   };
+  const roleRule: Record<string, string> = {
+    script_writer: 'Prioritize script/dialogue and beat edits.',
+    casting_director: 'Prioritize character identity/look consistency.',
+    editor: 'Prioritize sequence/shot structure and continuity.',
+    environment_director: 'Prioritize location/set updates.',
+    camera_art: 'For video prompt updates, use UPDATE_ELEMENT with elementType="CAMERA" and payload.metadata.videoPrompt.',
+  };
 
   return (
     `${roleLine[agent] || 'You are a specialist agent.'}\n` +
     `${jsonOnly()}\n` +
-    `Output schema:\n` +
-    `{\n` +
-    `  "notes": string,\n` +
-    `  "suggestedActions": Array<{\n` +
-    `    "type": string,\n` +
-    `    "payload": any\n` +
-    `  }>\n` +
-    `}\n` +
+    `Return JSON: {"notes": string, "suggestedActions": Array<{ "type": string, "payload": any }> }.\n` +
     `Rules:\n` +
-    `- Only propose actions from the app's allowed action set.\n` +
-    `- Be conservative: 0-5 actions.\n` +
-    `- For video prompt updates: use UPDATE_ELEMENT with elementType="CAMERA" and payload.metadata.videoPrompt.\n` +
+    `- Only allowed app action types.\n` +
+    `- Be conservative: 0-4 actions.\n` +
+    `${roleRule[agent] || ''}\n` +
     `Focus: ${focus}\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +
@@ -316,33 +316,13 @@ export const buildTeamDirectMergePrompt = (args: {
   return (
     `You are the DIRECTOR-IN-CHIEF. Produce the final user reply and final structured actions.\n` +
     `${jsonOnly()}\n` +
-    `Allowed action types:\n${allowed}\n` +
-    `Output schema:\n` +
-    `{\n` +
-    `  "reply": string,\n` +
-    `  "actions": Array<{ "type": string, "payload"?: any }>\n` +
-    `}\n` +
+    `Allowed action types (exact type string): ${allowed}\n` +
+    `Return JSON: {"reply": string, "actions": Array<{ "type": string, "payload"?: any }> }.\n` +
     `Rules:\n` +
     `- Use IDs that exist in the Story JSON.\n` +
     `- Keep actions 0-6.\n` +
-    `- Do NOT output unknown payload fields. If you need to change environment style, use UPDATE_LOCATION.\n` +
-    `- When creating shots, prefer a single well-specified shot rather than many vague ones.\n` +
-    `- CREATE_SHOT payload schema (recommended):\n` +
-    `  {\n` +
-    `    "sequenceId": string,\n` +
-    `    "afterShotId"?: string,\n` +
-    `    "locationId"?: string,\n` +
-    `    "timeOfDay"?: string,\n` +
-    `    "duration"?: number,\n` +
-    `    "description"?: string,\n` +
-    `    "script"?: string,\n` +
-    `    "camera"?: string,\n` +
-    `    "lighting"?: string,\n` +
-    `    "audio"?: string,\n` +
-    `    "videoPrompt"?: string,\n` +
-    `    "cast"?: Array<{ \"id\": string, \"activeLookId\"?: string }>\n` +
-    `  }\n` +
-    `- If a new shot features specific characters, include them in CREATE_SHOT payload (cast or characterId/characterIds). Do NOT leave cast empty unless explicitly an empty/environment-only shot.\n` +
+    `- Do NOT output unknown payload fields.\n` +
+    `- For CREATE_SHOT include sequenceId and concrete visual fields (description/location/time/camera/lighting/script/videoPrompt/cast when relevant).\n` +
     `- If the user asks to generate storyboard images / 出图 / 渲染, and you create or update shots, include GENERATE_PROJECT_ASSETS with payload.scope=\"shots\" (so newly-created shot IDs don't matter).\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +

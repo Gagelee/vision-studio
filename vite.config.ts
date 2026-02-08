@@ -17,6 +17,7 @@ import {
   buildTeamScaffoldEnvironmentDirectorPrompt,
   buildTeamScaffoldScriptWriterPrompt,
 } from './lib/ai/prompts';
+import { buildStylePromptTranslation } from './lib/ai/styleIntent';
 import { getPromptMetaForAgent } from './lib/ai/promptMeta';
 import { ProxyAgent } from 'undici';
 
@@ -414,6 +415,7 @@ const mimeByExt = (ext: string) => {
   if (e === '.png') return 'image/png';
   if (e === '.jpg' || e === '.jpeg') return 'image/jpeg';
   if (e === '.webp') return 'image/webp';
+  if (e === '.mp4') return 'video/mp4';
   return 'application/octet-stream';
 };
 
@@ -525,7 +527,7 @@ const parseLooseJsonObject = (raw: string): any | null => {
 };
 
 const resolveGeminiBaseUrl = (env?: Record<string, string>) => {
-  const raw = String(env?.COMPASS_GATEWAY_URL || env?.GATEWAY_URL || env?.GEMINI_BASE_URL || '').trim();
+  const raw = String(env?.GEMINI_BASE_URL || '').trim();
   if (raw) return raw.replace(/\/$/, '');
   return 'https://generativelanguage.googleapis.com/v1beta';
 };
@@ -538,6 +540,16 @@ const buildGeminiGenerateContentUrl = (args: { env?: Record<string, string>; mod
 const buildGeminiStreamContentUrl = (args: { env?: Record<string, string>; model: string }) => {
   const baseUrl = resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:streamGenerateContent?alt=sse`;
+};
+
+const buildGeminiPredictLongRunningUrl = (args: { env?: Record<string, string>; model: string }) => {
+  const baseUrl = resolveGeminiBaseUrl(args.env);
+  return `${baseUrl}/models/${encodeURIComponent(args.model)}:predictLongRunning`;
+};
+
+const buildGeminiOperationUrl = (args: { env?: Record<string, string>; operationName: string }) => {
+  const baseUrl = resolveGeminiBaseUrl(args.env);
+  return `${baseUrl}/${String(args.operationName || '').replace(/^\/+/, '')}`;
 };
 
 const includesAnyText = (text: string, phrases: string[]) => {
@@ -918,7 +930,7 @@ const getProviderCandidates = (preferred: string, env: Record<string, string>): 
   const unique = [pref, ...all].filter(Boolean) as ModelProvider[];
 
   const hasKey = (p: ModelProvider) => {
-    if (p === 'gemini') return Boolean(env.COMPASS_API_KEY || env.GEMINI_API_KEY);
+    if (p === 'gemini') return Boolean(env.GEMINI_API_KEY);
     if (p === 'openai') return Boolean(env.OPENAI_API_KEY);
     if (p === 'deepseek') return Boolean(env.DEEPSEEK_API_KEY);
     return false;
@@ -941,55 +953,129 @@ const normalizeGeminiImageModel = (model: string) => {
   return m;
 };
 
-const summarizeStoryForPrompt = (story: any) => {
+const summarizeStoryForPrompt = (story: any, selection?: any) => {
   if (!story || typeof story !== 'object') return null;
   const trim = (v: any, n: number) => String(v || '').slice(0, n);
   const safeArr = (v: any) => (Array.isArray(v) ? v : []);
 
-  const locations = safeArr(story.locations).slice(0, 30).map((l: any) => ({
+  const locations = safeArr(story.locations).slice(0, 12).map((l: any) => ({
     id: String(l?.id || ''),
-    name: trim(l?.name, 60),
-    description: trim(l?.description, 120),
-    visualStyle: trim(l?.visualStyle, 80),
+    name: trim(l?.name, 48),
+    description: trim(l?.description, 90),
   }));
 
-  const characters = safeArr(story.characters).slice(0, 30).map((c: any) => ({
+  const characters = safeArr(story.characters).slice(0, 12).map((c: any) => ({
     id: String(c?.id || ''),
-    name: trim(c?.name, 60),
-    description: trim(c?.description, 140),
+    name: trim(c?.name, 48),
+    description: trim(c?.description, 100),
     looks: safeArr(c?.looks)
-      .slice(0, 10)
-      .map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 60), description: trim(lk?.description, 140) })),
+      .slice(0, 4)
+      .map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 40), description: trim(lk?.description, 80) })),
   }));
 
-  const sequences = safeArr(story.sequences).slice(0, 20).map((s: any) => ({
+  const sequences = safeArr(story.sequences).slice(0, 8).map((s: any) => ({
     id: String(s?.id || ''),
-    title: trim(s?.title, 80),
+    title: trim(s?.title, 60),
     shots: safeArr(s?.shots)
-      .slice(0, 20)
+      .slice(0, 8)
       .map((sh: any) => ({
         id: String(sh?.id || ''),
         sequence: Number(sh?.sequence || 0),
         locationId: String(sh?.locationId || ''),
-        description: trim(sh?.description, 120),
+        timeOfDay: trim(sh?.timeOfDay, 20),
+        description: trim(sh?.description, 80),
       })),
   }));
 
+  const selType = String(selection?.type || '');
+  const selId = String(selection?.id || '');
+  const selParentId = String(selection?.parentId || '');
+  let selectedContext: any = undefined;
+  if (selType === 'shot' && selId) {
+    const seq = safeArr(story.sequences).find((s: any) => String(s?.id || '') === selParentId);
+    const shot = safeArr(seq?.shots).find((sh: any) => String(sh?.id || '') === selId);
+    selectedContext = shot
+      ? {
+          type: 'shot',
+          sequenceId: String(seq?.id || ''),
+          shot: {
+            id: String(shot?.id || ''),
+            locationId: String(shot?.locationId || ''),
+            timeOfDay: trim(shot?.timeOfDay, 20),
+            description: trim(shot?.description, 140),
+          },
+        }
+      : undefined;
+  } else if (selType === 'character' && selId) {
+    const ch = safeArr(story.characters).find((c: any) => String(c?.id || '') === selId);
+    selectedContext = ch
+      ? {
+          type: 'character',
+          character: {
+            id: String(ch?.id || ''),
+            name: trim(ch?.name, 48),
+            description: trim(ch?.description, 120),
+            looks: safeArr(ch?.looks).slice(0, 8).map((lk: any) => ({ id: String(lk?.id || ''), name: trim(lk?.name, 40) })),
+          },
+        }
+      : undefined;
+  } else if (selType === 'location' && selId) {
+    const loc = safeArr(story.locations).find((l: any) => String(l?.id || '') === selId);
+    selectedContext = loc
+      ? {
+          type: 'location',
+          location: {
+            id: String(loc?.id || ''),
+            name: trim(loc?.name, 48),
+            description: trim(loc?.description, 120),
+          },
+        }
+      : undefined;
+  }
+
   return {
     id: String(story.id || ''),
-    title: trim(story.title, 120),
-    logline: trim(story.logline, 220),
-    intent: trim(story.intent, 220),
+    title: trim(story.title, 90),
+    logline: trim(story.logline, 140),
+    intent: trim(story.intent, 140),
     aspectRatio: String(story.aspectRatio || ''),
     counts: {
       locations: safeArr(story.locations).length,
       characters: safeArr(story.characters).length,
       sequences: safeArr(story.sequences).length,
     },
+    selectedContext,
     locations,
     characters,
     sequences,
   };
+};
+
+const summarizeStoryForSpecialistPrompt = (summary: any, agent: string) => {
+  if (!summary || typeof summary !== 'object') return summary;
+  const base = {
+    id: summary.id,
+    title: summary.title,
+    logline: summary.logline,
+    intent: summary.intent,
+    aspectRatio: summary.aspectRatio,
+    counts: summary.counts,
+    selectedContext: summary.selectedContext,
+  };
+
+  if (agent === 'script_writer') {
+    return { ...base, characters: summary.characters, sequences: summary.sequences };
+  }
+  if (agent === 'casting_director') {
+    return { ...base, characters: summary.characters };
+  }
+  if (agent === 'environment_director') {
+    return { ...base, locations: summary.locations, sequences: summary.sequences };
+  }
+  if (agent === 'camera_art' || agent === 'editor') {
+    return { ...base, locations: summary.locations, characters: summary.characters, sequences: summary.sequences };
+  }
+  return summary;
 };
 
 const callGeminiImage = async (args: {
@@ -1069,10 +1155,8 @@ const callGeminiImage = async (args: {
 };
 
 const agentApiPlugin = (env: Record<string, string>): Plugin => {
-  // Support calling Gemini through internal gateways (e.g. Compass) by setting:
-  // - COMPASS_API_KEY / COMPASS_GATEWAY_URL (or GATEWAY_URL)
-  // Falls back to direct Google Gemini via GEMINI_API_KEY.
-  const geminiApiKey = String(env.COMPASS_API_KEY || env.GEMINI_API_KEY || '').trim();
+  // Standard Google Gemini API key.
+  const geminiApiKey = String(env.GEMINI_API_KEY || '').trim();
   const geminiBaseUrl = resolveGeminiBaseUrl(env);
 
   const applyRoutes = (middlewares: any) => {
@@ -1098,6 +1182,566 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       } catch {
         res.statusCode = 404;
         return res.end('Not found');
+      }
+    });
+
+    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
+      if (req.method !== 'POST') return next();
+      const body = await readJsonBody(req);
+
+      const prompt = String(body?.prompt || '').trim();
+      const promptSpec = body?.promptSpec && typeof body.promptSpec === 'object' ? body.promptSpec : null;
+      const imageUrl = String(body?.imageUrl || '').trim();
+      const durationRaw = Number(body?.durationSeconds ?? 6);
+      const durationSeconds = durationRaw === 4 || durationRaw === 6 || durationRaw === 8 ? durationRaw : 6;
+      const aspectRatio = String(body?.aspectRatio || '16:9').trim() === '9:16' ? '9:16' : '16:9';
+      const resolution = String(body?.resolution || '720p').trim();
+      const generateAudio = Boolean(body?.generateAudio ?? true);
+      const requestedModel = String(body?.model || '').trim();
+      const preferredModel = String(requestedModel || env.GEMINI_VIDEO_MODEL || 'veo-3.1-fast-generate-preview').trim();
+      const fallbackModel = String(env.GEMINI_VIDEO_FALLBACK_MODEL || 'veo-3.1-generate-preview').trim();
+      const modelCandidates = Array.from(new Set([preferredModel, fallbackModel].map((m) => String(m || '').trim()).filter(Boolean)));
+
+      if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
+      if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
+      if (resolution !== '720p') return sendJson(res, 400, { ok: false, error: 'Only 720p is supported' });
+      if (!geminiApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+
+      const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any): string => {
+        const core = String(basePrompt || '').trim();
+        const hasLabel = (labels: string[]) => {
+          if (!core) return false;
+          return labels.some((label) => new RegExp(`(^|\\n)\\s*${label}\\s*:`, 'i').test(core));
+        };
+        const pushIfMissing = (labels: string[], line: string) => {
+          if (!line || hasLabel(labels)) return;
+          parts.push(line);
+        };
+        const parts: string[] = [];
+        parts.push('Image-to-video: use the provided image as the starting frame; preserve subject identity and environment continuity.');
+        if (core) parts.push(`Core direction: ${core}`);
+        pushIfMissing(['scene'], spec?.shotDescription ? `Scene: ${String(spec.shotDescription).trim()}` : '');
+        pushIfMissing(['action'], spec?.action ? `Action: ${String(spec.action).trim()}` : '');
+        pushIfMissing(['camera motion', 'camera'], spec?.camera ? `Camera motion: ${String(spec.camera).trim()}` : '');
+        pushIfMissing(['composition'], spec?.composition ? `Composition: ${String(spec.composition).trim()}` : '');
+        pushIfMissing(['lens/look', 'lens'], spec?.lensEffect ? `Lens/look: ${String(spec.lensEffect).trim()}` : '');
+        pushIfMissing(['lighting and mood', 'lighting', 'mood'], spec?.mood ? `Lighting and mood: ${String(spec.mood).trim()}` : '');
+        pushIfMissing(['visual style', 'style', 'style guide'], spec?.style ? `Visual style: ${String(spec.style).trim()}` : '');
+        const inferredStyle = String(spec?.styleTranslation || '').trim() ||
+          buildStylePromptTranslation({
+            texts: [core, String(spec?.style || ''), String(spec?.shotDescription || ''), String(spec?.camera || ''), String(spec?.mood || '')],
+            maxItems: 6,
+          });
+        pushIfMissing(['style translation hints', 'style intent'], inferredStyle ? `Style translation hints: ${inferredStyle}.` : '');
+        pushIfMissing(['audio intent', 'audio'], spec?.audio ? `Audio intent: ${String(spec.audio).trim()}` : '');
+        const constraints = Array.isArray(spec?.constraints) ? spec.constraints : [];
+        pushIfMissing(['constraints'], constraints.length ? `Constraints: ${constraints.map((x: any) => String(x).trim()).filter(Boolean).join(' ')}` : '');
+        if (!/motion quality\s*:/i.test(core)) {
+          parts.push('Motion quality: natural physics, coherent anatomy, stable geometry, no jitter/flicker, no abrupt style drift.');
+        }
+        if (!/no text overlays|no subtitles|no watermark|no logos?/i.test(core)) {
+          parts.push('No text overlays, subtitles, logos, or watermark.');
+        }
+        return parts.join('\n').slice(0, 8000);
+      };
+
+      const promptUsed = composeVeoImageToVideoPrompt(prompt, promptSpec);
+
+      const loadImage = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
+        const u = String(url || '').trim();
+        if (!u) return null;
+
+        if (u.startsWith('/__generated__/')) {
+          const clean = u.split('?')[0].split('#')[0];
+          const filePath = safeGeneratedAssetPath(clean);
+          if (!filePath) return null;
+          const bytes = await fs.promises.readFile(filePath);
+          return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+        }
+
+        if (u.startsWith('data:image/')) {
+          const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(u);
+          if (!match) return null;
+          return { mimeType: match[1], bytes: Buffer.from(match[2], 'base64') };
+        }
+
+        if (u.startsWith('http://') || u.startsWith('https://')) {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 20_000);
+          try {
+            const init: any = { signal: controller.signal };
+            const dispatcher = getProxyDispatcher(u, env);
+            if (dispatcher) init.dispatcher = dispatcher;
+            const resp = await fetch(u, init);
+            if (!resp.ok) return null;
+            const ct = String(resp.headers.get('content-type') || '');
+            if (!ct.startsWith('image/')) return null;
+            const bytes = Buffer.from(await resp.arrayBuffer());
+            if (!bytes.length) return null;
+            return { mimeType: ct.split(';')[0] || 'image/png', bytes };
+          } finally {
+            clearTimeout(timeout);
+          }
+        }
+
+        return null;
+      };
+
+      const readVideoBytes = async (rawUrl: string): Promise<{ bytes: Buffer; mimeType: string } | null> => {
+        const candidates = new Set<string>();
+        const direct = String(rawUrl || '').trim();
+        if (direct) candidates.add(direct);
+        if (direct.startsWith('/')) candidates.add(`${resolveGeminiBaseUrl(env)}${direct}`);
+        const queue = Array.from(candidates);
+        for (let i = 0; i < queue.length; i++) {
+          const c = queue[i];
+          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiApiKey)}`;
+          for (const u of [c, withKey]) {
+            try {
+              const resp = await withRetries(
+                async () => {
+                  const controller = new AbortController();
+                  const timeout = setTimeout(() => controller.abort(), 90_000);
+                  try {
+                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiApiKey } };
+                    const dispatcher = getProxyDispatcher(u, env);
+                    const runVideoFetch = async (useDispatcher: boolean) => {
+                      const reqInit: any = { ...init };
+                      if (useDispatcher && dispatcher) reqInit.dispatcher = dispatcher;
+                      return fetch(u, reqInit);
+                    };
+                    let out: any;
+                    try {
+                      out = await runVideoFetch(true);
+                    } catch (e: any) {
+                      if (dispatcher && isRetryableNetworkError(e)) {
+                        out = await runVideoFetch(false);
+                      } else {
+                        throw e;
+                      }
+                    }
+                    if (!out.ok) {
+                      const text = await out.text().catch(() => '');
+                      const err: any = new Error(`Gemini video fetch HTTP ${out.status}${text ? `: ${text.slice(0, 240)}` : ''}`);
+                      err.status = out.status;
+                      err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(out.status));
+                      throw err;
+                    }
+                    return out;
+                  } finally {
+                    clearTimeout(timeout);
+                  }
+                },
+                {
+                  label: `gemini.video.download:${u.slice(0, 96)}`,
+                  maxAttempts: Math.max(1, Number(env.GEMINI_VIDEO_DOWNLOAD_ATTEMPTS || 3)),
+                  baseDelayMs: 400,
+                  maxDelayMs: 3000,
+                },
+              );
+              const ct = String(resp.headers.get('content-type') || '').toLowerCase();
+              if (ct.startsWith('video/')) {
+                const bytes = Buffer.from(await resp.arrayBuffer());
+                if (!bytes.length) continue;
+                return { bytes, mimeType: ct.split(';')[0] || 'video/mp4' };
+              }
+              if (ct.includes('application/json')) {
+                const data = (await resp.json().catch(() => null)) as any;
+                const nextUri = String(data?.video?.uri || data?.downloadUri || data?.uri || '').trim();
+                if (nextUri && !candidates.has(nextUri)) {
+                  candidates.add(nextUri);
+                  queue.push(nextUri);
+                }
+              }
+            } catch {
+              // ignore and try next
+            }
+          }
+        }
+        return null;
+      };
+
+      const collectStringCandidates = (input: any, maxNodes = 1200): string[] => {
+        const out: string[] = [];
+        const seen = new Set<any>();
+        const stack: any[] = [input];
+        let steps = 0;
+        while (stack.length && steps < maxNodes) {
+          const cur = stack.pop();
+          steps++;
+          if (!cur || typeof cur !== 'object') continue;
+          if (seen.has(cur)) continue;
+          seen.add(cur);
+          for (const [k, v] of Object.entries(cur)) {
+            if (typeof v === 'string') {
+              const key = String(k || '').toLowerCase();
+              const val = String(v || '').trim();
+              if (!val) continue;
+              if (
+                key.includes('uri') ||
+                key.includes('url') ||
+                key.includes('file') ||
+                val.startsWith('http://') ||
+                val.startsWith('https://') ||
+                val.startsWith('/') ||
+                val.startsWith('files/') ||
+                val.startsWith('gs://')
+              ) {
+                out.push(val);
+              }
+            } else if (v && typeof v === 'object') {
+              stack.push(v);
+            }
+          }
+        }
+        return Array.from(new Set(out));
+      };
+
+      const fileNameToCandidateUrls = (name: string): string[] => {
+        const n = String(name || '').trim().replace(/^\/+/, '');
+        if (!n) return [];
+        const base = resolveGeminiBaseUrl(env);
+        if (!/^files\//.test(n)) return [];
+        return Array.from(
+          new Set([
+            `${base}/${n}`,
+            `${base}/${n}?alt=media`,
+            `${base}/${n}:download`,
+            `${base}/${n}:download?alt=media`,
+          ]),
+        );
+      };
+
+      const extractFilesPath = (value: string): string => {
+        const v = String(value || '').trim();
+        if (!v) return '';
+        if (/^files\//.test(v)) return v;
+        const idx = v.indexOf('/files/');
+        if (idx >= 0) return v.slice(idx + 1);
+        const idx2 = v.indexOf('files/');
+        if (idx2 >= 0) return v.slice(idx2);
+        return '';
+      };
+
+      const collectVideoNodes = (op: any): any[] => {
+        const r = op?.response;
+        const g = r?.generateVideoResponse;
+        const out: any[] = [];
+        const pushAny = (v: any) => {
+          if (!v) return;
+          if (Array.isArray(v)) out.push(...v.filter(Boolean));
+          else out.push(v);
+        };
+        pushAny(g?.generatedSamples);
+        pushAny(g?.generatedVideos);
+        pushAny(g?.videos);
+        pushAny(g?.samples);
+        pushAny(g?.outputs);
+        pushAny(g?.generatedVideo);
+        pushAny(g?.video);
+        pushAny(g?.sample);
+        pushAny(g?.output);
+        pushAny(r?.generatedSamples);
+        pushAny(r?.generatedVideos);
+        pushAny(r?.videos);
+        pushAny(r?.samples);
+        pushAny(r?.outputs);
+        pushAny(r?.video);
+        pushAny(op?.generatedSamples);
+        pushAny(op?.generatedVideos);
+        pushAny(op?.videos);
+        pushAny(op?.video);
+        return out;
+      };
+
+      const extractVideoUris = (node: any): string[] => {
+        const candidates = [
+          node?.video?.uri,
+          node?.video?.url,
+          node?.video?.downloadUri,
+          node?.video?.signedUri,
+          node?.video?.mediaLink,
+          node?.video?.file?.uri,
+          node?.video?.fileUri,
+          node?.video?.fileName,
+          node?.uri,
+          node?.url,
+          node?.downloadUri,
+          node?.signedUri,
+          node?.mediaLink,
+          node?.file?.uri,
+          node?.fileUri,
+          node?.fileName,
+          node?.name,
+        ]
+          .map((x) => String(x || '').trim())
+          .filter(Boolean);
+        return Array.from(new Set(candidates));
+      };
+
+      try {
+        const loaded = await loadImage(imageUrl);
+        if (!loaded) return sendJson(res, 400, { ok: false, error: 'Unable to load source image' });
+
+        ensureGeneratedDir();
+        let predictRes: any = null;
+        let model = modelCandidates[0];
+        let predictParamsUsed: Record<string, any> = {};
+        const modelErrors: Array<{ model: string; error: string; removedParams?: string[] }> = [];
+        const detectUnsupportedParam = (err: any): string | '' => {
+          const text = formatFetchError(err);
+          const m1 = /`([^`]+)`\s+isn'?t supported/i.exec(text);
+          if (m1?.[1]) return String(m1[1]).trim();
+          const m2 = /\b(enhancePrompt|generateAudio|numberOfVideos|resolution|durationSeconds|aspectRatio)\b[^.\n]*isn'?t supported/i.exec(text);
+          if (m2?.[1]) return String(m2[1]).trim();
+          return '';
+        };
+        for (const candidate of modelCandidates) {
+          model = candidate;
+          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const predictDispatcher = getProxyDispatcher(predictUrl, env);
+          const baseParams: Record<string, any> = {
+            aspectRatio,
+            durationSeconds,
+            resolution,
+            enhancePrompt: true,
+            numberOfVideos: 1,
+          };
+          if (generateAudio) baseParams.generateAudio = true;
+          const removedParams: string[] = [];
+          try {
+            let params = { ...baseParams };
+            for (let i = 0; i < 5; i++) {
+              try {
+                predictRes = await withRetries(
+                  async () => {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 120_000);
+                    try {
+                      const init: any = {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({
+                          instances: [
+                            {
+                              prompt: promptUsed,
+                              image: {
+                                bytesBase64Encoded: loaded.bytes.toString('base64'),
+                                mimeType: loaded.mimeType || 'image/png',
+                              },
+                            },
+                          ],
+                          parameters: params,
+                        }),
+                        signal: controller.signal,
+                      };
+                      const runPredictFetch = async (useDispatcher: boolean) => {
+                        const reqInit: any = { ...init };
+                        if (useDispatcher && predictDispatcher) reqInit.dispatcher = predictDispatcher;
+                        return fetch(predictUrl, reqInit);
+                      };
+                      let out: any;
+                      try {
+                        out = await runPredictFetch(true);
+                      } catch (e: any) {
+                        if (predictDispatcher && isRetryableNetworkError(e)) {
+                          out = await runPredictFetch(false);
+                        } else {
+                          throw e;
+                        }
+                      }
+                      if (!out.ok) {
+                        const text = await out.text().catch(() => '');
+                        const err: any = new Error(`Gemini Video HTTP ${out.status}${text ? `: ${text}` : ''}`);
+                        err.status = out.status;
+                        err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(out.status));
+                        throw err;
+                      }
+                      return (await out.json()) as any;
+                    } finally {
+                      clearTimeout(timeout);
+                    }
+                  },
+                  { label: `gemini.video.predict:${candidate}`, maxAttempts: 4 },
+                );
+                predictParamsUsed = { ...params };
+                break;
+              } catch (e: any) {
+                const unsupported = detectUnsupportedParam(e);
+                const canDowngrade =
+                  Number(e?.status || 0) === 400 &&
+                  unsupported &&
+                  Object.prototype.hasOwnProperty.call(params, unsupported);
+                if (!canDowngrade) throw e;
+                delete (params as any)[unsupported];
+                removedParams.push(unsupported);
+              }
+            }
+            if (predictRes) break;
+          } catch (e: any) {
+            modelErrors.push({ model: candidate, error: formatFetchError(e), removedParams });
+          }
+        }
+        if (!predictRes) {
+          throw new Error(`Gemini Video: all model candidates failed. ${modelErrors.map((x) => `${x.model}: ${x.error}`).join(' | ')}`);
+        }
+
+        const operationName = String(predictRes?.name || '').trim();
+        if (!operationName) throw new Error('Gemini Video: missing operation name');
+
+        const pollStart = Date.now();
+        const pollTimeoutMs = Math.max(60_000, Number(env.GEMINI_VIDEO_TIMEOUT_MS || 10 * 60_000));
+        const pollIntervalMs = Math.max(1500, Number(env.GEMINI_VIDEO_POLL_INTERVAL_MS || 4000));
+        let opData: any = predictRes;
+        while (!opData?.done) {
+          if (Date.now() - pollStart > pollTimeoutMs) {
+            throw new Error(`Gemini Video timeout after ${Math.round((Date.now() - pollStart) / 1000)}s`);
+          }
+          await sleep(pollIntervalMs);
+          const opUrl = `${buildGeminiOperationUrl({ env, operationName })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const opDispatcher = getProxyDispatcher(opUrl, env);
+          opData = await withRetries(
+            async () => {
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 60_000);
+              try {
+                const init: any = { signal: controller.signal };
+                const runOpFetch = async (useDispatcher: boolean) => {
+                  const reqInit: any = { ...init };
+                  if (useDispatcher && opDispatcher) reqInit.dispatcher = opDispatcher;
+                  return fetch(opUrl, reqInit);
+                };
+                let opRes: any;
+                try {
+                  opRes = await runOpFetch(true);
+                } catch (e: any) {
+                  if (opDispatcher && isRetryableNetworkError(e)) {
+                    opRes = await runOpFetch(false);
+                  } else {
+                    throw e;
+                  }
+                }
+                if (!opRes.ok) {
+                  const text = await opRes.text().catch(() => '');
+                  const err: any = new Error(`Gemini Video operation HTTP ${opRes.status}${text ? `: ${text.slice(0, 240)}` : ''}`);
+                  err.status = opRes.status;
+                  err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(opRes.status));
+                  throw err;
+                }
+                return (await opRes.json()) as any;
+              } finally {
+                clearTimeout(timeout);
+              }
+            },
+            {
+              label: `gemini.video.poll:${operationName}`,
+              maxAttempts: Math.max(1, Number(env.GEMINI_VIDEO_POLL_ATTEMPTS || 4)),
+              baseDelayMs: 500,
+              maxDelayMs: 3500,
+            },
+          );
+        }
+
+        if (opData?.error) {
+          const message = String(opData?.error?.message || opData?.error?.details || 'unknown error');
+          throw new Error(`Gemini Video operation failed: ${message}`);
+        }
+
+        const videoNodes = collectVideoNodes(opData);
+        const sample = videoNodes[0];
+        const primaryVideoUri = extractVideoUris(sample)[0] || '';
+        const inline = sample?.video?.inlineData || sample?.inlineData || sample?.video?.bytes || sample?.bytes;
+        const inlineBytes = typeof inline?.data === 'string' ? Buffer.from(String(inline.data), 'base64') : null;
+
+        const uriCandidates = new Set<string>();
+        if (primaryVideoUri) uriCandidates.add(primaryVideoUri);
+        for (const n of videoNodes) {
+          for (const v of extractVideoUris(n)) uriCandidates.add(v);
+        }
+        for (const s of collectStringCandidates(opData)) {
+          const v = String(s || '').trim();
+          if (!v) continue;
+          if (/^https?:\/\//i.test(v) || v.startsWith('/')) {
+            uriCandidates.add(v);
+            continue;
+          }
+          const filesPath = extractFilesPath(v);
+          if (filesPath) for (const u of fileNameToCandidateUrls(filesPath)) uriCandidates.add(u);
+        }
+
+        let videoBytes: Buffer | null = inlineBytes && inlineBytes.length ? inlineBytes : null;
+        let resolvedVideoUri = primaryVideoUri;
+        if (!videoBytes && uriCandidates.size) {
+          for (const u of uriCandidates) {
+            const fetched = await readVideoBytes(u);
+            if (fetched?.bytes?.length) {
+              videoBytes = fetched.bytes;
+              resolvedVideoUri = u;
+              break;
+            }
+          }
+        }
+
+        if (videoBytes && videoBytes.length) {
+          const hash = crypto.createHash('sha256').update(`${model}\n${durationSeconds}\n${aspectRatio}\n${promptUsed}\n${imageUrl}`).digest('hex').slice(0, 16);
+          const filename = `${Date.now()}-${hash}.mp4`;
+          fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), videoBytes);
+          return sendJson(res, 200, {
+            videoUrl: `/__generated__/${filename}`,
+            operationName,
+            debug: {
+              transport: 'http',
+              provider: 'gemini',
+              model,
+              baseUrl: geminiBaseUrl,
+              durationSeconds,
+              resolution,
+              aspectRatio,
+              bytes: videoBytes.length,
+              promptPreview: prompt.slice(0, 240),
+              promptUsedPreview: promptUsed.slice(0, 320),
+              requestParameters: predictParamsUsed,
+              uriCandidates: Array.from(uriCandidates).slice(0, 16),
+            },
+          });
+        }
+
+        if (!resolvedVideoUri) {
+          const responseShape = JSON.stringify(
+            {
+              opKeys: Object.keys(opData || {}).slice(0, 30),
+              responseKeys: Object.keys(opData?.response || {}).slice(0, 30),
+              gvrKeys: Object.keys(opData?.response?.generateVideoResponse || {}).slice(0, 40),
+              sampleKeys: Object.keys(sample || {}).slice(0, 30),
+            },
+            null,
+            0,
+          );
+          throw new Error(`Gemini Video: operation completed but no downloadable video URI (shape=${responseShape})`);
+        }
+        return sendJson(res, 200, {
+          videoUrl: resolvedVideoUri,
+          operationName,
+          debug: {
+            transport: 'http',
+            provider: 'gemini',
+            model,
+            baseUrl: geminiBaseUrl,
+            durationSeconds,
+            resolution,
+            aspectRatio,
+            remote: true,
+            promptUsedPreview: promptUsed.slice(0, 320),
+            requestParameters: predictParamsUsed,
+            uriCandidates: Array.from(uriCandidates).slice(0, 16),
+          },
+        });
+      } catch (e: any) {
+        return sendJson(res, 500, {
+          ok: false,
+          error: formatFetchError(e),
+          debug: { provider: 'gemini', modelCandidates, imageUrlPreview: imageUrl.slice(0, 200), promptPreview: prompt.slice(0, 200), promptUsedPreview: promptUsed.slice(0, 320) },
+        });
       }
     });
 
@@ -1138,11 +1782,12 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                  trimmedSpec.styleGuide = trimmedSpec.styleGuide.slice(0, 2000);
 	                }
 	                const composePromptText =
-	                  `You are a senior cinematographer and prompt engineer.\n` +
+	                  `You are a senior visual direction prompt engineer.\n` +
 	                  `Compose the BEST single prompt for Gemini image generation (model: ${usedModel}).\n` +
-	                  `Goal: produce a film keyframe (narrative moment mid-action), not a poster, not concept art, not posed.\n` +
+	                  `Goal: produce a narrative keyframe (mid-action), not a poster, not concept art, not posed.\n` +
 	                  `Write a cohesive prompt (1-3 short paragraphs). No headings like TASK/SCENE. No bullet lists. No JSON inside the prompt.\n` +
-	                  `Include: concrete frame description, camera/lens + aperture + DoF, composition, lighting, mood, and style constraints.\n` +
+	                  `Preserve the medium/style in the input spec. Do not drift into generic photoreal/CGI wording unless explicitly requested.\n` +
+	                  `Include: concrete frame description, composition, lighting mood, and style constraints. Add lens/DoF jargon only when it helps the requested medium.\n` +
 	                  `Return ONLY JSON: {"prompt": string, "negativePrompt": string}.\n` +
 	                  `Input spec JSON:\n${JSON.stringify(trimmedSpec)}\n`;
 	                composed = await callGeminiJson({
@@ -1444,7 +2089,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           title: intent.split(/\\s+/).slice(0, 4).join(' ') || 'New Masterpiece',
           logline: `An AI-directed story based on: "${intent}"`,
           styleGuide:
-            'Style Guide: cinematic, cohesive art direction; consistent palette and lighting language; stable character identity; avoid drastic style shifts.',
+            'Style Guide: cohesive art direction; stable medium/texture language; consistent palette and lighting logic; stable character identity; avoid style drift and accidental CG look.',
           intent,
           keyVisualUrl: keyVisualUrl || 'https://images.unsplash.com/photo-1449156059431-789955fa190a?q=80&w=2070&auto=format&fit=crop',
           aspectRatio,
@@ -1473,9 +2118,39 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
 
+	        const inferStyleLockFromIntent = (rawIntent: string) => {
+	          const t = String(rawIntent || '').toLowerCase();
+	          const has = (re: RegExp) => re.test(t);
+	          if (has(/(写实|现实主义|写实电影|realistic|live[\s-]?action|photoreal|real[\s-]?film)/i)) {
+	            return {
+	              label: 'live-action realistic film',
+	              negative: 'oil painting, watercolor, ink wash, anime, illustration, stylized CGI',
+	            };
+	          }
+	          if (has(/(油画|oil\s*painting)/i)) return { label: 'oil painting', negative: 'live-action photorealism' };
+	          if (has(/(水墨|ink\s*wash|sumie|sumi-e)/i)) return { label: 'ink wash', negative: 'live-action photorealism, glossy CGI' };
+	          if (has(/(水彩|watercolor)/i)) return { label: 'watercolor', negative: 'live-action photorealism, glossy CGI' };
+	          if (has(/(anime|动画|二次元|cel)/i)) return { label: 'anime cel', negative: 'live-action photorealism, oil painting' };
+	          return null;
+	        };
+
+	        const applyStyleLock = (text: string, styleLock: { label: string; negative: string } | null, extras?: Array<string | undefined>) => {
+	          const base = String(text || '').trim();
+            const styleTranslation = buildStylePromptTranslation({ texts: [intent, ...(extras || [])], maxItems: 5 });
+            const styleLine = styleTranslation ? `Style translation hints: ${styleTranslation}.` : '';
+	          if (!styleLock) return [base, styleLine].filter(Boolean).join(base ? '\n' : '');
+	          const block =
+	            `Style lock (hard): ${styleLock.label}.\n` +
+	            `Do not drift to: ${styleLock.negative}.`;
+	          if (!base) return [block, styleLine].filter(Boolean).join('\n');
+            const withLock = /style lock \(hard\)/i.test(base) ? base : `${base}\n${block}`;
+	          return [withLock, styleLine].filter(Boolean).join('\n');
+	        };
+
 	        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string, debugExtra?: any) => {
 	          // Minimal mapping into the app's Story schema. IDs generated server-side for stability.
 	          const projectId = mkId('proj');
+	          const styleLock = inferStyleLockFromIntent(intent);
 	          const locations = Array.isArray(spec?.locations) ? spec.locations : [];
 	          const characters = Array.isArray(spec?.characters) ? spec.characters : [];
 	          const sequences = Array.isArray(spec?.sequences) ? spec.sequences : [];
@@ -1495,19 +2170,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              `- No sudden style shifts; no text/watermarks.\n`
 	            );
 	          };
-	          const styleGuide = styleGuideRaw || styleGuideFallback();
+	          const styleGuide = applyStyleLock(styleGuideRaw || styleGuideFallback(), styleLock, [styleGuideRaw]);
 
           const locByName = new Map<string, any>();
-          const mappedLocations = locations.map((l: any) => {
-            const id = mkId('loc');
-            const item = {
-              id,
-              name: String(l?.name || 'Environment'),
-              description: String(l?.description || ''),
-              visualStyle: String(l?.visualStyle || ''),
-              previewUrl: 'https://images.unsplash.com/photo-1555680202-c86f0e12f086?q=80&w=2070&auto=format&fit=crop',
-              status: 'draft',
-            };
+	          const mappedLocations = locations.map((l: any) => {
+	            const id = mkId('loc');
+	            const item = {
+	              id,
+	              name: String(l?.name || 'Environment'),
+	              description: String(l?.description || ''),
+	              visualStyle: applyStyleLock(String(l?.visualStyle || ''), styleLock, [String(l?.description || ''), String(l?.visualStyle || '')]),
+	              previewUrl: 'https://images.unsplash.com/photo-1555680202-c86f0e12f086?q=80&w=2070&auto=format&fit=crop',
+	              status: 'draft',
+	            };
             locByName.set(item.name.toLowerCase(), item);
             return item;
           });
@@ -1570,8 +2245,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                elements: {
 	                  SCRIPT: { type: 'SCRIPT', prompt: String(sh?.script || ''), status: 'auto' },
 	                  CASTING: { type: 'CASTING', prompt: '', status: 'manual', metadata: { characters: cast } },
-	                  CAMERA: { type: 'CAMERA', prompt: String(sh?.camera || 'Cinematic shot'), status: 'auto', metadata: { videoPrompt: String(sh?.videoPrompt || '') } },
-	                  LIGHTING: { type: 'LIGHTING', prompt: String(sh?.lighting || 'Cinematic lighting'), status: 'auto' },
+	                  CAMERA: {
+	                    type: 'CAMERA',
+	                    prompt: String(sh?.camera || 'Narrative shot'),
+	                    status: 'auto',
+	                    metadata: { videoPrompt: applyStyleLock(String(sh?.videoPrompt || ''), styleLock, [String(sh?.description || ''), String(sh?.camera || ''), String(sh?.lighting || '')]) },
+	                  },
+	                  LIGHTING: { type: 'LIGHTING', prompt: String(sh?.lighting || 'Scene-consistent lighting'), status: 'auto' },
 	                  AUDIO: { type: 'AUDIO', prompt: String(sh?.audio || 'Ambient sound'), status: 'auto' },
 	                },
 	                aiState: 'idle',
@@ -2908,7 +3588,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              if (lower.includes('close up') || lower.includes('close-up') || lower.includes('closeup') || lower.includes('特写')) {
 	                actions.push({
 	                  type: 'UPDATE_ELEMENT',
-	                  payload: { shotId, sequenceId, elementType: 'CAMERA', prompt: 'Close-up shot, shallow depth of field' },
+	                  payload: { shotId, sequenceId, elementType: 'CAMERA', prompt: 'Close-up shot, subject-isolated framing' },
 	                });
 	                notes.push('camera → close-up');
 	              }
@@ -2916,7 +3596,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              if (lower.includes('wide') || lower.includes('establishing') || lower.includes('远景') || lower.includes('全景')) {
 	                actions.push({
 	                  type: 'UPDATE_ELEMENT',
-	                  payload: { shotId, sequenceId, elementType: 'CAMERA', prompt: 'Wide establishing shot, cinematic composition' },
+	                  payload: { shotId, sequenceId, elementType: 'CAMERA', prompt: 'Wide establishing shot, layered composition' },
 	                });
 	                notes.push('camera → wide');
 	              }
@@ -2924,7 +3604,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              if (lower.includes('warmer') || lower.includes('warm') || lower.includes('暖')) {
 	                actions.push({
 	                  type: 'UPDATE_ELEMENT',
-	                  payload: { shotId, sequenceId, elementType: 'LIGHTING', prompt: 'Warm cinematic lighting, golden tones' },
+	                  payload: { shotId, sequenceId, elementType: 'LIGHTING', prompt: 'Warm lighting, golden tones' },
 	                });
 	                notes.push('lighting → warmer');
 	              }
@@ -2932,7 +3612,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              if (lower.includes('cooler') || lower.includes('cool') || lower.includes('冷')) {
 	                actions.push({
 	                  type: 'UPDATE_ELEMENT',
-	                  payload: { shotId, sequenceId, elementType: 'LIGHTING', prompt: 'Cool cinematic lighting, blue tones' },
+	                  payload: { shotId, sequenceId, elementType: 'LIGHTING', prompt: 'Cool lighting, blue tones' },
 	                });
 	                notes.push('lighting → cooler');
 	              }
@@ -2962,32 +3642,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           const attemptedProviders: string[] = [];
           let lastError: any = null;
           const selectionJson = JSON.stringify(selection || {});
-          const storyJson = story ? JSON.stringify(summarizeStoryForPrompt(story)) : '{}';
-          let streamedReply = '';
-          const replyPrompt =
-            `You are the DIRECTOR. Reply to the user in 1-3 concise sentences. No JSON.\n` +
-            `Directive: ${message}\n` +
-            `Selection: ${selectionJson}\n` +
-            `Story: ${storyJson}\n`;
-          if (stream && provider === 'gemini' && geminiApiKey) {
-            emit?.('status', { message: 'Streaming reply…' });
-          }
-          const replyPromise =
-            stream && provider === 'gemini' && geminiApiKey
-              ? callGeminiStreamText({
-                  apiKey: geminiApiKey,
-                  model,
-                  temperature: Math.min(0.8, Math.max(0.2, temperature)),
-                  prompt: replyPrompt,
-                  env,
-                  onDelta: (delta) => emit?.('reply_delta', { delta }),
-                })
-                  .then((text) => {
-                    streamedReply = String(text || '').trim();
-                    if (streamedReply) emit?.('reply_done', { text: streamedReply });
-                  })
-                  .catch(() => {})
-              : Promise.resolve();
+          const storySummary = story ? summarizeStoryForPrompt(story, selection) : null;
+          const storyJson = storySummary ? JSON.stringify(storySummary) : '{}';
           const allowedActionsText = [
             'NAVIGATE',
             'UPDATE_STORY',
@@ -3013,9 +3669,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             'GENERATE_LOCATION_PREVIEW',
             'GENERATE_CHARACTER_AVATAR',
             'GENERATE_CHARACTER_LOOK',
-          ]
-            .map((t) => `- ${t}`)
-            .join('\n');
+          ].join(', ');
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
@@ -3153,11 +3807,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 for (const a of uniqAgents.slice(0, 4)) {
                   const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
                     try {
+                      const specialistStoryJson = JSON.stringify(
+                        summarizeStoryForSpecialistPrompt(storySummary, a as string) || storySummary || {},
+                      );
                       const prompt = buildTeamDirectSpecialistPrompt({
                         agent: a as any,
                         focus,
                         selectionJson,
-                        storyJson,
+                        storyJson: specialistStoryJson,
                         directive: message,
                       });
                       const out = useFunctionCalling
@@ -3197,7 +3854,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                               ms: Date.now() - started,
                               promptId: meta?.id,
                               promptVersion: meta?.version,
-                              promptPreview: String(prompt || '').slice(0, 800),
+                              promptPreview: String(prompt || '').slice(0, 600),
                               responsePreview: JSON.stringify(toolOut?.args || {}).slice(0, 1600),
                               toolCall: toolOut?.name,
                             });
@@ -3274,15 +3931,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       })()
                     : await call('director.merge', mergePrompt, GEMINI_SCHEMA.directorFinal);
 
-                const actions = maybeInjectStyleGuide(normalizeActions(final?.actions), message, story);
-                await replyPromise;
-                const taskCheck = {
+	                const actions = maybeInjectStyleGuide(normalizeActions(final?.actions), message, story);
+	                const taskCheck = {
                   requested: uniqAgents,
                   errors: specialistErrors,
                   empty: uniqAgents.filter((a) => !specialistErrors.find((x) => x.agent === a) && (specialistResultsByAgent[a]?.suggestedActions || []).length === 0),
                 };
                 const response = {
-	                  reply: streamedReply || String(final?.reply || planner?.reply || 'OK'),
+		                  reply: String(final?.reply || planner?.reply || 'OK'),
 	                  plan: {
 	                    id: mkId('plan'),
 	                    summary: uniqAgents.length ? `Multi-agent consult: ${uniqAgents.join(', ')}` : 'Multi-agent director (no consult needed).',
@@ -3385,14 +4041,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                      storyJson: story ? storyJson : undefined,
 		                      directive: message,
 		                    }),
-		                  ).slice(0, 800),
+		                  ).slice(0, 600),
 			                  responsePreview: JSON.stringify(output).slice(0, 1600),
 			                  multiAgentError: e?.message || String(e),
 			                });
 			                const actions = maybeInjectStyleGuide(normalizeActions(output?.actions), message, story);
-			                await replyPromise;
 			                const response = {
-			                  reply: streamedReply || String(output?.reply || 'OK'),
+			                  reply: String(output?.reply || 'OK'),
                   plan: {
                     id: mkId('plan'),
                     summary: 'Generated structured actions (Gemini, single-call fallback).',
@@ -3482,13 +4137,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 for (const a of uniqAgents.slice(0, 4)) {
                   const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
                   emit?.('status', { message: `Consulting ${a}…` });
+                  const specialistStoryJson = JSON.stringify(
+                    summarizeStoryForSpecialistPrompt(storySummary, a as string) || storySummary || {},
+                  );
                   const out = await call(
                     a,
                     buildTeamDirectSpecialistPrompt({
                       agent: a as any,
                       focus,
                       selectionJson,
-                      storyJson,
+                      storyJson: specialistStoryJson,
                       directive: message,
                     }),
                   );
@@ -3652,13 +4310,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 const specialistResultsByAgent: Record<string, any> = {};
                 for (const a of uniqAgents.slice(0, 4)) {
                   const focus = typeof focusObj[a] === 'string' ? String(focusObj[a]) : '';
+                  const specialistStoryJson = JSON.stringify(
+                    summarizeStoryForSpecialistPrompt(storySummary, a as string) || storySummary || {},
+                  );
                   const out = await call(
                     a,
                     buildTeamDirectSpecialistPrompt({
                       agent: a as any,
                       focus,
                       selectionJson,
-                      storyJson,
+                      storyJson: specialistStoryJson,
                       directive: message,
                     }),
                   );

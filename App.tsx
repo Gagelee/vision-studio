@@ -1,5 +1,5 @@
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle, Info, X } from 'lucide-react';
 import { Sidebar } from './components/Layout/Sidebar';
 import { ScriptEditorModal } from './components/Stage/ScriptEditorModal';
@@ -24,7 +24,9 @@ import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
 import { isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
-import { applyAssetBlocked, applyAssetError, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
+import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
+import { generateVideoFromImage } from './lib/ai/video/generate';
+import { buildStylePromptTranslation } from './lib/ai/styleIntent';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -44,11 +46,174 @@ import {
 
 type Screen = 'library' | 'creation' | 'project';
 
+interface DirectorApplyResult {
+  applied: number;
+  dropped: number;
+  droppedActions: AgentAction[];
+  deferredJobs?: AssetJob[];
+  scopeLabel?: string;
+  concurrency?: number;
+  storyAfterUpdates?: Story;
+}
+
+interface PendingInteractionGeneration {
+  id: string;
+  projectId: string;
+  jobs: AssetJob[];
+  scopeLabel: string;
+  concurrency: number;
+  story: Story;
+}
+
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
+const STALE_GENERATION_MAX_AGE_MS = 5 * 60_000;
+const STALE_PRODUCTION_MAX_AGE_MS = 20 * 60_000;
+
+const recoverAssetStateIfStale = (state: any, now: number, fallbackTs: number): { next: any; fixed: boolean } => {
+  if (!state) return { next: state, fixed: false };
+  const status = String(state.status || '').toLowerCase();
+  if (status !== 'queued' && status !== 'running') return { next: state, fixed: false };
+  const ts = typeof state.lastAttemptAt === 'number' ? state.lastAttemptAt : fallbackTs;
+  if (!ts || now - ts < STALE_GENERATION_MAX_AGE_MS) return { next: state, fixed: false };
+  return {
+    next: {
+      ...state,
+      status: 'error',
+      lastAttemptAt: ts,
+      lastError: String(state.lastError || 'Recovered from stale generation state. Please retry generation.'),
+    },
+    fixed: true,
+  };
+};
+
+const recoverProductionStateIfStale = (production: any, now: number, fallbackTs: number): { next: any; fixed: boolean } => {
+  if (!production || typeof production !== 'object') return { next: production, fixed: false };
+  const status = String(production.status || '').toLowerCase();
+  if (status !== 'queued' && status !== 'running') return { next: production, fixed: false };
+  const ts = typeof production.lastStartedAt === 'number' ? production.lastStartedAt : fallbackTs;
+  if (!ts || now - ts < STALE_PRODUCTION_MAX_AGE_MS) return { next: production, fixed: false };
+  return {
+    next: {
+      ...production,
+      status: 'error',
+      lastStartedAt: ts,
+      lastError: String(production.lastError || 'Recovered from stale production state. Please retry generation.'),
+    },
+    fixed: true,
+  };
+};
+
+const recoverStoryStaleGenerationStates = (story: Story, now: number): { next: Story; fixedCount: number } => {
+  const fallbackTs =
+    (typeof story.updatedAt === 'number' && story.updatedAt) ||
+    (typeof story.createdAt === 'number' && story.createdAt) ||
+    now;
+  let fixedCount = 0;
+
+  const master = recoverAssetStateIfStale((story as any).masterKvState, now, fallbackTs);
+  if (master.fixed) fixedCount += 1;
+
+  const locations = (story.locations || []).map((loc) => {
+    const rec = recoverAssetStateIfStale((loc as any).assetState, now, fallbackTs);
+    if (rec.fixed) fixedCount += 1;
+    return rec.fixed ? { ...loc, assetState: rec.next } : loc;
+  });
+
+  const characters = (story.characters || []).map((ch) => {
+    const rec = recoverAssetStateIfStale((ch as any).assetState, now, fallbackTs);
+    if (rec.fixed) fixedCount += 1;
+    const looks = (ch.looks || []).map((lk) => {
+      const lookRec = recoverAssetStateIfStale((lk as any).assetState, now, fallbackTs);
+      if (lookRec.fixed) fixedCount += 1;
+      return lookRec.fixed ? { ...lk, assetState: lookRec.next } : lk;
+    });
+    if (rec.fixed || looks !== ch.looks) return { ...ch, assetState: rec.next, looks };
+    return ch;
+  });
+
+  const sequences = (story.sequences || []).map((seq) => {
+    const shots = (seq.shots || []).map((shot) => {
+      const rec = recoverAssetStateIfStale((shot as any).assetState, now, fallbackTs);
+      const prodRec = recoverProductionStateIfStale((shot as any).production, now, fallbackTs);
+      const shotTs =
+        (typeof (shot as any)?.assetState?.lastAttemptAt === 'number' && (shot as any).assetState.lastAttemptAt) || fallbackTs;
+      const staleAi =
+        (shot.aiState === 'rendering' || shot.aiState === 'thinking') && now - shotTs >= STALE_GENERATION_MAX_AGE_MS;
+      if (rec.fixed || staleAi || prodRec.fixed) {
+        if (rec.fixed) fixedCount += 1;
+        if (staleAi) fixedCount += 1;
+        if (prodRec.fixed) fixedCount += 1;
+        return {
+          ...shot,
+          aiState: staleAi ? 'idle' : shot.aiState,
+          aiPrompt: staleAi ? '' : shot.aiPrompt,
+          assetState: rec.fixed ? rec.next : shot.assetState,
+          production: prodRec.fixed ? prodRec.next : shot.production,
+        };
+      }
+      return shot;
+    });
+    return shots !== seq.shots ? { ...seq, shots } : seq;
+  });
+
+  if (fixedCount === 0) return { next: story, fixedCount: 0 };
+  return {
+    next: {
+      ...story,
+      masterKvState: master.fixed ? master.next : (story as any).masterKvState,
+      locations,
+      characters,
+      sequences,
+      updatedAt: now,
+    },
+    fixedCount,
+  };
+};
 
 function renumberShots(shots: Shot[]): Shot[] {
   return shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
 }
+
+function normalizeShotDurationSeconds(raw: unknown): 4 | 6 | 8 {
+  let n = Number(raw);
+  if (!Number.isFinite(n)) return 4;
+  // Some agent payloads may pass milliseconds.
+  if (n > 60) n = Math.round(n / 1000);
+  const rounded = Math.round(n);
+  if (rounded <= 5) return 4;
+  if (rounded <= 7) return 6;
+  return 8;
+}
+
+const preferTerminalStatus = (a: string, b: string) => {
+  const terminal = new Set(['done', 'error', 'blocked']);
+  const aTerm = terminal.has(String(a || '').toLowerCase());
+  const bTerm = terminal.has(String(b || '').toLowerCase());
+  if (aTerm && !bTerm) return true;
+  if (!aTerm && bTerm) return false;
+  return false;
+};
+
+const mergeAssetGenerationState = (current: any, incoming: any) => {
+  if (!current) return incoming;
+  if (!incoming) return current;
+  const currentTs = Number(current?.lastAttemptAt || 0);
+  const incomingTs = Number(incoming?.lastAttemptAt || 0);
+  if (incomingTs > currentTs) return incoming;
+  if (currentTs > incomingTs) return current;
+  return preferTerminalStatus(String(current?.status || ''), String(incoming?.status || '')) ? current : incoming;
+};
+
+const mergeShotProductionState = (current: any, incoming: any) => {
+  if (!current) return incoming;
+  if (!incoming) return current;
+  const score = (p: any) => Math.max(Number(p?.lastCompletedAt || 0), Number(p?.lastStartedAt || 0));
+  const currentScore = score(current);
+  const incomingScore = score(incoming);
+  if (incomingScore > currentScore) return incoming;
+  if (currentScore > incomingScore) return current;
+  return preferTerminalStatus(String(current?.status || ''), String(incoming?.status || '')) ? current : incoming;
+};
 
 function createBlankShot(
   story: Story,
@@ -66,15 +231,15 @@ function createBlankShot(
     locationId: init?.locationId || fallbackLocationId,
     timeOfDay: init?.timeOfDay || 'Day',
     description: init?.description || 'New shot',
-    duration: typeof init?.duration === 'number' && Number.isFinite(init.duration) ? Math.max(1, Math.round(init.duration)) : 4,
+    duration: normalizeShotDurationSeconds(init?.duration),
     thumbnailUrl: thumb,
     activeVersionId: 'v1',
     versions: [{ id: 'v1', imageUrl: thumb, createdAt: now, type: 'placeholder' }],
     elements: {
       [ElementType.SCRIPT]: { type: ElementType.SCRIPT, prompt: '', status: 'auto' },
       [ElementType.CASTING]: { type: ElementType.CASTING, prompt: '', status: 'manual', metadata: { characters: [] } },
-      [ElementType.CAMERA]: { type: ElementType.CAMERA, prompt: 'Cinematic shot', status: 'auto' },
-      [ElementType.LIGHTING]: { type: ElementType.LIGHTING, prompt: 'Natural cinematic lighting', status: 'auto' },
+      [ElementType.CAMERA]: { type: ElementType.CAMERA, prompt: 'Narrative shot', status: 'auto' },
+      [ElementType.LIGHTING]: { type: ElementType.LIGHTING, prompt: 'Scene-consistent lighting', status: 'auto' },
       [ElementType.AUDIO]: { type: ElementType.AUDIO, prompt: 'Ambient sound', status: 'auto' },
     },
     aiState: 'idle',
@@ -83,6 +248,17 @@ function createBlankShot(
 }
 
 const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
+  const normalizeReferenceImages = (list: any[]) =>
+    (Array.isArray(list) ? list : [])
+      .slice(0, 4)
+      .map((r) => ({
+        id: String(r?.id || `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+        url: String(r?.url || ''),
+        name: r?.name ? String(r.name) : undefined,
+        createdAt: typeof r?.createdAt === 'number' ? r.createdAt : Date.now(),
+      }))
+      .filter((r) => r.url);
+
   return actions.reduce<Story>((acc, action) => {
     if (action.type === 'UPDATE_STORY') {
       const patch = action.payload?.patch || action.payload || {};
@@ -93,6 +269,13 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         intent: typeof patch.intent === 'string' ? patch.intent : acc.intent,
         styleGuide: typeof patch.styleGuide === 'string' ? patch.styleGuide : acc.styleGuide,
         keyVisualUrl: typeof patch.keyVisualUrl === 'string' ? patch.keyVisualUrl : acc.keyVisualUrl,
+        referenceImages: Array.isArray(patch.referenceImages) ? normalizeReferenceImages(patch.referenceImages) : acc.referenceImages,
+        referenceMode: patch.referenceMode === 'auto' || patch.referenceMode === 'off' ? patch.referenceMode : acc.referenceMode,
+        proposedStyleGuide: typeof patch.styleGuide === 'string' ? '' : (acc as any).proposedStyleGuide,
+        proposedStyleGuideUpdatedAt:
+          typeof patch.styleGuide === 'string' ? Date.now() : (acc as any).proposedStyleGuideUpdatedAt,
+        proposedStyleGuideSourceKvVersionId:
+          typeof patch.styleGuide === 'string' ? '' : (acc as any).proposedStyleGuideSourceKvVersionId,
         updatedAt: Date.now(),
       };
 
@@ -164,12 +347,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       if (!sequenceId) return acc;
       const afterShotId = action.payload?.afterShotId ? String(action.payload.afterShotId) : undefined;
       const rawDuration = action.payload?.duration;
-      const normalizedDuration =
-        typeof rawDuration === 'number' && Number.isFinite(rawDuration)
-          ? rawDuration > 60
-            ? Math.round(rawDuration / 1000)
-            : Math.round(rawDuration)
-          : undefined;
+      const normalizedDuration = typeof rawDuration === 'number' && Number.isFinite(rawDuration) ? normalizeShotDurationSeconds(rawDuration) : undefined;
       const init = {
         locationId: action.payload?.locationId ? String(action.payload.locationId) : undefined,
         timeOfDay: action.payload?.timeOfDay ? String(action.payload.timeOfDay) : undefined,
@@ -299,10 +477,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 description: typeof patch.description === 'string' ? patch.description : s.description,
                 timeOfDay: typeof patch.timeOfDay === 'string' ? patch.timeOfDay : s.timeOfDay,
                 locationId: typeof patch.locationId === 'string' ? patch.locationId : s.locationId,
-                duration:
-                  typeof patch.duration === 'number' && Number.isFinite(patch.duration)
-                    ? Math.max(1, Math.round(patch.duration))
-                    : s.duration,
+                duration: typeof patch.duration === 'number' && Number.isFinite(patch.duration) ? normalizeShotDurationSeconds(patch.duration) : s.duration,
               };
             }),
           };
@@ -386,6 +561,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 description: typeof patch.description === 'string' ? patch.description : l.description,
                 visualStyle: typeof patch.visualStyle === 'string' ? patch.visualStyle : l.visualStyle,
                 status: patch.status === 'draft' || patch.status === 'locked' ? patch.status : l.status,
+                referenceImages: Array.isArray(patch.referenceImages) ? normalizeReferenceImages(patch.referenceImages) : l.referenceImages,
+                referenceMode: patch.referenceMode === 'auto' || patch.referenceMode === 'off' ? patch.referenceMode : l.referenceMode,
               }
             : l,
         ),
@@ -450,6 +627,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 name: typeof patch.name === 'string' ? patch.name : c.name,
                 description: typeof patch.description === 'string' ? patch.description : c.description,
                 status: patch.status === 'draft' || patch.status === 'locked' ? patch.status : c.status,
+                referenceImages: Array.isArray(patch.referenceImages) ? normalizeReferenceImages(patch.referenceImages) : c.referenceImages,
+                referenceMode: patch.referenceMode === 'auto' || patch.referenceMode === 'off' ? patch.referenceMode : c.referenceMode,
               }
             : c,
         ),
@@ -584,11 +763,14 @@ export default function App() {
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [isScriptEditorOpen, setIsScriptEditorOpen] = useState(false);
   const [isDirectorThinking, setIsDirectorThinking] = useState(false);
+  const [kvConsoleActionRequest, setKvConsoleActionRequest] = useState<null | { id: number; type: 'generate' | 'accept' | 'discard' | 'regenerate' }>(null);
   const [directorStream, setDirectorStream] = useState<null | {
     status?: string;
     reply?: string;
     steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
   }>(null);
+  const [pendingInteractionGeneration, setPendingInteractionGeneration] = useState<PendingInteractionGeneration | null>(null);
+  const staleRecoveryDoneRef = useRef(false);
 
   const activeStory = useMemo<Story | null>(() => {
     if (!workspace.activeProjectId) return null;
@@ -625,6 +807,50 @@ export default function App() {
   }, [aiSettings]);
 
   useEffect(() => {
+    if (staleRecoveryDoneRef.current) return;
+    staleRecoveryDoneRef.current = true;
+    if (!Array.isArray(workspace.projects) || workspace.projects.length === 0) return;
+    const now = Date.now();
+    let recovered = 0;
+    let changed = false;
+    const nextProjects = workspace.projects.map((p) => {
+      const r = recoverStoryStaleGenerationStates(p, now);
+      if (r.fixedCount > 0) {
+        changed = true;
+        recovered += r.fixedCount;
+        return r.next;
+      }
+      return p;
+    });
+    if (changed) {
+      setWorkspace((prev) => ({ ...prev, projects: nextProjects }));
+    }
+    if (recovered > 0) {
+      setTimeout(() => addToast(`Recovered ${recovered} stale generation states.`, 'info'), 0);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setWorkspace((prev) => {
+        if (!Array.isArray(prev.projects) || prev.projects.length === 0) return prev;
+        const now = Date.now();
+        let changed = false;
+        const projects = prev.projects.map((p) => {
+          const r = recoverStoryStaleGenerationStates(p, now);
+          if (r.fixedCount > 0) {
+            changed = true;
+            return r.next;
+          }
+          return p;
+        });
+        return changed ? { ...prev, projects } : prev;
+      });
+    }, 90_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (screen === 'project' && !workspace.activeProjectId) setScreen('library');
   }, [screen, workspace.activeProjectId]);
 
@@ -632,6 +858,13 @@ export default function App() {
     if (!workspace.activeProjectId) return;
     setSelection({ type: 'story', id: workspace.activeProjectId });
   }, [workspace.activeProjectId]);
+
+  useEffect(() => {
+    if (!pendingInteractionGeneration) return;
+    if (pendingInteractionGeneration.projectId !== workspace.activeProjectId) {
+      setPendingInteractionGeneration(null);
+    }
+  }, [workspace.activeProjectId, pendingInteractionGeneration]);
 
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
 
@@ -666,6 +899,11 @@ export default function App() {
       projects[idx] = { ...updated, updatedAt: now };
       return { ...prev, projects };
     });
+  };
+
+  const queueKvConsoleAction = (type: 'generate' | 'accept' | 'discard' | 'regenerate', projectId: string) => {
+    setSelection({ type: 'story', id: projectId });
+    setKvConsoleActionRequest({ id: Date.now() + Math.floor(Math.random() * 1000), type });
   };
 
   // ----- Workspace / Project Library -----
@@ -781,20 +1019,185 @@ export default function App() {
 
   };
 
-  const startShotProduction = (sequenceId: string, shotId: string) => {
+  const startShotProduction = async (args: { sequenceId: string; shotId: string }) => {
+    const now = Date.now();
+    const aspectRatio = activeStory?.aspectRatio === '9:16' ? '9:16' : '16:9';
+    const storyNow = activeStory;
+    const seq = storyNow?.sequences.find((s) => s.id === args.sequenceId);
+    const shot = seq?.shots.find((s) => s.id === args.shotId);
+    if (!storyNow || !seq || !shot) {
+      addToast('Shot not found', 'info');
+      return;
+    }
+
+    const activeVersion =
+      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
+      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
+    const imageUrl = String(activeVersion?.imageUrl || '').trim();
+    if (!imageUrl) {
+      addToast('Start Production blocked: generate/select a keyframe first.', 'info');
+      return;
+    }
+
+    const styleGuide = String((storyNow as any)?.styleGuide || '').trim();
+    const location = storyNow.locations.find((l) => l.id === shot.locationId);
+    const shotAction = String((shot.elements as any)?.[ElementType.SCRIPT]?.prompt || '').trim();
+    const cameraPrompt = String(shot.elements?.[ElementType.CAMERA]?.prompt || '').trim();
+    const lightingPrompt = String(shot.elements?.[ElementType.LIGHTING]?.prompt || '').trim();
+    const audioPrompt = String(shot.elements?.[ElementType.AUDIO]?.prompt || '').trim();
+    const authoredVideoPrompt = String((shot.elements as any)?.[ElementType.CAMERA]?.metadata?.videoPrompt || '').trim();
+    const inferredStyleTranslation = buildStylePromptTranslation({
+      texts: [storyNow.intent, styleGuide, location?.visualStyle, cameraPrompt, lightingPrompt, shot.description],
+      maxItems: 6,
+    });
+
+    const videoPrompt =
+      authoredVideoPrompt ||
+      [
+        'Use the provided source image as the first frame and preserve subject identity and environment continuity.',
+        inferredStyleTranslation ? `Style translation hints: ${inferredStyleTranslation}.` : '',
+        'Motion quality: natural physics, stable anatomy, no flicker, no abrupt style drift.',
+        'Output: coherent, style-consistent, high detail.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+    const durationSeconds = normalizeShotDurationSeconds(shot.duration);
+
     updateActiveStory((prev) => ({
       ...prev,
-      sequences: prev.sequences.map((seq) => {
-        if (seq.id !== sequenceId) return seq;
-        return {
-          ...seq,
-          shots: seq.shots.map((s) =>
-            s.id === shotId ? { ...s, production: { status: 'queued', lastStartedAt: Date.now() } } : s,
-          ),
-        };
-      }),
+      sequences: prev.sequences.map((s) =>
+        s.id !== args.sequenceId
+          ? s
+          : {
+              ...s,
+              shots: s.shots.map((x) =>
+                x.id !== args.shotId
+                  ? x
+                  : {
+                      ...x,
+                      duration: durationSeconds,
+                      production: {
+                        ...x.production,
+                        status: 'running',
+                        lastStartedAt: now,
+                        lastError: '',
+                        durationSeconds,
+                        resolution: '720p',
+                      },
+                    },
+              ),
+            },
+      ),
     }));
-    addToast('Shot production queued (placeholder)', 'success');
+
+    try {
+      const out = await generateVideoFromImage({
+        prompt: videoPrompt,
+        imageUrl,
+        durationSeconds,
+        aspectRatio,
+        resolution: '720p',
+        generateAudio: true,
+        promptSpec: {
+          shotDescription: String(shot.description || '').trim(),
+          action: shotAction,
+          style: styleGuide || String(location?.visualStyle || '').trim(),
+          styleTranslation: inferredStyleTranslation,
+          camera: cameraPrompt,
+          composition: `Aspect ratio ${aspectRatio}`,
+          mood: lightingPrompt,
+          audio: audioPrompt,
+          constraints: [
+            'Preserve character identity and wardrobe continuity.',
+            'Avoid flicker, morphing artifacts, and geometry instability.',
+            'No text overlays, subtitles, logos, or watermark.',
+          ],
+        },
+      });
+
+      const finishedAt = Date.now();
+      const nextVariantId = `pv-${finishedAt}-${Math.random().toString(16).slice(2, 8)}`;
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : (() => {
+                        const prevVariants = Array.isArray(x.production?.variants) ? x.production?.variants : [];
+                        const newVariant = {
+                          id: nextVariantId,
+                          videoUrl: out.videoUrl,
+                          createdAt: finishedAt,
+                          durationSeconds,
+                          resolution: '720p' as const,
+                          operationName: out.operationName,
+                          metadata: {
+                            prompt: videoPrompt,
+                            sourceImageUrl: imageUrl,
+                            sourceShotVersionId: String(activeVersion?.id || ''),
+                          },
+                        };
+                        return {
+                          ...x,
+                          production: {
+                            ...x.production,
+                            status: 'done',
+                            lastCompletedAt: finishedAt,
+                            lastError: '',
+                            durationSeconds,
+                            resolution: '720p',
+                            operationName: out.operationName,
+                            videoUrl: out.videoUrl,
+                            variants: [...prevVariants, newVariant],
+                            activeVariantId: newVariant.id,
+                          },
+                        };
+                      })(),
+                ),
+              },
+        ),
+      }));
+      addToast(`Shot production complete (${durationSeconds}s, 720p)`, 'success');
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      addDebugEvent({
+        level: 'error',
+        scope: 'asset.video',
+        message: 'Start production failed',
+        data: { error: err, sequenceId: args.sequenceId, shotId: args.shotId },
+      });
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : {
+                        ...x,
+                        production: {
+                          ...x.production,
+                          status: 'error',
+                          lastError: err,
+                          durationSeconds,
+                          resolution: '720p',
+                        },
+                      },
+                ),
+              },
+        ),
+      }));
+      addToast(`Shot production failed: ${err}`, 'info');
+    }
   };
 
   // ----- Render Helpers -----
@@ -923,11 +1326,39 @@ export default function App() {
   };
 
   const handleShotUpdate = (updatedShot: Shot) => {
+    const normalizedShot: Shot = {
+      ...updatedShot,
+      duration: normalizeShotDurationSeconds(updatedShot.duration),
+    };
     updateActiveStory((prev) => ({
       ...prev,
       sequences: prev.sequences.map((seq) => {
-        if (seq.shots.some((s) => s.id === updatedShot.id)) {
-          return { ...seq, shots: seq.shots.map((s) => (s.id === updatedShot.id ? updatedShot : s)) };
+        if (seq.shots.some((s) => s.id === normalizedShot.id)) {
+          return {
+            ...seq,
+            shots: seq.shots.map((s) => {
+              if (s.id !== normalizedShot.id) return s;
+              const mergedAssetState = mergeAssetGenerationState((s as any)?.assetState, (normalizedShot as any)?.assetState);
+              const mergedProduction = mergeShotProductionState((s as any)?.production, (normalizedShot as any)?.production);
+              const terminalAsset =
+                String((mergedAssetState as any)?.status || '').toLowerCase() === 'done' ||
+                String((mergedAssetState as any)?.status || '').toLowerCase() === 'error' ||
+                String((mergedAssetState as any)?.status || '').toLowerCase() === 'blocked';
+              const terminalProduction =
+                String((mergedProduction as any)?.status || '').toLowerCase() === 'done' ||
+                String((mergedProduction as any)?.status || '').toLowerCase() === 'error';
+              const nextAiState = terminalAsset || terminalProduction ? 'idle' : (normalizedShot.aiState ?? s.aiState);
+              return {
+                ...s,
+                ...normalizedShot,
+                duration: normalizeShotDurationSeconds(normalizedShot.duration),
+                aiState: nextAiState as any,
+                aiPrompt: nextAiState === 'idle' ? '' : (normalizedShot.aiPrompt ?? s.aiPrompt),
+                assetState: mergedAssetState,
+                production: mergedProduction,
+              };
+            }),
+          };
         }
         return seq;
       }),
@@ -1060,7 +1491,121 @@ export default function App() {
     // TODO: structured dialogue lines (future).
   };
 
-  const applyDirectorActions = (projectId: string, story: Story, actions: AgentAction[]) => {
+  const runAssetJobsForDirector = (args: {
+    projectId: string;
+    story: Story;
+    jobs: AssetJob[];
+    scopeLabel: string;
+    concurrency: number;
+  }) => {
+    const { projectId, story, jobs, scopeLabel, concurrency } = args;
+    if (!jobs.length) return;
+    if (aiSettings.image.provider === 'mock') {
+      addToast('Asset generation requested, but Image Provider is Mock.', 'info');
+      return;
+    }
+
+    const applyQueued = (s: Story) => jobs.reduce((acc, job) => applyAssetQueued(acc, job), s);
+    const queuedStory = applyQueued(story);
+    updateStoryById(projectId, (prev) => applyQueued(prev));
+    addToast(`Queued asset generation (${jobs.length})…`, 'info');
+    addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
+
+    setTimeout(() => {
+      let storyRef = queuedStory;
+      const handleAssetEvent = (ev: any) => {
+        if (ev.type === 'start') {
+          storyRef = applyAssetStart(storyRef, ev.job);
+          updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
+          addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
+        }
+        if (ev.type === 'success') {
+          storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl, ev.meta);
+          updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl, ev.meta));
+          addDebugEvent({
+            level: 'info',
+            scope: 'asset.exec',
+            message: 'Success',
+            data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
+          });
+          if (ev.job?.kind === 'character') {
+            const characterId = String(ev.job.characterId || '');
+            const ch = storyRef.characters.find((c) => c.id === characterId);
+            if (ch?.looks?.length) {
+              const hasShotJobsInBatch = jobs.some((j) => j.kind === 'shot');
+              const hasLookJobsInBatch = jobs.some(
+                (j) => j.kind === 'look' && String((j as any).characterId || '') === characterId,
+              );
+              if (!hasShotJobsInBatch && !hasLookJobsInBatch) {
+                const styleGuide = (storyRef as any)?.styleGuide;
+                const avatarVersionId = String((ch as any).activeAvatarVersionId || '').trim();
+                const lookJobs: AssetJob[] = ch.looks.map((lk) => ({
+                  kind: 'look',
+                  characterId,
+                  lookId: lk.id,
+                  prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+                  avatarVersionId,
+                }));
+                storyRef = lookJobs.reduce((acc, job) => applyAssetQueued(acc, job), storyRef);
+                updateStoryById(projectId, (prev) => lookJobs.reduce((acc, job) => applyAssetQueued(acc, job), prev));
+                executeAssetJobs({
+                  jobs: lookJobs,
+                  settings: aiSettings.image,
+                  aspectRatio: storyRef.aspectRatio,
+                  concurrency,
+                  getStoryForRefs: () => storyRef,
+                  maxAttempts: 3,
+                  stopAfterMasterKvFailure: true,
+                  onEvent: handleAssetEvent,
+                });
+              }
+            }
+          }
+        }
+        if (ev.type === 'blocked') {
+          storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
+          updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
+          addToast(`Blocked: ${ev.reason}`, 'info');
+          addDebugEvent({
+            level: 'warn',
+            scope: 'asset.exec',
+            message: 'Blocked',
+            data: { done: ev.done, total: ev.total, job: ev.job, reason: ev.reason },
+          });
+        }
+        if (ev.type === 'error') {
+          storyRef = applyAssetError(storyRef, ev.job, ev.error);
+          updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
+          addDebugEvent({
+            level: 'warn',
+            scope: 'asset.exec',
+            message: 'Error',
+            data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error },
+          });
+        }
+        if (ev.done === ev.total) addToast('Assets generated (director).', 'success');
+      };
+      executeAssetJobs({
+        jobs,
+        settings: aiSettings.image,
+        aspectRatio: story.aspectRatio,
+        concurrency,
+        getStoryForRefs: () => storyRef,
+        maxAttempts: 3,
+        stopAfterMasterKvFailure: true,
+        onEvent: handleAssetEvent,
+      }).catch(() => {
+        addToast('Asset generation had errors. Check Debug.', 'info');
+      });
+    }, 0);
+  };
+
+  const applyDirectorActions = (
+    projectId: string,
+    story: Story,
+    actions: AgentAction[],
+    opts?: { deferGeneration?: boolean },
+  ): DirectorApplyResult => {
     if (!actions.length) {
       addToast('No changes applied', 'info');
       return { applied: 0, dropped: 0, droppedActions: [] as AgentAction[] };
@@ -1071,7 +1616,9 @@ export default function App() {
       const p: any = a.payload || {};
       if (t === 'UPDATE_STORY') {
         const patch = p.patch || p;
-        const hasAny = ['title', 'logline', 'intent', 'styleGuide', 'keyVisualUrl'].some((k) => typeof patch?.[k] === 'string');
+        const hasString = ['title', 'logline', 'intent', 'styleGuide', 'keyVisualUrl'].some((k) => typeof patch?.[k] === 'string');
+        const hasRefPatch = Array.isArray(patch?.referenceImages) || patch?.referenceMode === 'auto' || patch?.referenceMode === 'off';
+        const hasAny = hasString || hasRefPatch;
         return hasAny ? { ok: true } : { ok: false, reason: 'UPDATE_STORY missing patch' };
       }
       if (t === 'NAVIGATE') {
@@ -1136,6 +1683,9 @@ export default function App() {
       if (t === 'GENERATE_PROJECT_ASSETS') {
         return { ok: true };
       }
+      if (t === 'GENERATE_MASTER_KV_PROPOSAL' || t === 'ACCEPT_KV_PROPOSAL' || t === 'DISCARD_KV_PROPOSAL') {
+        return { ok: true };
+      }
       return { ok: true };
     };
 
@@ -1157,8 +1707,17 @@ export default function App() {
     }
 
     const navigateActions = validActions.filter((a) => a.type === 'NAVIGATE');
-    const mutationActions = validActions.filter((a) => !a.type.startsWith('GENERATE_') && a.type !== 'NAVIGATE');
-    const generateActions = validActions.filter((a) => a.type.startsWith('GENERATE_'));
+    const kvFlowActions = validActions.filter((a) =>
+      a.type === 'GENERATE_MASTER_KV_PROPOSAL' || a.type === 'ACCEPT_KV_PROPOSAL' || a.type === 'DISCARD_KV_PROPOSAL',
+    );
+    const mutationActions = validActions.filter(
+      (a) =>
+        !a.type.startsWith('GENERATE_') &&
+        a.type !== 'NAVIGATE' &&
+        a.type !== 'ACCEPT_KV_PROPOSAL' &&
+        a.type !== 'DISCARD_KV_PROPOSAL',
+    );
+    const generateActions = validActions.filter((a) => a.type.startsWith('GENERATE_') && a.type !== 'GENERATE_MASTER_KV_PROPOSAL');
     const kvUpdated = mutationActions.some((a) => {
       if (a.type !== 'UPDATE_STORY') return false;
       const patch = (a as any)?.payload?.patch || (a as any)?.payload || {};
@@ -1183,11 +1742,34 @@ export default function App() {
       if (nextSel?.type && nextSel?.id) setSelection(nextSel);
     }
 
+    if (kvFlowActions.length) {
+      const hasDiscard = kvFlowActions.some((a) => a.type === 'DISCARD_KV_PROPOSAL');
+      const hasGenerate = kvFlowActions.some((a) => a.type === 'GENERATE_MASTER_KV_PROPOSAL');
+      const hasAccept = kvFlowActions.some((a) => a.type === 'ACCEPT_KV_PROPOSAL');
+      if (hasDiscard && hasGenerate) {
+        queueKvConsoleAction('regenerate', projectId);
+        addToast('KV regenerate requested by Director. Review in Project Dashboard.', 'info');
+      } else if (hasGenerate) {
+        queueKvConsoleAction('generate', projectId);
+        addToast('KV update requested by Director. Review in Project Dashboard.', 'info');
+      } else if (hasAccept) {
+        queueKvConsoleAction('accept', projectId);
+        addToast('Director requested accepting current KV proposal.', 'info');
+      } else if (hasDiscard) {
+        queueKvConsoleAction('discard', projectId);
+        addToast('Director requested discarding current KV proposal.', 'info');
+      }
+    }
+
     const storyAfterUpdates = mutationActions.length ? applyActionsToStory(story, mutationActions) : story;
 
     const deduped = new Map<string, AssetJob>();
     const addJob = (key: string, job: AssetJob) => {
       if (!deduped.has(key)) deduped.set(key, job);
+    };
+    const getAvatarVersionId = (ch: any) => {
+      const id = String(ch?.activeAvatarVersionId || '').trim();
+      return id || undefined;
     };
 
     // Auto-generate storyboard images for newly created shots.
@@ -1234,6 +1816,7 @@ export default function App() {
             characterId: ch.id,
             lookId,
             prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+            avatarVersionId: getAvatarVersionId(ch),
           });
         }
       }
@@ -1290,7 +1873,13 @@ export default function App() {
         const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
         const lk = ch?.looks?.find((x) => x.id === lookId);
         if (!ch || !lk) continue;
-        addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk, styleGuide) });
+        addJob(`look:${characterId}:${lookId}`, {
+          kind: 'look',
+          characterId,
+          lookId,
+          prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+          avatarVersionId: getAvatarVersionId(ch),
+        });
       }
     }
 
@@ -1341,14 +1930,14 @@ export default function App() {
       if (a.type === 'GENERATE_LOCATION_PREVIEW') {
         const locationId = String(payload.locationId || '');
         const loc = storyAfterUpdates.locations.find((l) => l.id === locationId);
-        if (loc) addJob(`location:${locationId}`, { kind: 'location', locationId, prompt: buildLocationPreviewPrompt(loc) });
+        if (loc) addJob(`location:${locationId}`, { kind: 'location', locationId, prompt: buildLocationPreviewPrompt(loc, (storyAfterUpdates as any)?.styleGuide) });
         continue;
       }
 
       if (a.type === 'GENERATE_CHARACTER_AVATAR') {
         const characterId = String(payload.characterId || '');
         const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
-        if (ch) addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch) });
+        if (ch) addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch, (storyAfterUpdates as any)?.styleGuide) });
         continue;
       }
 
@@ -1357,115 +1946,255 @@ export default function App() {
         const lookId = String(payload.lookId || '');
         const ch = storyAfterUpdates.characters.find((c) => c.id === characterId);
         const lk = ch?.looks?.find((x) => x.id === lookId);
-        if (ch && lk) addJob(`look:${characterId}:${lookId}`, { kind: 'look', characterId, lookId, prompt: buildCharacterLookPrompt(ch, lk, (storyAfterUpdates as any)?.styleGuide) });
+        if (ch && lk)
+          addJob(`look:${characterId}:${lookId}`, {
+            kind: 'look',
+            characterId,
+            lookId,
+            prompt: buildCharacterLookPrompt(ch, lk, (storyAfterUpdates as any)?.styleGuide),
+            avatarVersionId: getAvatarVersionId(ch),
+          });
         continue;
       }
     }
 
+    const ensurePrerequisiteJobs = () => {
+      const currentJobs = Array.from(deduped.values());
+      const hasShotJob = currentJobs.some((j) => j.kind === 'shot');
+      if (!hasShotJob) return;
+
+      const styleGuide = String((storyAfterUpdates as any)?.styleGuide || '').trim();
+      for (const j of currentJobs) {
+        if (j.kind !== 'shot') continue;
+        const seq = storyAfterUpdates.sequences.find((s) => s.id === j.sequenceId);
+        const shot = seq?.shots.find((s) => s.id === j.shot.id) || j.shot;
+        const locId = String(shot.locationId || '').trim();
+        if (locId) {
+          const loc = storyAfterUpdates.locations.find((l) => l.id === locId);
+          if (loc) addJob(`location:${locId}`, { kind: 'location', locationId: locId, prompt: buildLocationPreviewPrompt(loc, styleGuide) });
+        }
+
+        const cast = (shot.elements as any)?.CASTING?.metadata?.characters;
+        const castArr = Array.isArray(cast) ? cast : [];
+        for (const c of castArr.slice(0, 4)) {
+          const characterId = String(c?.id || '').trim();
+          if (!characterId) continue;
+          const ch = storyAfterUpdates.characters.find((x) => x.id === characterId);
+          if (!ch) continue;
+          addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch, styleGuide) });
+
+          const lookId = String(c?.activeLookId || '').trim();
+          if (!lookId) continue;
+          const lk = ch.looks?.find((x) => x.id === lookId);
+          if (!lk) continue;
+          addJob(`look:${characterId}:${lookId}`, {
+            kind: 'look',
+            characterId,
+            lookId,
+            prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+            avatarVersionId: getAvatarVersionId(ch),
+          });
+        }
+      }
+    };
+    ensurePrerequisiteJobs();
+
     const jobs = Array.from(deduped.values());
-    if (jobs.length && aiSettings.image.provider !== 'mock') {
-      addToast(`Queued asset generation (${jobs.length})…`, 'info');
-      addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Queue asset generation', data: { projectId, scope: scopeLabel, jobs: jobs.length, concurrency } });
-      setTimeout(() => {
-        let storyRef = storyAfterUpdates;
-        const handleAssetEvent = (ev: any) => {
-            if (ev.type === 'start') {
-              storyRef = applyAssetStart(storyRef, ev.job);
-              updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
-              addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
-            }
-            if (ev.type === 'success') {
-              storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl, ev.meta);
-              updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl, ev.meta));
-              addDebugEvent({
-                level: 'info',
-                scope: 'asset.exec',
-                message: 'Success',
-                data: { done: ev.done, total: ev.total, job: ev.job, imageUrl: ev.imageUrl, debug: ev.debug },
-              });
-              if (ev.job?.kind === 'character') {
-                const characterId = String(ev.job.characterId || '');
-                const ch = storyRef.characters.find((c) => c.id === characterId);
-                if (ch?.looks?.length) {
-                  const hasLookJobsInBatch = jobs.some(
-                    (j) => j.kind === 'look' && String((j as any).characterId || '') === characterId,
-                  );
-                  if (!hasLookJobsInBatch) {
-                    const styleGuide = (storyRef as any)?.styleGuide;
-                    const lookJobs = ch.looks.map((lk) => ({
-                      kind: 'look',
-                      characterId,
-                      lookId: lk.id,
-                      prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
-                    }));
-                    executeAssetJobs({
-                      jobs: lookJobs,
-                      settings: aiSettings.image,
-                      aspectRatio: storyRef.aspectRatio,
-                      concurrency,
-                      getStoryForRefs: () => storyRef,
-                      maxAttempts: 3,
-                      stopAfterMasterKvFailure: true,
-                      onEvent: handleAssetEvent,
-                    });
-                  }
-                }
-              }
-            }
-            if (ev.type === 'blocked') {
-              storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
-              updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
-              addToast(`Blocked: ${ev.reason}`, 'info');
-              addDebugEvent({
-                level: 'warn',
-                scope: 'asset.exec',
-                message: 'Blocked',
-                data: { done: ev.done, total: ev.total, job: ev.job, reason: ev.reason },
-              });
-            }
-            if (ev.type === 'error') {
-              storyRef = applyAssetError(storyRef, ev.job, ev.error);
-              updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
-              addDebugEvent({
-                level: 'warn',
-                scope: 'asset.exec',
-                message: 'Error',
-                data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error },
-              });
-            }
-            if (ev.done === ev.total) addToast('Assets generated (director).', 'success');
-          };
-        executeAssetJobs({
-          jobs,
-          settings: aiSettings.image,
-          aspectRatio: storyAfterUpdates.aspectRatio,
-          concurrency,
-          getStoryForRefs: () => storyRef,
-          maxAttempts: 3,
-          stopAfterMasterKvFailure: true,
-          onEvent: handleAssetEvent,
-        }).catch(() => {
-          addToast('Asset generation had errors. Check Debug.', 'info');
-        });
-      }, 0);
-    } else if (jobs.length) {
-      addToast('Asset generation requested, but Image Provider is Mock.', 'info');
+    if (jobs.length && opts?.deferGeneration) {
+      return {
+        applied: validActions.length,
+        dropped: invalid.length,
+        droppedActions: invalid,
+        deferredJobs: jobs,
+        scopeLabel,
+        concurrency,
+        storyAfterUpdates,
+      };
     }
-    return { applied: validActions.length, dropped: invalid.length, droppedActions: invalid };
+    if (jobs.length) runAssetJobsForDirector({ projectId, story: storyAfterUpdates, jobs, scopeLabel, concurrency });
+    return { applied: validActions.length, dropped: invalid.length, droppedActions: invalid, storyAfterUpdates };
+  };
+
+  const handleAcceptProposedStyleGuide = (args: { styleGuide: string; regenerateAssets: boolean }) => {
+    if (!activeStory || !workspace.activeProjectId) return;
+    const styleGuide = String(args.styleGuide || '').trim();
+    if (!styleGuide) return;
+    const projectId = workspace.activeProjectId;
+    updateStoryById(projectId, (prev) => ({
+      ...prev,
+      styleGuide,
+      proposedStyleGuide: '',
+      proposedStyleGuideUpdatedAt: Date.now(),
+      proposedStyleGuideSourceKvVersionId: '',
+      assetsSyncedKvVersionId: String((prev as any).activeKeyVisualVersionId || ''),
+    }));
+    addToast('Style guide accepted', 'success');
+    if (args.regenerateAssets) {
+      const storyForExec = {
+        ...activeStory,
+        styleGuide,
+        proposedStyleGuide: '',
+        proposedStyleGuideUpdatedAt: Date.now(),
+        proposedStyleGuideSourceKvVersionId: '',
+        assetsSyncedKvVersionId: String((activeStory as any).activeKeyVisualVersionId || ''),
+      } as Story;
+      applyDirectorActions(projectId, storyForExec, [{ type: 'GENERATE_PROJECT_ASSETS', payload: { scope: 'all' } }]);
+      addToast('Regenerating all assets with new style guide…', 'info');
+    }
+  };
+
+  const handleUpdateAssetsFromKv = (activeKvVersionId: string) => {
+    if (!activeStory || !workspace.activeProjectId) return;
+    const projectId = workspace.activeProjectId;
+    updateStoryById(projectId, (prev) => ({
+      ...prev,
+      assetsSyncedKvVersionId: String(activeKvVersionId || (prev as any).activeKeyVisualVersionId || ''),
+    }));
+    applyDirectorActions(projectId, activeStory, [{ type: 'GENERATE_PROJECT_ASSETS', payload: { scope: 'all' } }]);
+    addToast('Regenerating all assets from active KV…', 'info');
+  };
+
+  const parseChatImageAttachments = async (files: File[]) => {
+    const picked = (files || []).filter((f) => f.type.startsWith('image/')).slice(0, 4);
+    const reads = picked.map(
+      (file) =>
+        new Promise<{ id: string; url: string; name?: string; createdAt?: number }>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () =>
+            resolve({
+              id: `chat-ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              url: String(reader.result || ''),
+              name: file.name,
+              createdAt: Date.now(),
+            });
+          reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          reader.readAsDataURL(file);
+        }),
+    );
+    const settled = await Promise.allSettled(reads);
+    return settled
+      .filter((r): r is PromiseFulfilledResult<{ id: string; url: string; name?: string; createdAt?: number }> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((r) => r.url);
+  };
+
+  const attachReferencesBySelection = (
+    story: Story,
+    selectionSnapshot: SelectionState,
+    refs: Array<{ id: string; url: string; name?: string; createdAt?: number }>,
+  ): Story => {
+    if (!refs.length) return story;
+    const mergeRefs = (existing: any[]) => [...(Array.isArray(existing) ? existing : []), ...refs].slice(-4);
+    if (selectionSnapshot.type === 'location') {
+      return {
+        ...story,
+        locations: story.locations.map((l) =>
+          l.id === selectionSnapshot.id ? ({ ...l, referenceImages: mergeRefs((l as any).referenceImages), referenceMode: 'auto' } as any) : l,
+        ),
+      };
+    }
+    if (selectionSnapshot.type === 'character') {
+      return {
+        ...story,
+        characters: story.characters.map((c) =>
+          c.id === selectionSnapshot.id ? ({ ...c, referenceImages: mergeRefs((c as any).referenceImages), referenceMode: 'auto' } as any) : c,
+        ),
+      };
+    }
+    return { ...story, referenceImages: mergeRefs((story as any).referenceImages), referenceMode: 'auto' } as any;
+  };
+
+  const interactionCandidateSummary = useMemo(() => {
+    if (!pendingInteractionGeneration) return null;
+    const s = pendingInteractionGeneration.story;
+    const jobs = pendingInteractionGeneration.jobs || [];
+    const hasKv = jobs.some((j) => j.kind === 'masterkv');
+    const locationIds = Array.from(new Set(jobs.filter((j) => j.kind === 'location').map((j: any) => String(j.locationId || '')))).filter(Boolean);
+    const characterIds = Array.from(
+      new Set(
+        jobs
+          .filter((j) => j.kind === 'character' || j.kind === 'look')
+          .map((j: any) => String(j.characterId || '')),
+      ),
+    ).filter(Boolean);
+    return {
+      hasKv,
+      kvRefCount: Array.isArray((s as any).referenceImages) ? (s as any).referenceImages.length : 0,
+      locations: locationIds
+        .map((id) => s.locations.find((l) => l.id === id))
+        .filter(Boolean)
+        .map((l) => ({
+          id: String((l as any).id),
+          name: String((l as any).name || 'Location'),
+          desc: String((l as any).description || ''),
+          refs: Array.isArray((l as any).referenceImages) ? (l as any).referenceImages.length : 0,
+        })),
+      cast: characterIds
+        .map((id) => s.characters.find((c) => c.id === id))
+        .filter(Boolean)
+        .map((c) => ({
+          id: String((c as any).id),
+          name: String((c as any).name || 'Character'),
+          desc: String((c as any).description || ''),
+          refs: Array.isArray((c as any).referenceImages) ? (c as any).referenceImages.length : 0,
+        })),
+    };
+  }, [pendingInteractionGeneration]);
+
+  const confirmInteractionGeneration = () => {
+    const pending = pendingInteractionGeneration;
+    if (!pending) return;
+    runAssetJobsForDirector({
+      projectId: pending.projectId,
+      story: pending.story,
+      jobs: pending.jobs,
+      scopeLabel: pending.scopeLabel,
+      concurrency: pending.concurrency,
+    });
+    setPendingInteractionGeneration(null);
   };
 
   // ----- Director Console -----
 
-		  const handleDirectorMessage = async (msg: string) => {
+		  const handleDirectorMessage = async (msg: string, attachments: File[] = []) => {
 		    if (!activeStory || !workspace.activeProjectId) return;
+        if (pendingInteractionGeneration) {
+          setPendingInteractionGeneration(null);
+          addToast('Pending generation confirmation was cleared. Applying your new instruction.', 'info');
+        }
+        const isInteractionMode = String((aiSettings.direct as any)?.workflowMode || 'auto') === 'interaction';
+        const normalizedMsg = String(msg || '').trim() || 'Use attached images as references and continue with interaction flow.';
+        const directive = isInteractionMode
+          ? [
+              '[Interaction Mode]',
+              'First clarify intent and constraints. For KV/location/cast generation, ask for references and propose candidates before generation.',
+              'Do not run generation actions until user explicitly confirms to generate.',
+              `User: ${normalizedMsg}`,
+            ].join('\n')
+          : normalizedMsg;
 		      const projectId = workspace.activeProjectId;
         const selectionSnapshot = selection;
+        const parsedRefs = await parseChatImageAttachments(attachments || []);
+        const storyWithAttachments = parsedRefs.length
+          ? attachReferencesBySelection(activeStory, selectionSnapshot, parsedRefs)
+          : activeStory;
+        if (parsedRefs.length) {
+          updateStoryById(projectId, () => storyWithAttachments);
+          addToast(`Attached ${parsedRefs.length} reference image(s) to current context.`, 'info');
+        }
         setIsDirectorThinking(true);
         addDebugEvent({
           level: 'info',
           scope: 'agent.direct',
           message: 'Request',
-          data: { message: msg, selection: selectionSnapshot, storyId: activeStory.id },
+          data: {
+            message: directive,
+            rawMessage: msg,
+            selection: selectionSnapshot,
+            storyId: activeStory.id,
+            interactionMode: isInteractionMode,
+            attachmentCount: parsedRefs.length,
+          },
         });
         const useStreaming = Boolean((aiSettings.direct as any)?.useStreaming);
         if (useStreaming) {
@@ -1477,7 +2206,7 @@ export default function App() {
 	    const userEntry: AgentLogEntry = {
 	      id: `u-${Date.now()}`,
 	      role: 'user',
-      content: msg,
+      content: parsedRefs.length ? `${normalizedMsg}\n[Attachments: ${parsedRefs.map((x) => x.name || 'image').join(', ')}]` : normalizedMsg,
       timestamp: Date.now(),
     };
 
@@ -1491,9 +2220,9 @@ export default function App() {
           if (useStreaming) {
             res = await runDirectorCommandStream(
               {
-                message: msg,
+                message: directive,
                 selection: selectionSnapshot,
-                story: activeStory,
+                story: storyWithAttachments,
                 settings: aiSettings.direct,
                 allowSingleFallback: false,
                 useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
@@ -1538,9 +2267,9 @@ export default function App() {
             );
           } else {
             res = await runDirectorCommand({
-              message: msg,
+              message: directive,
               selection: selectionSnapshot,
-              story: activeStory,
+              story: storyWithAttachments,
               settings: aiSettings.direct,
               allowSingleFallback: false,
               useFunctionCalling: Boolean((aiSettings.direct as any)?.useFunctionCalling),
@@ -1612,7 +2341,20 @@ export default function App() {
           return;
         }
 		
-        const exec = applyDirectorActions(projectId, activeStory, res.actions);
+        const exec = applyDirectorActions(projectId, storyWithAttachments, res.actions, {
+          deferGeneration: isInteractionMode,
+        });
+        if (isInteractionMode && exec.deferredJobs?.length) {
+          setPendingInteractionGeneration({
+            id: `pending-gen-${Date.now()}`,
+            projectId,
+            jobs: exec.deferredJobs,
+            scopeLabel: exec.scopeLabel || 'director:interaction',
+            concurrency: exec.concurrency || 2,
+            story: exec.storyAfterUpdates || activeStory,
+          });
+          addToast('Interaction mode: generation is waiting for your confirmation.', 'info');
+        }
         if (exec) {
           setAgentHistoryByProject((prev) => ({
             ...prev,
@@ -1641,6 +2383,15 @@ export default function App() {
 
         const projectId = pendingDirectorMultiAgentFailure.projectId;
         const msg = pendingDirectorMultiAgentFailure.message;
+        const isInteractionMode = String((aiSettings.direct as any)?.workflowMode || 'auto') === 'interaction';
+        const directive = isInteractionMode
+          ? [
+              '[Interaction Mode]',
+              'First clarify intent and constraints. For KV/location/cast generation, ask for references and propose candidates before generation.',
+              'Do not run generation actions until user explicitly confirms to generate.',
+              `User: ${msg}`,
+            ].join('\n')
+          : msg;
         const selectionSnapshot = pendingDirectorMultiAgentFailure.selection;
         setIsDirectorThinking(true);
         const useStreaming = Boolean((aiSettings.direct as any)?.useStreaming);
@@ -1654,7 +2405,7 @@ export default function App() {
           const res = useStreaming
             ? await runDirectorCommandStream(
                 {
-                  message: msg,
+                  message: directive,
                   selection: selectionSnapshot,
                   story: activeStory,
                   settings: aiSettings.direct,
@@ -1700,7 +2451,7 @@ export default function App() {
                 }
               )
             : await runDirectorCommand({
-                message: msg,
+                message: directive,
                 selection: selectionSnapshot,
                 story: activeStory,
                 settings: aiSettings.direct,
@@ -1734,7 +2485,20 @@ export default function App() {
             return;
           }
 
-          const exec = applyDirectorActions(projectId, activeStory, res.actions);
+          const exec = applyDirectorActions(projectId, activeStory, res.actions, {
+            deferGeneration: isInteractionMode,
+          });
+          if (isInteractionMode && exec.deferredJobs?.length) {
+            setPendingInteractionGeneration({
+              id: `pending-gen-${Date.now()}`,
+              projectId,
+              jobs: exec.deferredJobs,
+              scopeLabel: exec.scopeLabel || 'director:interaction',
+              concurrency: exec.concurrency || 2,
+              story: exec.storyAfterUpdates || storyWithAttachments,
+            });
+            addToast('Interaction mode: generation is waiting for your confirmation.', 'info');
+          }
           if (exec) {
             setAgentHistoryByProject((prev) => ({
               ...prev,
@@ -1810,6 +2574,10 @@ export default function App() {
       <>
         <ProjectCreationWizard
           aiSettings={aiSettings}
+          workflowMode={String((aiSettings.direct as any)?.workflowMode || 'auto') as any}
+          onWorkflowModeChange={(mode) =>
+            setAiSettings((prev) => ({ ...prev, direct: { ...prev.direct, workflowMode: mode } as any }))
+          }
           onComplete={handleCreationComplete}
           onDraftProject={upsertWorkspaceProject}
           onCancel={() => setScreen('library')}
@@ -1876,7 +2644,14 @@ export default function App() {
               story={activeStory}
               onSelect={handleSelect}
               imageSettings={aiSettings.image}
+              directSettings={aiSettings.direct}
               onUpdateStory={updateActiveStory}
+              onAcceptProposedStyleGuide={handleAcceptProposedStyleGuide}
+              onUpdateAssets={handleUpdateAssetsFromKv}
+              kvActionRequest={kvConsoleActionRequest}
+              onKvActionHandled={(id) => {
+                setKvConsoleActionRequest((prev) => (prev && prev.id === id ? null : prev));
+              }}
               onToast={addToast}
               onPlayCinema={() => {
                 setIsPlayingMaster(true);
@@ -1913,12 +2688,25 @@ export default function App() {
               onUpdateShot={handleShotUpdate}
               imageSettings={aiSettings.image}
               onStartProduction={() => {
-                const seqId = selection.parentId || '';
-                if (!seqId) return;
+                const shotId = (activeItem as Shot).id;
+                const inferredSeqId =
+                  activeStory.sequences.find((seq) => (seq.shots || []).some((s) => s.id === shotId))?.id || '';
+                const seqId = selection.parentId || inferredSeqId;
+                if (!seqId) {
+                  addToast('Cannot determine sequence for this shot.', 'info');
+                  return;
+                }
                 setProductionTarget({ sequenceId: seqId, shotId: (activeItem as Shot).id });
               }}
               onBack={() =>
-                setSelection({ type: 'sequence', id: selection.parentId || activeStory.sequences[0]?.id || activeStory.id })
+                setSelection({
+                  type: 'sequence',
+                  id:
+                    selection.parentId ||
+                    activeStory.sequences.find((seq) => (seq.shots || []).some((s) => s.id === (activeItem as Shot).id))?.id ||
+                    activeStory.sequences[0]?.id ||
+                    activeStory.id,
+                })
               }
             />
           )}
@@ -1964,6 +2752,10 @@ export default function App() {
               onSendMessage={handleDirectorMessage}
               isThinking={isDirectorThinking}
               stream={directorStream || undefined}
+              workflowMode={String((aiSettings.direct as any)?.workflowMode || 'auto') as any}
+              onWorkflowModeChange={(mode) =>
+                setAiSettings((prev) => ({ ...prev, direct: { ...prev.direct, workflowMode: mode } as any }))
+              }
             />
           </div>
         )}
@@ -1978,6 +2770,10 @@ export default function App() {
               onSendMessage={handleDirectorMessage}
               isThinking={isDirectorThinking}
               stream={directorStream || undefined}
+              workflowMode={String((aiSettings.direct as any)?.workflowMode || 'auto') as any}
+              onWorkflowModeChange={(mode) =>
+                setAiSettings((prev) => ({ ...prev, direct: { ...prev.direct, workflowMode: mode } as any }))
+              }
             />
           </div>
         )}
@@ -2164,13 +2960,117 @@ export default function App() {
                       setPendingDirectorFallbackArmed(true);
                       return;
                     }
-                    applyDirectorActions(pendingDirectorFallback.projectId, activeStory, pendingDirectorFallback.res.actions);
+                    const isInteractionMode = String((aiSettings.direct as any)?.workflowMode || 'auto') === 'interaction';
+                    const exec = applyDirectorActions(
+                      pendingDirectorFallback.projectId,
+                      activeStory,
+                      pendingDirectorFallback.res.actions,
+                      { deferGeneration: isInteractionMode },
+                    );
+                    if (isInteractionMode && exec.deferredJobs?.length) {
+                      setPendingInteractionGeneration({
+                        id: `pending-gen-${Date.now()}`,
+                        projectId: pendingDirectorFallback.projectId,
+                        jobs: exec.deferredJobs,
+                        scopeLabel: exec.scopeLabel || 'director:interaction',
+                        concurrency: exec.concurrency || 2,
+                        story: exec.storyAfterUpdates || activeStory,
+                      });
+                      addToast('Interaction mode: generation is waiting for your confirmation.', 'info');
+                    }
                     setPendingDirectorFallback(null);
                     setPendingDirectorFallbackArmed(false);
                   }}
                   className="px-4 py-2 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest hover:opacity-90"
                 >
                   {pendingDirectorFallbackArmed ? 'Confirm Apply' : 'Apply Fallback'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingInteractionGeneration && pendingInteractionGeneration.projectId === activeStory.id && !isPlayingMaster && (
+        <div className="fixed inset-0 z-[4600] bg-black/65 backdrop-blur-sm p-6 flex items-center justify-center">
+          <div className="w-full max-w-3xl rounded-3xl border border-white/10 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden">
+            <div className="h-14 px-5 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60">
+              <div className="text-sm font-bold">Interaction Mode Confirmation</div>
+              <button
+                onClick={() => setPendingInteractionGeneration(null)}
+                className="p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
+                title="Close"
+              >
+                <X className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="text-sm text-zinc-700 dark:text-zinc-200">
+                Director has prepared candidates. Before generation, confirm whether you want to generate now or revise/upload references first.
+              </div>
+
+              {interactionCandidateSummary?.hasKv && (
+                <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">KV Candidate</div>
+                  <div className="text-sm text-zinc-700 dark:text-zinc-200">Master KV will be generated for current story intent/style.</div>
+                  <div className="mt-1 text-xs text-zinc-500">Reference images: {interactionCandidateSummary.kvRefCount}</div>
+                </div>
+              )}
+
+              {interactionCandidateSummary?.locations?.length ? (
+                <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Scene Candidates</div>
+                  <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
+                    {interactionCandidateSummary.locations.slice(0, 6).map((loc) => (
+                      <div key={loc.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-2">
+                        <div className="text-sm font-semibold">{loc.name}</div>
+                        <div className="text-xs text-zinc-500 line-clamp-2">{loc.desc || 'No description'}</div>
+                        <div className="text-[11px] text-zinc-500 mt-1">References: {loc.refs}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {interactionCandidateSummary?.cast?.length ? (
+                <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Cast Candidates</div>
+                  <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
+                    {interactionCandidateSummary.cast.slice(0, 6).map((ch) => (
+                      <div key={ch.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-2">
+                        <div className="text-sm font-semibold">{ch.name}</div>
+                        <div className="text-xs text-zinc-500 line-clamp-2">{ch.desc || 'No description'}</div>
+                        <div className="text-[11px] text-zinc-500 mt-1">References: {ch.refs}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex items-center justify-end gap-3 pt-1">
+                <button
+                  onClick={() => {
+                    setPendingInteractionGeneration(null);
+                    addToast('Generation cancelled. Tell Director what to revise.', 'info');
+                  }}
+                  className="px-4 py-2 rounded-xl bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-200 text-[11px] font-black uppercase tracking-widest hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  Modify In Chat
+                </button>
+                <button
+                  onClick={() => {
+                    setPendingInteractionGeneration(null);
+                    addToast('Upload references in Project / Location / Character editor, then ask Director to generate.', 'info');
+                  }}
+                  className="px-4 py-2 rounded-xl bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-200 text-[11px] font-black uppercase tracking-widest hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  Upload Refs First
+                </button>
+                <button
+                  onClick={confirmInteractionGeneration}
+                  className="px-4 py-2 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest hover:opacity-90"
+                >
+                  Generate Now
                 </button>
               </div>
             </div>
@@ -2188,7 +3088,7 @@ export default function App() {
             return { label: `Shot #${shot.sequence}${loc?.name ? ` · ${loc.name}` : ''}`, detail: shot.description };
           })()}
           onConfirm={() => {
-            startShotProduction(productionTarget.sequenceId, productionTarget.shotId);
+            startShotProduction({ sequenceId: productionTarget.sequenceId, shotId: productionTarget.shotId });
             setProductionTarget(null);
           }}
           onClose={() => setProductionTarget(null)}
