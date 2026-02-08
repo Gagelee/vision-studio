@@ -807,7 +807,7 @@ export const executeAssetJobs = async (args: {
               keyframeNotPoster: true,
               avoidPosed: true,
               avoidLookingAtCamera: true,
-              emphasizeCinematicComposition: true,
+              emphasizeNarrativeComposition: true,
             },
           };
           const out = await generateImageFromPrompt({
@@ -902,9 +902,7 @@ export const executeAssetJobs = async (args: {
 	          desiredAvatarUrl || (ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch, { activeOnly: true }) : '');
 	        const refs = avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : [];
 	        const out = await generateImageFromPrompt({
-	          prompt:
-	            job.prompt +
-	            '\n\nUse the provided reference image(s) to keep the exact same character identity (same person, same face). Only vary styling described for this look.',
+	          prompt: job.prompt,
 	          settings: args.settings,
 	          aspectRatio: '1:1',
 	          references: refs,

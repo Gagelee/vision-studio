@@ -694,7 +694,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const hasIntent = Boolean(String(intent || '').trim());
   const activeInputValue = String(isPreflightOpen ? preflightInput : intent || '').trim();
   const isSharedInputSelected = isSharedInputFocused || Boolean(activeInputValue);
-  const hasPreflightFooterContent = preflightReady || preflightAttachments.length > 0;
+  const hasPreflightFooterContent = preflightAttachments.length > 0;
   const isInteractionMode = workflowMode === 'interaction';
   const isPreflightTransition = isPreflightOpen && !isProcessing;
   const submitLabel = isInteractionMode ? 'Start Interaction' : 'Start Production';
@@ -833,17 +833,18 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
           className="relative z-10 w-full max-w-4xl text-center"
         >
             {isProcessing ? (
-                <div className="space-y-12 animate-in zoom-in-95 duration-500">
+                <div className="max-w-3xl mx-auto space-y-12 animate-in zoom-in-95 duration-500 rounded-[32px] border border-white/10 bg-black/55 backdrop-blur-[14px] px-8 py-10 shadow-[0_28px_80px_rgba(0,0,0,0.5)]">
                     <div className="relative w-24 h-24 mx-auto">
-                        <div className="absolute inset-0 rounded-full border-2 border-white/5 animate-[ping_2s_infinite]"></div>
-                        <div className="absolute inset-0 rounded-full border-t-2 border-[#ee4d2d] animate-spin"></div>
+                        <div className="absolute -inset-2 rounded-full bg-white/12 blur-xl opacity-60 animate-pulse"></div>
+                        <div className="absolute inset-0 rounded-full border-2 border-white/10 animate-[ping_2s_infinite]"></div>
+                        <div className="absolute inset-0 rounded-full border-t-2 border-white/90 border-r border-r-white/25 border-b border-b-white/10 border-l border-l-white/10 animate-spin"></div>
                         <div className="absolute inset-0 flex items-center justify-center">
-                            <Sparkles className="w-10 h-10 text-[#ee4d2d] animate-pulse" />
+                            <Sparkles className="w-10 h-10 text-white/90 animate-pulse" />
                         </div>
                     </div>
                     <div>
 	                        <h2 className="text-4xl font-black text-white tracking-tighter mb-4">Director AI is Thinking...</h2>
-	                        <p className="text-white/40 font-medium text-lg max-w-md mx-auto">
+	                        <p className="text-white/58 font-medium text-lg max-w-md mx-auto">
 	                            {phase === 'scaffold'
                                 ? 'Scaffolding story architecture, casting performers, and 置景 (Sets) for your masterwork.'
                                 : `Generating assets (${assetDone}/${Math.max(1, assetTotal)})…`}
@@ -950,32 +951,32 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                         </div>
                     )}
 	                    <div className="flex flex-col gap-2 max-w-xs mx-auto">
-	                        <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+	                        <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
 	                            <div
-                                  className="h-full bg-[#ee4d2d] transition-all duration-500"
+                                  className="h-full bg-[linear-gradient(90deg,rgba(214,226,242,0.72)_0%,rgba(255,255,255,0.98)_52%,rgba(202,215,232,0.76)_100%)] transition-all duration-500"
                                   style={{ width: `${progressPct}%` }}
                                 />
 	                        </div>
-	                        <div className="flex justify-between text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+	                        <div className="flex justify-between text-[10px] font-bold text-white/55 uppercase tracking-widest">
 	                            <span>Analysis</span>
 	                            <span>{phase === 'assets' ? `Assets ${assetDone}/${Math.max(1, assetTotal)}` : 'Scaffolding'}</span>
 	                        </div>
 	                          {phase === 'assets' && assetCurrent && (
-	                            <div className="text-[11px] text-white/30 font-mono break-words">
+	                            <div className="text-[11px] text-white/36 font-mono break-words">
 	                              {assetCurrent}{assetErrors ? ` (errors: ${assetErrors})` : ''}
 	                            </div>
 	                          )}
                             {phase === 'assets' && assetStartAt > 0 && (
-                              <div className="text-[10px] text-white/30 font-mono">
+                              <div className="text-[10px] text-white/36 font-mono">
                                 Elapsed: {Math.floor(Math.max(0, Date.now() - assetStartAt) / 1000)}s
                               </div>
                             )}
                             {phase === 'scaffold' && scaffoldCurrent && (
-                              <div className="text-[11px] text-white/30 font-mono break-words">
+                              <div className="text-[11px] text-white/36 font-mono break-words">
                                 {scaffoldCurrent}
                               </div>
                             )}
-		                          <div className="text-[10px] text-white/20 font-mono">
+		                          <div className="text-[10px] text-white/28 font-mono">
                             Image: {aiSettings.image.provider}/{aiSettings.image.model}
                             {aiSettings.image.provider === 'mock' ? ' (mock — assets will NOT be generated)' : ''}
                           </div>
@@ -1245,12 +1246,6 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                               isPreflightOpen ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-10 scale-[0.985]'
                             }`}
                           >
-                            {preflightReady && (
-                              <div className="rounded-xl border border-emerald-300/30 bg-emerald-500/12 p-3 text-xs text-emerald-100 whitespace-pre-wrap">
-                                {preflightBrief || 'Director marked READY_TO_SCAFFOLD.'}
-                              </div>
-                            )}
-
                             {preflightAttachments.length > 0 && (
                               <div className="rounded-xl border border-white/12 bg-black/30 p-3 space-y-2">
                                 <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-300 font-black">Attachment Inbox</div>

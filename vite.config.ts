@@ -17,6 +17,7 @@ import {
   buildTeamScaffoldEnvironmentDirectorPrompt,
   buildTeamScaffoldScriptWriterPrompt,
 } from './lib/ai/prompts';
+import { buildStylePromptTranslation } from './lib/ai/styleIntent';
 import { getPromptMetaForAgent } from './lib/ai/promptMeta';
 import { ProxyAgent } from 'undici';
 
@@ -1207,21 +1208,40 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       if (!geminiApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
 
       const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any): string => {
+        const core = String(basePrompt || '').trim();
+        const hasLabel = (labels: string[]) => {
+          if (!core) return false;
+          return labels.some((label) => new RegExp(`(^|\\n)\\s*${label}\\s*:`, 'i').test(core));
+        };
+        const pushIfMissing = (labels: string[], line: string) => {
+          if (!line || hasLabel(labels)) return;
+          parts.push(line);
+        };
         const parts: string[] = [];
         parts.push('Image-to-video: use the provided image as the starting frame; preserve subject identity and environment continuity.');
-        if (basePrompt) parts.push(`Core direction: ${basePrompt}`);
-        if (spec?.shotDescription) parts.push(`Scene: ${String(spec.shotDescription).trim()}`);
-        if (spec?.action) parts.push(`Action: ${String(spec.action).trim()}`);
-        if (spec?.camera) parts.push(`Camera motion: ${String(spec.camera).trim()}`);
-        if (spec?.composition) parts.push(`Composition: ${String(spec.composition).trim()}`);
-        if (spec?.lensEffect) parts.push(`Lens/look: ${String(spec.lensEffect).trim()}`);
-        if (spec?.mood) parts.push(`Lighting and mood: ${String(spec.mood).trim()}`);
-        if (spec?.style) parts.push(`Visual style: ${String(spec.style).trim()}`);
-        if (spec?.audio) parts.push(`Audio intent: ${String(spec.audio).trim()}`);
+        if (core) parts.push(`Core direction: ${core}`);
+        pushIfMissing(['scene'], spec?.shotDescription ? `Scene: ${String(spec.shotDescription).trim()}` : '');
+        pushIfMissing(['action'], spec?.action ? `Action: ${String(spec.action).trim()}` : '');
+        pushIfMissing(['camera motion', 'camera'], spec?.camera ? `Camera motion: ${String(spec.camera).trim()}` : '');
+        pushIfMissing(['composition'], spec?.composition ? `Composition: ${String(spec.composition).trim()}` : '');
+        pushIfMissing(['lens/look', 'lens'], spec?.lensEffect ? `Lens/look: ${String(spec.lensEffect).trim()}` : '');
+        pushIfMissing(['lighting and mood', 'lighting', 'mood'], spec?.mood ? `Lighting and mood: ${String(spec.mood).trim()}` : '');
+        pushIfMissing(['visual style', 'style', 'style guide'], spec?.style ? `Visual style: ${String(spec.style).trim()}` : '');
+        const inferredStyle = String(spec?.styleTranslation || '').trim() ||
+          buildStylePromptTranslation({
+            texts: [core, String(spec?.style || ''), String(spec?.shotDescription || ''), String(spec?.camera || ''), String(spec?.mood || '')],
+            maxItems: 6,
+          });
+        pushIfMissing(['style translation hints', 'style intent'], inferredStyle ? `Style translation hints: ${inferredStyle}.` : '');
+        pushIfMissing(['audio intent', 'audio'], spec?.audio ? `Audio intent: ${String(spec.audio).trim()}` : '');
         const constraints = Array.isArray(spec?.constraints) ? spec.constraints : [];
-        if (constraints.length) parts.push(`Constraints: ${constraints.map((x: any) => String(x).trim()).filter(Boolean).join(' ')}`);
-        parts.push('Motion quality: natural physics, coherent anatomy, stable geometry, no jitter/flicker, no abrupt style drift.');
-        parts.push('No text overlays, subtitles, logos, or watermark.');
+        pushIfMissing(['constraints'], constraints.length ? `Constraints: ${constraints.map((x: any) => String(x).trim()).filter(Boolean).join(' ')}` : '');
+        if (!/motion quality\s*:/i.test(core)) {
+          parts.push('Motion quality: natural physics, coherent anatomy, stable geometry, no jitter/flicker, no abrupt style drift.');
+        }
+        if (!/no text overlays|no subtitles|no watermark|no logos?/i.test(core)) {
+          parts.push('No text overlays, subtitles, logos, or watermark.');
+        }
         return parts.join('\n').slice(0, 8000);
       };
 
@@ -1277,14 +1297,48 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           const c = queue[i];
           const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiApiKey)}`;
           for (const u of [c, withKey]) {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 90_000);
             try {
-              const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiApiKey } };
-              const dispatcher = getProxyDispatcher(u, env);
-              if (dispatcher) init.dispatcher = dispatcher;
-              const resp = await fetch(u, init);
-              if (!resp.ok) continue;
+              const resp = await withRetries(
+                async () => {
+                  const controller = new AbortController();
+                  const timeout = setTimeout(() => controller.abort(), 90_000);
+                  try {
+                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiApiKey } };
+                    const dispatcher = getProxyDispatcher(u, env);
+                    const runVideoFetch = async (useDispatcher: boolean) => {
+                      const reqInit: any = { ...init };
+                      if (useDispatcher && dispatcher) reqInit.dispatcher = dispatcher;
+                      return fetch(u, reqInit);
+                    };
+                    let out: any;
+                    try {
+                      out = await runVideoFetch(true);
+                    } catch (e: any) {
+                      if (dispatcher && isRetryableNetworkError(e)) {
+                        out = await runVideoFetch(false);
+                      } else {
+                        throw e;
+                      }
+                    }
+                    if (!out.ok) {
+                      const text = await out.text().catch(() => '');
+                      const err: any = new Error(`Gemini video fetch HTTP ${out.status}${text ? `: ${text.slice(0, 240)}` : ''}`);
+                      err.status = out.status;
+                      err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(out.status));
+                      throw err;
+                    }
+                    return out;
+                  } finally {
+                    clearTimeout(timeout);
+                  }
+                },
+                {
+                  label: `gemini.video.download:${u.slice(0, 96)}`,
+                  maxAttempts: Math.max(1, Number(env.GEMINI_VIDEO_DOWNLOAD_ATTEMPTS || 3)),
+                  baseDelayMs: 400,
+                  maxDelayMs: 3000,
+                },
+              );
               const ct = String(resp.headers.get('content-type') || '').toLowerCase();
               if (ct.startsWith('video/')) {
                 const bytes = Buffer.from(await resp.arrayBuffer());
@@ -1301,8 +1355,6 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               }
             } catch {
               // ignore and try next
-            } finally {
-              clearTimeout(timeout);
             }
           }
         }
@@ -1325,7 +1377,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               const key = String(k || '').toLowerCase();
               const val = String(v || '').trim();
               if (!val) continue;
-              if (key.includes('uri') || key.includes('url') || key.includes('file') || val.startsWith('http://') || val.startsWith('https://') || val.startsWith('/')) {
+              if (
+                key.includes('uri') ||
+                key.includes('url') ||
+                key.includes('file') ||
+                val.startsWith('http://') ||
+                val.startsWith('https://') ||
+                val.startsWith('/') ||
+                val.startsWith('files/') ||
+                val.startsWith('gs://')
+              ) {
                 out.push(val);
               }
             } else if (v && typeof v === 'object') {
@@ -1349,6 +1410,73 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             `${base}/${n}:download?alt=media`,
           ]),
         );
+      };
+
+      const extractFilesPath = (value: string): string => {
+        const v = String(value || '').trim();
+        if (!v) return '';
+        if (/^files\//.test(v)) return v;
+        const idx = v.indexOf('/files/');
+        if (idx >= 0) return v.slice(idx + 1);
+        const idx2 = v.indexOf('files/');
+        if (idx2 >= 0) return v.slice(idx2);
+        return '';
+      };
+
+      const collectVideoNodes = (op: any): any[] => {
+        const r = op?.response;
+        const g = r?.generateVideoResponse;
+        const out: any[] = [];
+        const pushAny = (v: any) => {
+          if (!v) return;
+          if (Array.isArray(v)) out.push(...v.filter(Boolean));
+          else out.push(v);
+        };
+        pushAny(g?.generatedSamples);
+        pushAny(g?.generatedVideos);
+        pushAny(g?.videos);
+        pushAny(g?.samples);
+        pushAny(g?.outputs);
+        pushAny(g?.generatedVideo);
+        pushAny(g?.video);
+        pushAny(g?.sample);
+        pushAny(g?.output);
+        pushAny(r?.generatedSamples);
+        pushAny(r?.generatedVideos);
+        pushAny(r?.videos);
+        pushAny(r?.samples);
+        pushAny(r?.outputs);
+        pushAny(r?.video);
+        pushAny(op?.generatedSamples);
+        pushAny(op?.generatedVideos);
+        pushAny(op?.videos);
+        pushAny(op?.video);
+        return out;
+      };
+
+      const extractVideoUris = (node: any): string[] => {
+        const candidates = [
+          node?.video?.uri,
+          node?.video?.url,
+          node?.video?.downloadUri,
+          node?.video?.signedUri,
+          node?.video?.mediaLink,
+          node?.video?.file?.uri,
+          node?.video?.fileUri,
+          node?.video?.fileName,
+          node?.uri,
+          node?.url,
+          node?.downloadUri,
+          node?.signedUri,
+          node?.mediaLink,
+          node?.file?.uri,
+          node?.fileUri,
+          node?.fileName,
+          node?.name,
+        ]
+          .map((x) => String(x || '').trim())
+          .filter(Boolean);
+        return Array.from(new Set(candidates));
       };
 
       try {
@@ -1407,8 +1535,21 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                         }),
                         signal: controller.signal,
                       };
-                      if (predictDispatcher) init.dispatcher = predictDispatcher;
-                      const out = await fetch(predictUrl, init);
+                      const runPredictFetch = async (useDispatcher: boolean) => {
+                        const reqInit: any = { ...init };
+                        if (useDispatcher && predictDispatcher) reqInit.dispatcher = predictDispatcher;
+                        return fetch(predictUrl, reqInit);
+                      };
+                      let out: any;
+                      try {
+                        out = await runPredictFetch(true);
+                      } catch (e: any) {
+                        if (predictDispatcher && isRetryableNetworkError(e)) {
+                          out = await runPredictFetch(false);
+                        } else {
+                          throw e;
+                        }
+                      }
                       if (!out.ok) {
                         const text = await out.text().catch(() => '');
                         const err: any = new Error(`Gemini Video HTTP ${out.status}${text ? `: ${text}` : ''}`);
@@ -1459,20 +1600,46 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           await sleep(pollIntervalMs);
           const opUrl = `${buildGeminiOperationUrl({ env, operationName })}?key=${encodeURIComponent(geminiApiKey)}`;
           const opDispatcher = getProxyDispatcher(opUrl, env);
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 60_000);
-          try {
-            const init: any = { signal: controller.signal };
-            if (opDispatcher) init.dispatcher = opDispatcher;
-            const opRes = await fetch(opUrl, init);
-            if (!opRes.ok) {
-              const text = await opRes.text().catch(() => '');
-              throw new Error(`Gemini Video operation HTTP ${opRes.status}${text ? `: ${text}` : ''}`);
-            }
-            opData = (await opRes.json()) as any;
-          } finally {
-            clearTimeout(timeout);
-          }
+          opData = await withRetries(
+            async () => {
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 60_000);
+              try {
+                const init: any = { signal: controller.signal };
+                const runOpFetch = async (useDispatcher: boolean) => {
+                  const reqInit: any = { ...init };
+                  if (useDispatcher && opDispatcher) reqInit.dispatcher = opDispatcher;
+                  return fetch(opUrl, reqInit);
+                };
+                let opRes: any;
+                try {
+                  opRes = await runOpFetch(true);
+                } catch (e: any) {
+                  if (opDispatcher && isRetryableNetworkError(e)) {
+                    opRes = await runOpFetch(false);
+                  } else {
+                    throw e;
+                  }
+                }
+                if (!opRes.ok) {
+                  const text = await opRes.text().catch(() => '');
+                  const err: any = new Error(`Gemini Video operation HTTP ${opRes.status}${text ? `: ${text.slice(0, 240)}` : ''}`);
+                  err.status = opRes.status;
+                  err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(opRes.status));
+                  throw err;
+                }
+                return (await opRes.json()) as any;
+              } finally {
+                clearTimeout(timeout);
+              }
+            },
+            {
+              label: `gemini.video.poll:${operationName}`,
+              maxAttempts: Math.max(1, Number(env.GEMINI_VIDEO_POLL_ATTEMPTS || 4)),
+              baseDelayMs: 500,
+              maxDelayMs: 3500,
+            },
+          );
         }
 
         if (opData?.error) {
@@ -1480,16 +1647,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           throw new Error(`Gemini Video operation failed: ${message}`);
         }
 
-        const sample =
-          opData?.response?.generateVideoResponse?.generatedSamples?.[0] ||
-          opData?.response?.generatedSamples?.[0] ||
-          opData?.generatedSamples?.[0];
-        const primaryVideoUri = String(sample?.video?.uri || sample?.uri || '').trim();
-        const inline = sample?.video?.inlineData || sample?.inlineData;
+        const videoNodes = collectVideoNodes(opData);
+        const sample = videoNodes[0];
+        const primaryVideoUri = extractVideoUris(sample)[0] || '';
+        const inline = sample?.video?.inlineData || sample?.inlineData || sample?.video?.bytes || sample?.bytes;
         const inlineBytes = typeof inline?.data === 'string' ? Buffer.from(String(inline.data), 'base64') : null;
 
         const uriCandidates = new Set<string>();
         if (primaryVideoUri) uriCandidates.add(primaryVideoUri);
+        for (const n of videoNodes) {
+          for (const v of extractVideoUris(n)) uriCandidates.add(v);
+        }
         for (const s of collectStringCandidates(opData)) {
           const v = String(s || '').trim();
           if (!v) continue;
@@ -1497,9 +1665,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             uriCandidates.add(v);
             continue;
           }
-          if (/^files\//i.test(v)) {
-            for (const u of fileNameToCandidateUrls(v)) uriCandidates.add(u);
-          }
+          const filesPath = extractFilesPath(v);
+          if (filesPath) for (const u of fileNameToCandidateUrls(filesPath)) uriCandidates.add(u);
         }
 
         let videoBytes: Buffer | null = inlineBytes && inlineBytes.length ? inlineBytes : null;
@@ -1544,6 +1711,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             {
               opKeys: Object.keys(opData || {}).slice(0, 30),
               responseKeys: Object.keys(opData?.response || {}).slice(0, 30),
+              gvrKeys: Object.keys(opData?.response?.generateVideoResponse || {}).slice(0, 40),
               sampleKeys: Object.keys(sample || {}).slice(0, 30),
             },
             null,
@@ -1614,11 +1782,12 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                  trimmedSpec.styleGuide = trimmedSpec.styleGuide.slice(0, 2000);
 	                }
 	                const composePromptText =
-	                  `You are a senior cinematographer and prompt engineer.\n` +
+	                  `You are a senior visual direction prompt engineer.\n` +
 	                  `Compose the BEST single prompt for Gemini image generation (model: ${usedModel}).\n` +
-	                  `Goal: produce a film keyframe (narrative moment mid-action), not a poster, not concept art, not posed.\n` +
+	                  `Goal: produce a narrative keyframe (mid-action), not a poster, not concept art, not posed.\n` +
 	                  `Write a cohesive prompt (1-3 short paragraphs). No headings like TASK/SCENE. No bullet lists. No JSON inside the prompt.\n` +
-	                  `Include: concrete frame description, camera/lens + aperture + DoF, composition, lighting, mood, and style constraints.\n` +
+	                  `Preserve the medium/style in the input spec. Do not drift into generic photoreal/CGI wording unless explicitly requested.\n` +
+	                  `Include: concrete frame description, composition, lighting mood, and style constraints. Add lens/DoF jargon only when it helps the requested medium.\n` +
 	                  `Return ONLY JSON: {"prompt": string, "negativePrompt": string}.\n` +
 	                  `Input spec JSON:\n${JSON.stringify(trimmedSpec)}\n`;
 	                composed = await callGeminiJson({
@@ -1920,7 +2089,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           title: intent.split(/\\s+/).slice(0, 4).join(' ') || 'New Masterpiece',
           logline: `An AI-directed story based on: "${intent}"`,
           styleGuide:
-            'Style Guide: cinematic, cohesive art direction; consistent palette and lighting language; stable character identity; avoid drastic style shifts.',
+            'Style Guide: cohesive art direction; stable medium/texture language; consistent palette and lighting logic; stable character identity; avoid style drift and accidental CG look.',
           intent,
           keyVisualUrl: keyVisualUrl || 'https://images.unsplash.com/photo-1449156059431-789955fa190a?q=80&w=2070&auto=format&fit=crop',
           aspectRatio,
@@ -1949,9 +2118,39 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
 
+	        const inferStyleLockFromIntent = (rawIntent: string) => {
+	          const t = String(rawIntent || '').toLowerCase();
+	          const has = (re: RegExp) => re.test(t);
+	          if (has(/(写实|现实主义|写实电影|realistic|live[\s-]?action|photoreal|real[\s-]?film)/i)) {
+	            return {
+	              label: 'live-action realistic film',
+	              negative: 'oil painting, watercolor, ink wash, anime, illustration, stylized CGI',
+	            };
+	          }
+	          if (has(/(油画|oil\s*painting)/i)) return { label: 'oil painting', negative: 'live-action photorealism' };
+	          if (has(/(水墨|ink\s*wash|sumie|sumi-e)/i)) return { label: 'ink wash', negative: 'live-action photorealism, glossy CGI' };
+	          if (has(/(水彩|watercolor)/i)) return { label: 'watercolor', negative: 'live-action photorealism, glossy CGI' };
+	          if (has(/(anime|动画|二次元|cel)/i)) return { label: 'anime cel', negative: 'live-action photorealism, oil painting' };
+	          return null;
+	        };
+
+	        const applyStyleLock = (text: string, styleLock: { label: string; negative: string } | null, extras?: Array<string | undefined>) => {
+	          const base = String(text || '').trim();
+            const styleTranslation = buildStylePromptTranslation({ texts: [intent, ...(extras || [])], maxItems: 5 });
+            const styleLine = styleTranslation ? `Style translation hints: ${styleTranslation}.` : '';
+	          if (!styleLock) return [base, styleLine].filter(Boolean).join(base ? '\n' : '');
+	          const block =
+	            `Style lock (hard): ${styleLock.label}.\n` +
+	            `Do not drift to: ${styleLock.negative}.`;
+	          if (!base) return [block, styleLine].filter(Boolean).join('\n');
+            const withLock = /style lock \(hard\)/i.test(base) ? base : `${base}\n${block}`;
+	          return [withLock, styleLine].filter(Boolean).join('\n');
+	        };
+
 	        const buildFromSpec = (spec: any, source: string, usedProvider: string, usedModel: string, debugExtra?: any) => {
 	          // Minimal mapping into the app's Story schema. IDs generated server-side for stability.
 	          const projectId = mkId('proj');
+	          const styleLock = inferStyleLockFromIntent(intent);
 	          const locations = Array.isArray(spec?.locations) ? spec.locations : [];
 	          const characters = Array.isArray(spec?.characters) ? spec.characters : [];
 	          const sequences = Array.isArray(spec?.sequences) ? spec.sequences : [];
@@ -1971,19 +2170,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              `- No sudden style shifts; no text/watermarks.\n`
 	            );
 	          };
-	          const styleGuide = styleGuideRaw || styleGuideFallback();
+	          const styleGuide = applyStyleLock(styleGuideRaw || styleGuideFallback(), styleLock, [styleGuideRaw]);
 
           const locByName = new Map<string, any>();
-          const mappedLocations = locations.map((l: any) => {
-            const id = mkId('loc');
-            const item = {
-              id,
-              name: String(l?.name || 'Environment'),
-              description: String(l?.description || ''),
-              visualStyle: String(l?.visualStyle || ''),
-              previewUrl: 'https://images.unsplash.com/photo-1555680202-c86f0e12f086?q=80&w=2070&auto=format&fit=crop',
-              status: 'draft',
-            };
+	          const mappedLocations = locations.map((l: any) => {
+	            const id = mkId('loc');
+	            const item = {
+	              id,
+	              name: String(l?.name || 'Environment'),
+	              description: String(l?.description || ''),
+	              visualStyle: applyStyleLock(String(l?.visualStyle || ''), styleLock, [String(l?.description || ''), String(l?.visualStyle || '')]),
+	              previewUrl: 'https://images.unsplash.com/photo-1555680202-c86f0e12f086?q=80&w=2070&auto=format&fit=crop',
+	              status: 'draft',
+	            };
             locByName.set(item.name.toLowerCase(), item);
             return item;
           });
@@ -2046,8 +2245,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                elements: {
 	                  SCRIPT: { type: 'SCRIPT', prompt: String(sh?.script || ''), status: 'auto' },
 	                  CASTING: { type: 'CASTING', prompt: '', status: 'manual', metadata: { characters: cast } },
-	                  CAMERA: { type: 'CAMERA', prompt: String(sh?.camera || 'Cinematic shot'), status: 'auto', metadata: { videoPrompt: String(sh?.videoPrompt || '') } },
-	                  LIGHTING: { type: 'LIGHTING', prompt: String(sh?.lighting || 'Cinematic lighting'), status: 'auto' },
+	                  CAMERA: {
+	                    type: 'CAMERA',
+	                    prompt: String(sh?.camera || 'Narrative shot'),
+	                    status: 'auto',
+	                    metadata: { videoPrompt: applyStyleLock(String(sh?.videoPrompt || ''), styleLock, [String(sh?.description || ''), String(sh?.camera || ''), String(sh?.lighting || '')]) },
+	                  },
+	                  LIGHTING: { type: 'LIGHTING', prompt: String(sh?.lighting || 'Scene-consistent lighting'), status: 'auto' },
 	                  AUDIO: { type: 'AUDIO', prompt: String(sh?.audio || 'Ambient sound'), status: 'auto' },
 	                },
 	                aiState: 'idle',
@@ -3384,7 +3588,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              if (lower.includes('close up') || lower.includes('close-up') || lower.includes('closeup') || lower.includes('特写')) {
 	                actions.push({
 	                  type: 'UPDATE_ELEMENT',
-	                  payload: { shotId, sequenceId, elementType: 'CAMERA', prompt: 'Close-up shot, shallow depth of field' },
+	                  payload: { shotId, sequenceId, elementType: 'CAMERA', prompt: 'Close-up shot, subject-isolated framing' },
 	                });
 	                notes.push('camera → close-up');
 	              }
@@ -3392,7 +3596,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              if (lower.includes('wide') || lower.includes('establishing') || lower.includes('远景') || lower.includes('全景')) {
 	                actions.push({
 	                  type: 'UPDATE_ELEMENT',
-	                  payload: { shotId, sequenceId, elementType: 'CAMERA', prompt: 'Wide establishing shot, cinematic composition' },
+	                  payload: { shotId, sequenceId, elementType: 'CAMERA', prompt: 'Wide establishing shot, layered composition' },
 	                });
 	                notes.push('camera → wide');
 	              }
@@ -3400,7 +3604,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              if (lower.includes('warmer') || lower.includes('warm') || lower.includes('暖')) {
 	                actions.push({
 	                  type: 'UPDATE_ELEMENT',
-	                  payload: { shotId, sequenceId, elementType: 'LIGHTING', prompt: 'Warm cinematic lighting, golden tones' },
+	                  payload: { shotId, sequenceId, elementType: 'LIGHTING', prompt: 'Warm lighting, golden tones' },
 	                });
 	                notes.push('lighting → warmer');
 	              }
@@ -3408,7 +3612,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              if (lower.includes('cooler') || lower.includes('cool') || lower.includes('冷')) {
 	                actions.push({
 	                  type: 'UPDATE_ELEMENT',
-	                  payload: { shotId, sequenceId, elementType: 'LIGHTING', prompt: 'Cool cinematic lighting, blue tones' },
+	                  payload: { shotId, sequenceId, elementType: 'LIGHTING', prompt: 'Cool lighting, blue tones' },
 	                });
 	                notes.push('lighting → cooler');
 	              }

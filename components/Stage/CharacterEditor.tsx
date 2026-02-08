@@ -135,9 +135,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   const isDirty = JSON.stringify(draft) !== JSON.stringify(character);
   const isLocked = draft.status === 'locked';
   const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
-  const avatarStatus = character.assetState?.status;
-  const isAvatarBatchGenerating = avatarStatus === 'running' || avatarStatus === 'queued';
-  const isAvatarBusy = isGeneratingAvatar || isAvatarBatchGenerating;
+  const avatarStatus = draft.assetState?.status || character.assetState?.status;
+  const isAvatarBusy = isGeneratingAvatar;
   const referenceImages = Array.isArray((draft as any).referenceImages) ? (draft as any).referenceImages : [];
   const maxReferenceImages = 4;
   const useReferenceImages = (draft as any).referenceMode !== 'off';
@@ -183,17 +182,6 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     if (!imageSettings || imageSettings.provider === 'mock' || isLocked || isAvatarBusy) return;
     setGenerationError(null);
     setIsGeneratingAvatar(true);
-    const running: Character = {
-      ...draft,
-      assetState: {
-        ...(draft as any).assetState,
-        status: 'running',
-        lastAttemptAt: Date.now(),
-        attempts: ((draft as any).assetState?.attempts || 0) + 1,
-      },
-    };
-    setDraft(running);
-    onSave(running);
     try {
       const references = useReferenceImages
         ? referenceImages
@@ -346,9 +334,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
       }
       const refs = [{ url: avatarUrl, label: 'character base avatar' }];
       const out = await generateImageFromPrompt({
-        prompt:
-          buildCharacterLookPrompt(baseCharacter, look, styleGuide) +
-          `\n\nKeep the exact same character identity as the reference avatar (same person, same face). Only change wardrobe/makeup/style described for this look.`,
+        prompt: buildCharacterLookPrompt(baseCharacter, look, styleGuide),
         settings: imageSettings,
         aspectRatio: '1:1',
         references: refs,
@@ -627,13 +613,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                           title={!canGenerate ? 'Image provider is Mock' : 'Generate base avatar'}
                         >
                           <Sparkles className={`w-4 h-4 ${isAvatarBusy ? 'animate-pulse' : ''}`} />
-                          {avatarStatus === 'queued'
-                            ? 'Queued…'
-                            : isAvatarBusy
-                              ? 'Generating...'
-                              : draft.avatarUrl
-                                ? 'Generate Variant'
-                                : 'Generate Avatar'}
+                          {isAvatarBusy ? 'Generating...' : draft.avatarUrl ? 'Generate Variant' : 'Generate Avatar'}
                         </button>
                     </div>
 
@@ -645,7 +625,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
 	                            onClick={() => draft.avatarUrl && openLightbox({ url: draft.avatarUrl, title: `Character: ${draft.name}` })}
 	                          />
 	                          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-70"></div>
-                            {pendingAvatarVariantId && String(activeAvatarVersionId || '') === String(pendingAvatarVariantId) && (
+                            {pendingAvatarVariantId && (
                               <div className="absolute inset-x-4 bottom-4 bg-black/70 border border-white/10 rounded-2xl p-4 backdrop-blur-md flex items-center justify-between gap-3">
                                 <div className="text-xs text-zinc-200">
                                   New avatar variant ready. Generate looks for it?
@@ -845,9 +825,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                         const liveLook = character.looks?.find((lk) => lk.id === look.id);
                         const draftStatus = (look as any).assetState?.status;
                         const liveStatus = (liveLook as any)?.assetState?.status;
-                        const lookStatus = draftStatus && draftStatus !== 'queued' ? draftStatus : (liveStatus || draftStatus);
-                        const isLookBatchGenerating = lookStatus === 'running' || lookStatus === 'queued';
-                        const isLookBusy = Boolean(generatingLookIds[look.id]) || isLookBatchGenerating;
+                        const lookStatus = draftStatus || liveStatus;
+                        const isLookBusy = Boolean(generatingLookIds[look.id]);
                         return (
                           <div
                             key={look.id}
@@ -867,20 +846,22 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                                 </div>
                               )}
                             </div>
-                            <div className="flex-1 flex flex-col">
-                              <div className="flex justify-between items-start mb-1">
-                                <div className="flex items-center gap-2">
-                                  <h4 className="font-bold text-white">{look.name}</h4>
-                                  {lookStatus === 'running' && (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-300">
-                                      <Loader2 className="w-3 h-3 animate-spin" /> Generating
-                                    </span>
-                                  )}
-                                  {lookStatus === 'queued' && (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-300">
-                                      <Clock className="w-3 h-3" /> Queued
-                                    </span>
-                                  )}
+                            <div className="flex-1 min-w-0 flex flex-col">
+                              <div className="flex justify-between items-start mb-1 gap-2">
+                                <div className="min-w-0">
+                                  <h4 className="font-bold text-white break-words">{look.name}</h4>
+                                  <div className="mt-1 h-4">
+                                    {lookStatus === 'running' && (
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+                                        <Loader2 className="w-3 h-3 animate-spin" /> Generating
+                                      </span>
+                                    )}
+                                    {lookStatus === 'queued' && (
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+                                        <Clock className="w-3 h-3" /> Queued
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <button
@@ -893,7 +874,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                                     }`}
                                     title={!draft.avatarUrl ? 'Generate avatar first for best identity consistency' : 'Generate look variant'}
                                   >
-                                    {lookStatus === 'queued' ? 'Queued…' : isLookBusy ? 'Gen…' : look.previewUrl ? 'Variant' : 'Generate'}
+                                    {isLookBusy ? 'Gen…' : look.previewUrl ? 'Variant' : 'Generate'}
                                   </button>
                                   <button
                                     onClick={() => setEditingLook(look)}
@@ -909,7 +890,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                                   </button>
                                 </div>
                               </div>
-                              <p className="text-xs text-zinc-400 leading-relaxed line-clamp-3">{look.description}</p>
+                              <p className="text-xs text-zinc-400 leading-relaxed line-clamp-3 break-words overflow-hidden">{look.description}</p>
 
 		                              {showLookVariants && (
 		                                <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">

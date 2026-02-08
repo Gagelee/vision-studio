@@ -133,6 +133,20 @@ export interface ShotVersion {
   };
 }
 
+export interface ShotProductionVariant {
+  id: string;
+  videoUrl: string;
+  createdAt: number;
+  durationSeconds?: 4 | 6 | 8;
+  resolution?: '720p';
+  operationName?: string;
+  metadata?: {
+    prompt?: string;
+    sourceImageUrl?: string;
+    sourceShotVersionId?: string;
+  };
+}
+
 export interface DialogueLine {
   id: string;
   characterId: string;
@@ -162,6 +176,8 @@ export interface Shot {
     durationSeconds?: 4 | 6 | 8;
     resolution?: '720p';
     videoUrl?: string;
+    variants?: ShotProductionVariant[];
+    activeVariantId?: string;
   };
 }
 

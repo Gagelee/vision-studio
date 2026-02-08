@@ -2,7 +2,6 @@
 import React from 'react';
 import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2, Clock, Info } from 'lucide-react';
 import { Shot, ElementType, AspectRatio } from '../../types';
-import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ShotCardProps {
   shot: Shot;
@@ -19,8 +18,10 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
       : Number(shot.duration) <= 7
         ? 6
         : 8;
-  const isProcessing = shot.aiState && shot.aiState !== 'idle';
   const assetStatus = shot.assetState?.status;
+  const aiBusy = shot.aiState === 'rendering' || shot.aiState === 'thinking';
+  const hasTerminalAssetState = assetStatus === 'done' || assetStatus === 'error' || assetStatus === 'blocked';
+  const isProcessing = aiBusy && !hasTerminalAssetState;
   const isQueued = assetStatus === 'queued';
   const isRunning = assetStatus === 'running';
   const versions = Array.isArray((shot as any).versions) ? (shot as any).versions : [];
@@ -95,10 +96,10 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
 	        <img 
 	          src={shot.thumbnailUrl} 
 	          alt="Shot storyboard" 
-	          className={`w-full h-full object-cover transition-all duration-700 cursor-zoom-in ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
+	          className={`w-full h-full object-cover transition-all duration-700 cursor-pointer ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
 	          onClick={(e) => {
 	            e.stopPropagation();
-	            openLightbox({ url: shot.thumbnailUrl, title: `Shot #${shot.sequence}` });
+	            onSelect();
 	          }}
 	        />
 

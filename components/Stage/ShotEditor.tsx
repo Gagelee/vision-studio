@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
 import { buildShotKeyframePrompt } from '../../lib/ai/prompts';
-import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info } from 'lucide-react';
+import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info, ChevronRight } from 'lucide-react';
 import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
@@ -43,7 +43,61 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const assetStatus = shot.assetState?.status;
   const isBatchGenerating = assetStatus === 'running' || assetStatus === 'queued';
   const isBusyGenerating = isGenerating || isBatchGenerating;
-  const activeVideoUrl = String(shot.production?.videoUrl || '').trim();
+  const productionStatus = shot.production?.status;
+  const isProducingVideo = productionStatus === 'running' || productionStatus === 'queued';
+  const productionVariants = Array.isArray(shot.production?.variants) ? shot.production?.variants : [];
+  const fallbackVariant =
+    shot.production?.videoUrl && !productionVariants.length
+      ? [
+          {
+            id: 'pv-legacy',
+            videoUrl: String(shot.production.videoUrl),
+            createdAt: Number(shot.production.lastCompletedAt || Date.now()),
+            durationSeconds: shot.production.durationSeconds,
+            resolution: shot.production.resolution,
+            operationName: shot.production.operationName,
+          },
+        ]
+      : [];
+  const displayVideoVariants = productionVariants.length ? productionVariants : fallbackVariant;
+  const activeKeyframeVersionId = String(activeVersion?.id || '').trim();
+  const scopedVideoVariants = displayVideoVariants.filter((v: any) => {
+    const byVersionId = String(v?.metadata?.sourceShotVersionId || '').trim();
+    if (byVersionId) return byVersionId === activeKeyframeVersionId;
+    const byImageUrl = String(v?.metadata?.sourceImageUrl || '').trim();
+    if (byImageUrl && String(activeVersion?.imageUrl || '').trim()) {
+      return byImageUrl === String(activeVersion?.imageUrl || '').trim();
+    }
+    return false;
+  });
+  const activeVideoVariant =
+    scopedVideoVariants.find((v) => v.id === shot.production?.activeVariantId) ||
+    scopedVideoVariants[scopedVideoVariants.length - 1];
+  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
+  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
+
+  const selectVideoVariant = (variantId: string) => {
+    const hit = scopedVideoVariants.find((v) => v.id === variantId);
+    if (!hit) return;
+    onUpdateShot({
+      ...shot,
+      production: {
+        ...shot.production,
+        activeVariantId: hit.id,
+        videoUrl: hit.videoUrl,
+      },
+    });
+  };
+
+  const shiftVideoVariant = (direction: 'prev' | 'next') => {
+    if (scopedVideoVariants.length <= 1) return;
+    const cur = activeVideoIndex >= 0 ? activeVideoIndex : scopedVideoVariants.length - 1;
+    const next =
+      direction === 'prev'
+        ? (cur - 1 + scopedVideoVariants.length) % scopedVideoVariants.length
+        : (cur + 1) % scopedVideoVariants.length;
+    selectVideoVariant(scopedVideoVariants[next].id);
+  };
 
   const handleVersionSelect = (versionId: string) => {
     const version = shot.versions.find(v => v.id === versionId);
@@ -65,6 +119,19 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 
   const handleGenerateVersion = async () => {
     if (isBusyGenerating) return;
+    const startedAt = Date.now();
+    onUpdateShot({
+      ...shot,
+      aiState: 'rendering',
+      aiPrompt: 'MANUAL',
+      assetState: {
+        ...(shot.assetState || { status: 'idle', attempts: 0 }),
+        status: 'running',
+        lastError: '',
+        lastAttemptAt: startedAt,
+        attempts: (shot.assetState?.attempts || 0) + 1,
+      },
+    });
     setIsGenerating(true);
     setGenerationError(null);
     try {
@@ -196,6 +263,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
           versions: [{ ...base, imageUrl: img.imageUrl, createdAt: now, type: 'base', metadata: versionMeta }],
           activeVersionId: base.id,
           thumbnailUrl: img.imageUrl,
+          aiState: 'idle',
+          aiPrompt: '',
+          assetState: {
+            ...(shot.assetState || { status: 'idle' }),
+            status: 'done',
+            lastError: '',
+            lastAttemptAt: startedAt,
+          },
         });
         return;
       }
@@ -214,9 +289,29 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         versions: [...baseList, newVersion],
         activeVersionId: newVersion.id,
         thumbnailUrl: newVersion.imageUrl,
+        aiState: 'idle',
+        aiPrompt: '',
+        assetState: {
+          ...(shot.assetState || { status: 'idle' }),
+          status: 'done',
+          lastError: '',
+          lastAttemptAt: startedAt,
+        },
       });
     } catch (e) {
-      setGenerationError(e instanceof Error ? e.message : String(e));
+      const err = e instanceof Error ? e.message : String(e);
+      setGenerationError(err);
+      onUpdateShot({
+        ...shot,
+        aiState: 'idle',
+        aiPrompt: '',
+        assetState: {
+          ...(shot.assetState || { status: 'idle' }),
+          status: 'error',
+          lastError: err,
+          lastAttemptAt: startedAt,
+        },
+      });
     } finally {
       setIsGenerating(false);
     }
@@ -269,13 +364,28 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 </button>
             )}
             {onStartProduction && (
-              <button
-                onClick={onStartProduction}
-                className="flex items-center gap-2 bg-[#ee4d2d] hover:bg-[#f05d40] text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-colors shadow-lg shadow-orange-500/10"
-              >
-                <Play className="w-3.5 h-3.5 fill-current" />
-                Start Production
-              </button>
+              <div className="relative group">
+                <button
+                  onClick={onStartProduction}
+                  disabled={isProducingVideo}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-colors ${
+                    isProducingVideo
+                      ? 'bg-[#E50914] text-white shadow-lg shadow-red-900/40 animate-[pulse_1.6s_ease-in-out_infinite] cursor-not-allowed'
+                      : 'bg-[#E50914] hover:bg-[#B20710] text-white shadow-lg shadow-red-900/30'
+                  }`}
+                  title={isProducingVideo ? 'Generating Video' : 'Generate Video'}
+                >
+                  <span className="relative w-4 h-4 min-w-4 min-h-4 block">
+                    <span className="absolute inset-0 rounded-full border-2 border-white/85" />
+                    <span className="absolute inset-[4px] rounded-full bg-white" />
+                  </span>
+                </button>
+                {!isProducingVideo && (
+                  <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 -bottom-8 px-2 py-1 rounded-md bg-black/85 border border-white/15 text-[10px] font-bold uppercase tracking-wide text-white opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                    Start Generation
+                  </div>
+                )}
+              </div>
             )}
              <button className="flex items-center gap-2 bg-white text-black hover:bg-zinc-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-white/5">
                 <Download className="w-3.5 h-3.5" />
@@ -289,13 +399,45 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
                 {activeVideoUrl ? (
-                    <video
-                        src={activeVideoUrl}
-                        className="w-full h-full object-contain bg-black"
-                        controls
-                        loop
-                        playsInline
-                    />
+                    <>
+                      <video
+                          src={activeVideoUrl}
+                          className="w-full h-full object-contain bg-black"
+                          controls
+                          loop
+                          playsInline
+                          preload="metadata"
+                      />
+                      {scopedVideoVariants.length > 1 && (
+                        <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              shiftVideoVariant('prev');
+                            }}
+                            className="w-8 h-8 rounded-full bg-black/60 border border-white/20 text-white flex items-center justify-center hover:bg-black/75"
+                            title="Previous video variant"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </button>
+                          <div className="px-2.5 py-1 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-bold uppercase tracking-wider">
+                            v{activeVideoIndex + 1}/{scopedVideoVariants.length}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              shiftVideoVariant('next');
+                            }}
+                            className="w-8 h-8 rounded-full bg-black/60 border border-white/20 text-white flex items-center justify-center hover:bg-black/75"
+                            title="Next video variant"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+                    </>
                 ) : activeVersion ? (
                     isPlaceholderActive ? (
                       <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
@@ -316,13 +458,15 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                         <span>No generated keyframe</span>
                     </div>
                 )}
-                
-                {/* Overlay Play Button (Mock) */}
-                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all bg-black/20 backdrop-blur-[1px] cursor-pointer">
-                    <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white hover:scale-105 transition-transform shadow-[0_0_40px_rgba(255,255,255,0.2)]">
-                        <Play className="w-8 h-8 fill-current ml-2" />
-                    </div>
-                </div>
+
+                {/* Hover play hint: only when an actual video is present, never block controls. */}
+                {activeVideoUrl && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all bg-black/10 backdrop-blur-[1px]">
+                      <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow-[0_0_40px_rgba(255,255,255,0.2)]">
+                          <Play className="w-8 h-8 fill-current ml-2" />
+                      </div>
+                  </div>
+                )}
             </div>
         </div>
       </div>

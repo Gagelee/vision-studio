@@ -346,7 +346,7 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
     if (includesAny(msg, ['close up', 'close-up', 'closeup', '特写'])) {
       actions.push({
         type: 'UPDATE_ELEMENT',
-        payload: { shotId, sequenceId, elementType: ElementType.CAMERA, prompt: 'Close-up shot, shallow depth of field' },
+        payload: { shotId, sequenceId, elementType: ElementType.CAMERA, prompt: 'Close-up shot, subject-isolated framing' },
       });
       notes.push('camera → close-up');
     }
@@ -354,7 +354,7 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
     if (includesAny(msg, ['wide', 'establishing', '远景', '全景'])) {
       actions.push({
         type: 'UPDATE_ELEMENT',
-        payload: { shotId, sequenceId, elementType: ElementType.CAMERA, prompt: 'Wide establishing shot, cinematic composition' },
+        payload: { shotId, sequenceId, elementType: ElementType.CAMERA, prompt: 'Wide establishing shot, layered composition' },
       });
       notes.push('camera → wide');
     }
@@ -362,7 +362,7 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
     if (includesAny(msg, ['warmer', 'warm', '暖', '暖色'])) {
       actions.push({
         type: 'UPDATE_ELEMENT',
-        payload: { shotId, sequenceId, elementType: ElementType.LIGHTING, prompt: 'Warm cinematic lighting, golden tones' },
+        payload: { shotId, sequenceId, elementType: ElementType.LIGHTING, prompt: 'Warm lighting, golden tones' },
       });
       notes.push('lighting → warmer');
     }
@@ -370,7 +370,7 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
     if (includesAny(msg, ['cooler', 'cool', '冷', '冷色'])) {
       actions.push({
         type: 'UPDATE_ELEMENT',
-        payload: { shotId, sequenceId, elementType: ElementType.LIGHTING, prompt: 'Cool cinematic lighting, blue tones' },
+        payload: { shotId, sequenceId, elementType: ElementType.LIGHTING, prompt: 'Cool lighting, blue tones' },
       });
       notes.push('lighting → cooler');
     }

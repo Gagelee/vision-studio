@@ -106,6 +106,8 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- Prefer UPDATE_SHOT / SET_CAST for structural edits; prefer UPDATE_ELEMENT for camera/lighting/audio/script prompt edits.\n` +
     `- For screenplay requests, write SCRIPT prompts in screenplay style (action lines + dialogue).\n` +
     `- For "video prompt" requests, put the production-ready prompt into UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.videoPrompt=string).\n` +
+    `- Infer style intent from user wording and translate it into executable prompt terms. Example: cinematic -> filmic framing/contrast/depth; epic -> monumental scale/wide establishing/strong silhouettes.\n` +
+    `- Keep abstract style words and concrete execution words together in updates (camera/lighting/styleGuide/videoPrompt).\n` +
     `- Keep the action list short (1-5 actions). For bulk generation, use GENERATE_PROJECT_ASSETS.\n` +
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
     `- If user asks to update/regenerate master KV through director, prefer GENERATE_MASTER_KV_PROPOSAL (not GENERATE_PROJECT_ASSETS masterkv).\n` +

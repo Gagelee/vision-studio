@@ -13,6 +13,7 @@ export interface GenerateVideoFromImageRequest {
     shotDescription?: string;
     action?: string;
     style?: string;
+    styleTranslation?: string;
     camera?: string;
     composition?: string;
     lensEffect?: string;
