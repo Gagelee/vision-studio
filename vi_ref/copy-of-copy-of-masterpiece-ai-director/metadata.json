@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Copy of Masterpiece AI Director",
+  "description": "A high-end, Apple-inspired AI interface for narrative initialization and visual generation, featuring smooth cinematic transitions and high-tech aesthetics.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

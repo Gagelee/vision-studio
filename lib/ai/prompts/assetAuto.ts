@@ -1,7 +1,7 @@
 import type { Character, CharacterLook, Location } from '../../../types';
 
 const baseRulesCinematic = () =>
-  `No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly (not default photoreal unless requested).`;
+  `No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.`;
 const baseRulesReference = () => `No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.`;
 
 const styleBlock = (styleGuide?: string) => {
@@ -33,6 +33,7 @@ export const buildMasterKeyVisualPrompt = (args: { intent?: string; logline?: st
     `Master Key Visual (KV) for a film project. ${baseRulesCinematic()}\n` +
     `High-level goal: a single iconic, consistent visual constitution that all assets should follow.\n` +
     (styleGuide ? styleBlock(styleGuide) : '') +
+    `Medium lock: preserve declared medium/texture language. Avoid glossy 3D-render look unless explicitly requested.\n` +
     `Style requirements: cohesive palette, consistent visual language, stable medium/texture/lighting intent. Avoid drastic style shifts.\n` +
     (intent ? `Intent: ${intent}\n` : '') +
     (logline ? `Logline: ${logline}\n` : '')
@@ -41,7 +42,7 @@ export const buildMasterKeyVisualPrompt = (args: { intent?: string; logline?: st
 
 export const buildLocationPreviewPrompt = (loc: Location, styleGuide?: string) => {
   return (
-    `Cinematic environment concept art. ${baseRulesCinematic()}\n` +
+    `Environment keyframe still for production continuity. ${baseRulesCinematic()}\n` +
     styleBlock(styleGuide) +
     `Name: ${loc.name}\n` +
     `Description: ${loc.description}\n` +

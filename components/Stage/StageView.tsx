@@ -3,7 +3,6 @@ import React, { useMemo, useState } from 'react';
 import { ElementType, Sequence, Shot, Location, AspectRatio } from '../../types';
 import { ShotCard } from './ShotCard';
 import { Clock, Plus, Maximize2, Minimize2, Play, LayoutGrid, ChevronLeft, ChevronRight, Trash2, List, ScrollText, Copy } from 'lucide-react';
-import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface StageViewProps {
   sequence: Sequence;
@@ -250,7 +249,7 @@ export const StageView: React.FC<StageViewProps> = ({
       {!isImmersive && sequence.shots.length > 0 && (
           <div className="absolute bottom-0 left-0 right-0 h-24 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-xl border-t border-zinc-200 dark:border-zinc-800 px-8 flex items-center gap-4 z-40 overflow-x-auto no-scrollbar shadow-[0_-10px_40px_rgba(0,0,0,0.1)]">
               <div className="flex items-center gap-2 shrink-0 pr-4 border-r border-zinc-200 dark:border-zinc-800">
-                  <List className="w-4 h-4 text-[#ee4d2d]" />
+                  <List className="w-4 h-4 text-zinc-700 dark:text-zinc-200" />
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Sequence Strip</span>
               </div>
               <div className="flex items-center gap-3 py-2">
@@ -258,14 +257,14 @@ export const StageView: React.FC<StageViewProps> = ({
                       <div 
                         key={shot.id} 
                         onClick={() => onSelectShot(shot.id)}
-                        className="relative w-24 aspect-video rounded-lg overflow-hidden border-2 border-zinc-200 dark:border-zinc-800 cursor-pointer hover:border-[#ee4d2d] group shrink-0 transition-all"
+                        className="relative w-24 aspect-video rounded-lg overflow-hidden border-2 border-zinc-200 dark:border-zinc-800 cursor-pointer hover:border-zinc-500 dark:hover:border-zinc-500 group shrink-0 transition-all"
                       >
                       <img
                         src={shot.thumbnailUrl}
-                        className="w-full h-full object-cover grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100 transition-all cursor-zoom-in"
+                        className="w-full h-full object-cover grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100 transition-all cursor-pointer"
                         onClick={(e) => {
                           e.stopPropagation();
-                          openLightbox({ url: shot.thumbnailUrl, title: `Shot #${shot.sequence}` });
+                          onSelectShot(shot.id);
                         }}
                       />
                           <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-transparent transition-all">
@@ -275,7 +274,7 @@ export const StageView: React.FC<StageViewProps> = ({
                   ))}
                   <button 
                     onClick={() => onAddShot()}
-                    className="w-12 aspect-video rounded-lg border-2 border-dashed border-zinc-200 dark:border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-[#ee4d2d] hover:border-[#ee4d2d] transition-all shrink-0 bg-white dark:bg-zinc-900"
+                    className="w-12 aspect-video rounded-lg border-2 border-dashed border-zinc-200 dark:border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-500 dark:hover:border-zinc-500 transition-all shrink-0 bg-white dark:bg-zinc-900"
                   >
                       <Plus className="w-4 h-4" />
                   </button>

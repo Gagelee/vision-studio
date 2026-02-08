@@ -2,7 +2,6 @@
 import React from 'react';
 import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2, Clock, Info } from 'lucide-react';
 import { Shot, ElementType, AspectRatio } from '../../types';
-import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ShotCardProps {
   shot: Shot;
@@ -12,8 +11,17 @@ interface ShotCardProps {
 }
 
 export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, aspectRatio = '16:9' }) => {
-  const isProcessing = shot.aiState && shot.aiState !== 'idle';
+  const normalizedDuration = [4, 6, 8].includes(Number(shot.duration))
+    ? Number(shot.duration)
+    : Number(shot.duration) <= 5
+      ? 4
+      : Number(shot.duration) <= 7
+        ? 6
+        : 8;
   const assetStatus = shot.assetState?.status;
+  const aiBusy = shot.aiState === 'rendering' || shot.aiState === 'thinking';
+  const hasTerminalAssetState = assetStatus === 'done' || assetStatus === 'error' || assetStatus === 'blocked';
+  const isProcessing = aiBusy && !hasTerminalAssetState;
   const isQueued = assetStatus === 'queued';
   const isRunning = assetStatus === 'running';
   const versions = Array.isArray((shot as any).versions) ? (shot as any).versions : [];
@@ -77,7 +85,7 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
           )}
           <span className="bg-black/60 backdrop-blur-md text-zinc-300 text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 border border-white/10 shadow-sm">
             <MonitorPlay className="w-3 h-3" />
-            {shot.duration}s
+            {normalizedDuration}s
           </span>
         </div>
       </div>
@@ -88,10 +96,10 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
 	        <img 
 	          src={shot.thumbnailUrl} 
 	          alt="Shot storyboard" 
-	          className={`w-full h-full object-cover transition-all duration-700 cursor-zoom-in ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
+	          className={`w-full h-full object-cover transition-all duration-700 cursor-pointer ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
 	          onClick={(e) => {
 	            e.stopPropagation();
-	            openLightbox({ url: shot.thumbnailUrl, title: `Shot #${shot.sequence}` });
+	            onSelect();
 	          }}
 	        />
 

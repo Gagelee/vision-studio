@@ -183,7 +183,7 @@ export const createLocalMockProject = (intent: string, aspectRatio: AspectRatio,
     intent,
     logline: `An AI-directed story based on: "${intent.trim()}"`,
     styleGuide:
-      'Style Guide: cinematic, cohesive art direction; consistent palette and lighting language; stable character identity; avoid drastic style shifts.',
+      'Style Guide: cohesive art direction; stable medium/texture language; consistent palette and lighting logic; stable character identity; avoid style drift and accidental CG look.',
     aspectRatio,
     keyVisualUrl: keyVisualUrl || IMAGES.SKYBRIDGE,
     status: 'ready',

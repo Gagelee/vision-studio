@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, FolderOpen, MapPin, Globe, Users, Plus, Sun, Moon, LayoutTemplate, Home, Settings, Bug, BookText, Loader2, Clock } from 'lucide-react';
+import { Film, FolderOpen, MapPin, Globe, Users, Plus, LayoutTemplate, Home, Settings, Bug, BookText, Loader2, Clock } from 'lucide-react';
 import { Story, SelectionState } from '../../types';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
@@ -24,8 +24,6 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ 
     story, 
     selection, 
-    theme,
-    toggleTheme,
     onSelect, 
     onBackToLibrary,
     onOpenAiSettings,
@@ -41,57 +39,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <div className="w-64 bg-zinc-50 dark:bg-black border-r border-zinc-200 dark:border-zinc-800 flex flex-col h-full shrink-0 z-20 transition-colors duration-300">
       {/* App Header */}
-      <div className="h-14 px-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-white dark:bg-zinc-950">
-        <div className="flex items-center gap-2">
-            <div className="w-6 h-6 bg-[#ee4d2d] rounded-md flex items-center justify-center text-white shadow-sm shadow-orange-500/20">
-                <span className="font-bold text-xs italic">S</span>
+      <div className="h-16 px-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-white dark:bg-zinc-950">
+        <div className="flex items-center gap-2.5 min-w-0">
+            <div className="relative w-7 h-7 min-w-7 min-h-7 aspect-square shrink-0 rounded-full border border-zinc-300/80 dark:border-white/45 bg-white/90 dark:bg-white/15 shadow-[0_0_0_1px_rgba(255,255,255,0.45),0_0_16px_rgba(255,255,255,0.45)]">
+                <div className="pointer-events-none absolute -inset-[3px] rounded-full bg-white/35 dark:bg-white/45 blur-[4px] opacity-70 animate-[pulse_2.8s_ease-in-out_infinite]"></div>
+                <div className="absolute inset-[6px] rounded-full bg-zinc-900/90 dark:bg-white/90"></div>
             </div>
-            <h1 className="font-bold text-zinc-900 dark:text-zinc-100 tracking-tight text-xs uppercase">Vision Studio</h1>
+            <h1 className="font-extrabold text-zinc-900 dark:text-zinc-100 tracking-[0.04em] text-[11px] uppercase leading-[1.05]">
+              <span className="block">Vision</span>
+              <span className="block">Studio</span>
+            </h1>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="ml-1 pl-2 border-l border-zinc-200 dark:border-zinc-800 flex items-center gap-1 shrink-0">
           {onBackToLibrary && (
             <button
               onClick={onBackToLibrary}
-              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              className="w-6 h-6 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
               title="Project Library"
             >
-              <Home className="w-4 h-4" />
+              <Home className="w-3.5 h-3.5" />
             </button>
           )}
           {onOpenAiSettings && (
             <button
               onClick={onOpenAiSettings}
-              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              className="w-6 h-6 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
               title="AI Settings"
             >
-              <Settings className="w-4 h-4" />
+              <Settings className="w-3.5 h-3.5" />
             </button>
           )}
           {onOpenDebug && (
             <button
               onClick={onOpenDebug}
-              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              className="w-6 h-6 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
               title="Debug (Cmd/Ctrl+Shift+D)"
             >
-              <Bug className="w-4 h-4" />
+              <Bug className="w-3.5 h-3.5" />
             </button>
           )}
           {onOpenScript && (
             <button
               onClick={onOpenScript}
-              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              className="w-6 h-6 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
               title="Script Editor"
             >
-              <BookText className="w-4 h-4" />
+              <BookText className="w-3.5 h-3.5" />
             </button>
           )}
-          <button 
-              onClick={toggleTheme}
-              className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
-              title="Toggle Theme"
-          >
-              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </button>
         </div>
       </div>
       
@@ -108,10 +103,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
                  <div className="flex items-center justify-between mb-2">
                     <span className={`text-[9px] font-bold uppercase tracking-wider ${selection.type === 'story' ? 'text-zinc-400' : 'text-zinc-400'}`}>Active Project</span>
-                    <div className={`w-1.5 h-1.5 rounded-full ${selection.type === 'story' ? 'bg-[#ee4d2d] shadow-[0_0_8px_rgba(238,77,45,0.6)]' : 'bg-zinc-300 dark:bg-zinc-700'}`}></div>
+                    <div className={`w-1.5 h-1.5 rounded-full ${selection.type === 'story' ? 'bg-[#E50914] shadow-[0_0_10px_rgba(229,9,20,0.75)]' : 'bg-zinc-300 dark:bg-zinc-700'}`}></div>
                  </div>
                  <div className="font-bold text-sm truncate flex items-center gap-2 mb-1">
-                    <FolderOpen className={`w-4 h-4 ${selection.type === 'story' ? 'text-[#ee4d2d]' : 'text-zinc-400'}`} />
+                    <FolderOpen className={`w-4 h-4 ${selection.type === 'story' ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-400'}`} />
                     {story.title}
                  </div>
                  <div className={`text-[10px] truncate ${selection.type === 'story' ? 'text-zinc-400' : 'text-zinc-400'}`}>
@@ -131,7 +126,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         Sequences
                     </div>
                     {onCreateSequence && (
-                        <button onClick={(e) => { e.stopPropagation(); onCreateSequence(); }} className="w-5 h-5 flex items-center justify-center rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-400 hover:text-[#ee4d2d] transition-colors" title="New Sequence">
+                        <button onClick={(e) => { e.stopPropagation(); onCreateSequence(); }} className="w-5 h-5 flex items-center justify-center rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors" title="New Sequence">
                             <Plus className="w-3 h-3" />
                         </button>
                     )}
@@ -139,7 +134,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="px-2 space-y-0.5">
                     {story.sequences.map(seq => {
                         const isActive = (selection.type === 'sequence' && selection.id === seq.id) || (selection.type === 'shot' && selection.parentId === seq.id);
-                        const isSeqRunning = (seq.shots || []).some((s) => s.aiState === 'rendering' || s.assetState?.status === 'running');
+                        const isSeqRunning = (seq.shots || []).some((s) => {
+                          const status = String(s.assetState?.status || '').toLowerCase();
+                          if (status === 'running') return true;
+                          const aiBusy = s.aiState === 'rendering' || s.aiState === 'thinking';
+                          const terminal = status === 'done' || status === 'error' || status === 'blocked';
+                          return aiBusy && !terminal;
+                        });
                         const isSeqQueued = (seq.shots || []).some((s) => s.assetState?.status === 'queued');
                         return (
                              <div 
@@ -151,7 +152,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 }`}
                                 onClick={() => onSelect({ type: 'sequence', id: seq.id })}
                              >
-                                <span className={`text-[10px] font-mono w-4 flex items-center justify-center rounded ${isActive ? 'bg-orange-100 text-[#ee4d2d] dark:bg-orange-500/20 dark:text-orange-400' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400'}`}>
+                                <span className={`text-[10px] font-mono w-4 flex items-center justify-center rounded ${isActive ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-700 dark:text-zinc-100' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400'}`}>
                                     {story.sequences.indexOf(seq) + 1}
                                 </span>
                             <span className="text-sm truncate">{seq.title}</span>
@@ -169,10 +170,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 </button>
                               )}
                               {isSeqRunning && (
-                                <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
+                                <Loader2 className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-300 animate-spin" />
                               )}
                               {!isSeqRunning && isSeqQueued && (
-                                <Clock className="w-3.5 h-3.5 text-orange-400" />
+                                <Clock className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-300" />
                               )}
                             </div>
                              </div>
@@ -189,18 +190,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         Environments
                     </div>
                     {onCreateLocation && (
-                        <button onClick={onCreateLocation} className="w-5 h-5 flex items-center justify-center rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-400 hover:text-[#ee4d2d] transition-colors" title="New Set">
+                        <button onClick={onCreateLocation} className="w-5 h-5 flex items-center justify-center rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors" title="New Set">
                             <Plus className="w-3 h-3" />
                         </button>
                     )}
                  </div>
                  <div className="px-2 space-y-0.5">
                      {story.locations.map(loc => (
-                         <div 
+                         <div
                             key={loc.id}
                             className={`group px-3 py-1.5 rounded-lg flex items-center gap-2 cursor-pointer transition-colors ${
-                                selection.type === 'location' && selection.id === loc.id 
-                                ? 'bg-orange-50/50 dark:bg-orange-900/10 text-[#ee4d2d] dark:text-orange-400 border border-orange-200/50 dark:border-orange-500/20' 
+                                selection.type === 'location' && selection.id === loc.id
+                                ? 'bg-zinc-100 dark:bg-zinc-900/40 text-zinc-900 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700'
                                 : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-900 hover:text-zinc-900 dark:hover:text-zinc-200'
                             }`}
                             onClick={() => onSelect({ type: 'location', id: loc.id })}
@@ -221,10 +222,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 </button>
                               )}
                               {loc.assetState?.status === 'running' && (
-                                <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
+                                <Loader2 className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-300 animate-spin" />
                               )}
                               {loc.assetState?.status === 'queued' && (
-                                <Clock className="w-3.5 h-3.5 text-orange-400" />
+                                <Clock className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-300" />
                               )}
                             </div>
                          </div>
@@ -296,7 +297,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Footer */}
       <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950">
          <div className="flex items-center gap-2 text-[10px] text-zinc-400">
-            <div className="w-1.5 h-1.5 bg-[#ee4d2d] rounded-full animate-pulse"></div>
+            <div className="w-1.5 h-1.5 bg-zinc-500 dark:bg-zinc-300 rounded-full animate-pulse"></div>
             System Operational
          </div>
       </div>

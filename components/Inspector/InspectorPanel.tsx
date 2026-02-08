@@ -488,13 +488,13 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                         Shot {shot.sequence}
                     </span>
                     <span className="text-[10px] text-zinc-400 flex items-center gap-1">
-                        <Clock className="w-3 h-3" /> {shot.duration}s
+                        <Clock className="w-3 h-3" /> {[4, 6, 8].includes(Number(shot.duration)) ? shot.duration : Number(shot.duration) <= 5 ? 4 : Number(shot.duration) <= 7 ? 6 : 8}s
                     </span>
                 </div>
                 <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100 line-clamp-1 leading-tight">
                     {shot.description}
                 </h2>
-                <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="mt-3 grid grid-cols-3 gap-2">
                     <label className="flex items-center gap-2 text-[11px] text-zinc-500">
                         <MapPin className="w-3.5 h-3.5" />
                         <select
@@ -528,6 +528,18 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                                     {t}
                                 </option>
                             ))}
+                        </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] text-zinc-500">
+                        <Film className="w-3.5 h-3.5" />
+                        <select
+                            value={[4, 6, 8].includes(Number(shot.duration)) ? shot.duration : 4}
+                            onChange={(e) => onShotUpdate({ ...shot, duration: Number(e.target.value) })}
+                            className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-zinc-700 dark:text-zinc-200 text-[11px] font-medium"
+                        >
+                            <option value={4}>4s</option>
+                            <option value={6}>6s</option>
+                            <option value={8}>8s</option>
                         </select>
                     </label>
                 </div>

@@ -106,6 +106,8 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- Prefer UPDATE_SHOT / SET_CAST for structural edits; prefer UPDATE_ELEMENT for camera/lighting/audio/script prompt edits.\n` +
     `- For screenplay requests, write SCRIPT prompts in screenplay style (action lines + dialogue).\n` +
     `- For "video prompt" requests, put the production-ready prompt into UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.videoPrompt=string).\n` +
+    `- Infer style intent from user wording and translate it into executable prompt terms. Example: cinematic -> filmic framing/contrast/depth; epic -> monumental scale/wide establishing/strong silhouettes.\n` +
+    `- Keep abstract style words and concrete execution words together in updates (camera/lighting/styleGuide/videoPrompt).\n` +
     `- Keep the action list short (1-5 actions). For bulk generation, use GENERATE_PROJECT_ASSETS.\n` +
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
     `- If user asks to update/regenerate master KV through director, prefer GENERATE_MASTER_KV_PROPOSAL (not GENERATE_PROJECT_ASSETS masterkv).\n` +
@@ -118,6 +120,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- To clear Master KV references, use UPDATE_STORY with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- To clear environment references, use UPDATE_LOCATION with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +
+    `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
     `- Only create a new LOOK when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- Look descriptions must be reference-ready (clean wardrobe/state details), not scene staging or atmosphere.\n` +
     `\n` +

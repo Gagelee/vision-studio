@@ -25,6 +25,8 @@ import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
 import { isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
 import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
+import { generateVideoFromImage } from './lib/ai/video/generate';
+import { buildStylePromptTranslation } from './lib/ai/styleIntent';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -65,6 +67,7 @@ interface PendingInteractionGeneration {
 
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
 const STALE_GENERATION_MAX_AGE_MS = 5 * 60_000;
+const STALE_PRODUCTION_MAX_AGE_MS = 20 * 60_000;
 
 const recoverAssetStateIfStale = (state: any, now: number, fallbackTs: number): { next: any; fixed: boolean } => {
   if (!state) return { next: state, fixed: false };
@@ -78,6 +81,23 @@ const recoverAssetStateIfStale = (state: any, now: number, fallbackTs: number): 
       status: 'error',
       lastAttemptAt: ts,
       lastError: String(state.lastError || 'Recovered from stale generation state. Please retry generation.'),
+    },
+    fixed: true,
+  };
+};
+
+const recoverProductionStateIfStale = (production: any, now: number, fallbackTs: number): { next: any; fixed: boolean } => {
+  if (!production || typeof production !== 'object') return { next: production, fixed: false };
+  const status = String(production.status || '').toLowerCase();
+  if (status !== 'queued' && status !== 'running') return { next: production, fixed: false };
+  const ts = typeof production.lastStartedAt === 'number' ? production.lastStartedAt : fallbackTs;
+  if (!ts || now - ts < STALE_PRODUCTION_MAX_AGE_MS) return { next: production, fixed: false };
+  return {
+    next: {
+      ...production,
+      status: 'error',
+      lastStartedAt: ts,
+      lastError: String(production.lastError || 'Recovered from stale production state. Please retry generation.'),
     },
     fixed: true,
   };
@@ -114,18 +134,21 @@ const recoverStoryStaleGenerationStates = (story: Story, now: number): { next: S
   const sequences = (story.sequences || []).map((seq) => {
     const shots = (seq.shots || []).map((shot) => {
       const rec = recoverAssetStateIfStale((shot as any).assetState, now, fallbackTs);
+      const prodRec = recoverProductionStateIfStale((shot as any).production, now, fallbackTs);
       const shotTs =
         (typeof (shot as any)?.assetState?.lastAttemptAt === 'number' && (shot as any).assetState.lastAttemptAt) || fallbackTs;
       const staleAi =
         (shot.aiState === 'rendering' || shot.aiState === 'thinking') && now - shotTs >= STALE_GENERATION_MAX_AGE_MS;
-      if (rec.fixed || staleAi) {
+      if (rec.fixed || staleAi || prodRec.fixed) {
         if (rec.fixed) fixedCount += 1;
         if (staleAi) fixedCount += 1;
+        if (prodRec.fixed) fixedCount += 1;
         return {
           ...shot,
           aiState: staleAi ? 'idle' : shot.aiState,
           aiPrompt: staleAi ? '' : shot.aiPrompt,
           assetState: rec.fixed ? rec.next : shot.assetState,
+          production: prodRec.fixed ? prodRec.next : shot.production,
         };
       }
       return shot;
@@ -151,6 +174,47 @@ function renumberShots(shots: Shot[]): Shot[] {
   return shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
 }
 
+function normalizeShotDurationSeconds(raw: unknown): 4 | 6 | 8 {
+  let n = Number(raw);
+  if (!Number.isFinite(n)) return 4;
+  // Some agent payloads may pass milliseconds.
+  if (n > 60) n = Math.round(n / 1000);
+  const rounded = Math.round(n);
+  if (rounded <= 5) return 4;
+  if (rounded <= 7) return 6;
+  return 8;
+}
+
+const preferTerminalStatus = (a: string, b: string) => {
+  const terminal = new Set(['done', 'error', 'blocked']);
+  const aTerm = terminal.has(String(a || '').toLowerCase());
+  const bTerm = terminal.has(String(b || '').toLowerCase());
+  if (aTerm && !bTerm) return true;
+  if (!aTerm && bTerm) return false;
+  return false;
+};
+
+const mergeAssetGenerationState = (current: any, incoming: any) => {
+  if (!current) return incoming;
+  if (!incoming) return current;
+  const currentTs = Number(current?.lastAttemptAt || 0);
+  const incomingTs = Number(incoming?.lastAttemptAt || 0);
+  if (incomingTs > currentTs) return incoming;
+  if (currentTs > incomingTs) return current;
+  return preferTerminalStatus(String(current?.status || ''), String(incoming?.status || '')) ? current : incoming;
+};
+
+const mergeShotProductionState = (current: any, incoming: any) => {
+  if (!current) return incoming;
+  if (!incoming) return current;
+  const score = (p: any) => Math.max(Number(p?.lastCompletedAt || 0), Number(p?.lastStartedAt || 0));
+  const currentScore = score(current);
+  const incomingScore = score(incoming);
+  if (incomingScore > currentScore) return incoming;
+  if (currentScore > incomingScore) return current;
+  return preferTerminalStatus(String(current?.status || ''), String(incoming?.status || '')) ? current : incoming;
+};
+
 function createBlankShot(
   story: Story,
   seq: Sequence,
@@ -167,15 +231,15 @@ function createBlankShot(
     locationId: init?.locationId || fallbackLocationId,
     timeOfDay: init?.timeOfDay || 'Day',
     description: init?.description || 'New shot',
-    duration: typeof init?.duration === 'number' && Number.isFinite(init.duration) ? Math.max(1, Math.round(init.duration)) : 4,
+    duration: normalizeShotDurationSeconds(init?.duration),
     thumbnailUrl: thumb,
     activeVersionId: 'v1',
     versions: [{ id: 'v1', imageUrl: thumb, createdAt: now, type: 'placeholder' }],
     elements: {
       [ElementType.SCRIPT]: { type: ElementType.SCRIPT, prompt: '', status: 'auto' },
       [ElementType.CASTING]: { type: ElementType.CASTING, prompt: '', status: 'manual', metadata: { characters: [] } },
-      [ElementType.CAMERA]: { type: ElementType.CAMERA, prompt: 'Cinematic shot', status: 'auto' },
-      [ElementType.LIGHTING]: { type: ElementType.LIGHTING, prompt: 'Natural cinematic lighting', status: 'auto' },
+      [ElementType.CAMERA]: { type: ElementType.CAMERA, prompt: 'Narrative shot', status: 'auto' },
+      [ElementType.LIGHTING]: { type: ElementType.LIGHTING, prompt: 'Scene-consistent lighting', status: 'auto' },
       [ElementType.AUDIO]: { type: ElementType.AUDIO, prompt: 'Ambient sound', status: 'auto' },
     },
     aiState: 'idle',
@@ -283,12 +347,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       if (!sequenceId) return acc;
       const afterShotId = action.payload?.afterShotId ? String(action.payload.afterShotId) : undefined;
       const rawDuration = action.payload?.duration;
-      const normalizedDuration =
-        typeof rawDuration === 'number' && Number.isFinite(rawDuration)
-          ? rawDuration > 60
-            ? Math.round(rawDuration / 1000)
-            : Math.round(rawDuration)
-          : undefined;
+      const normalizedDuration = typeof rawDuration === 'number' && Number.isFinite(rawDuration) ? normalizeShotDurationSeconds(rawDuration) : undefined;
       const init = {
         locationId: action.payload?.locationId ? String(action.payload.locationId) : undefined,
         timeOfDay: action.payload?.timeOfDay ? String(action.payload.timeOfDay) : undefined,
@@ -418,10 +477,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 description: typeof patch.description === 'string' ? patch.description : s.description,
                 timeOfDay: typeof patch.timeOfDay === 'string' ? patch.timeOfDay : s.timeOfDay,
                 locationId: typeof patch.locationId === 'string' ? patch.locationId : s.locationId,
-                duration:
-                  typeof patch.duration === 'number' && Number.isFinite(patch.duration)
-                    ? Math.max(1, Math.round(patch.duration))
-                    : s.duration,
+                duration: typeof patch.duration === 'number' && Number.isFinite(patch.duration) ? normalizeShotDurationSeconds(patch.duration) : s.duration,
               };
             }),
           };
@@ -775,6 +831,26 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      setWorkspace((prev) => {
+        if (!Array.isArray(prev.projects) || prev.projects.length === 0) return prev;
+        const now = Date.now();
+        let changed = false;
+        const projects = prev.projects.map((p) => {
+          const r = recoverStoryStaleGenerationStates(p, now);
+          if (r.fixedCount > 0) {
+            changed = true;
+            return r.next;
+          }
+          return p;
+        });
+        return changed ? { ...prev, projects } : prev;
+      });
+    }, 90_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (screen === 'project' && !workspace.activeProjectId) setScreen('library');
   }, [screen, workspace.activeProjectId]);
 
@@ -943,20 +1019,185 @@ export default function App() {
 
   };
 
-  const startShotProduction = (sequenceId: string, shotId: string) => {
+  const startShotProduction = async (args: { sequenceId: string; shotId: string }) => {
+    const now = Date.now();
+    const aspectRatio = activeStory?.aspectRatio === '9:16' ? '9:16' : '16:9';
+    const storyNow = activeStory;
+    const seq = storyNow?.sequences.find((s) => s.id === args.sequenceId);
+    const shot = seq?.shots.find((s) => s.id === args.shotId);
+    if (!storyNow || !seq || !shot) {
+      addToast('Shot not found', 'info');
+      return;
+    }
+
+    const activeVersion =
+      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
+      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
+    const imageUrl = String(activeVersion?.imageUrl || '').trim();
+    if (!imageUrl) {
+      addToast('Start Production blocked: generate/select a keyframe first.', 'info');
+      return;
+    }
+
+    const styleGuide = String((storyNow as any)?.styleGuide || '').trim();
+    const location = storyNow.locations.find((l) => l.id === shot.locationId);
+    const shotAction = String((shot.elements as any)?.[ElementType.SCRIPT]?.prompt || '').trim();
+    const cameraPrompt = String(shot.elements?.[ElementType.CAMERA]?.prompt || '').trim();
+    const lightingPrompt = String(shot.elements?.[ElementType.LIGHTING]?.prompt || '').trim();
+    const audioPrompt = String(shot.elements?.[ElementType.AUDIO]?.prompt || '').trim();
+    const authoredVideoPrompt = String((shot.elements as any)?.[ElementType.CAMERA]?.metadata?.videoPrompt || '').trim();
+    const inferredStyleTranslation = buildStylePromptTranslation({
+      texts: [storyNow.intent, styleGuide, location?.visualStyle, cameraPrompt, lightingPrompt, shot.description],
+      maxItems: 6,
+    });
+
+    const videoPrompt =
+      authoredVideoPrompt ||
+      [
+        'Use the provided source image as the first frame and preserve subject identity and environment continuity.',
+        inferredStyleTranslation ? `Style translation hints: ${inferredStyleTranslation}.` : '',
+        'Motion quality: natural physics, stable anatomy, no flicker, no abrupt style drift.',
+        'Output: coherent, style-consistent, high detail.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+    const durationSeconds = normalizeShotDurationSeconds(shot.duration);
+
     updateActiveStory((prev) => ({
       ...prev,
-      sequences: prev.sequences.map((seq) => {
-        if (seq.id !== sequenceId) return seq;
-        return {
-          ...seq,
-          shots: seq.shots.map((s) =>
-            s.id === shotId ? { ...s, production: { status: 'queued', lastStartedAt: Date.now() } } : s,
-          ),
-        };
-      }),
+      sequences: prev.sequences.map((s) =>
+        s.id !== args.sequenceId
+          ? s
+          : {
+              ...s,
+              shots: s.shots.map((x) =>
+                x.id !== args.shotId
+                  ? x
+                  : {
+                      ...x,
+                      duration: durationSeconds,
+                      production: {
+                        ...x.production,
+                        status: 'running',
+                        lastStartedAt: now,
+                        lastError: '',
+                        durationSeconds,
+                        resolution: '720p',
+                      },
+                    },
+              ),
+            },
+      ),
     }));
-    addToast('Shot production queued (placeholder)', 'success');
+
+    try {
+      const out = await generateVideoFromImage({
+        prompt: videoPrompt,
+        imageUrl,
+        durationSeconds,
+        aspectRatio,
+        resolution: '720p',
+        generateAudio: true,
+        promptSpec: {
+          shotDescription: String(shot.description || '').trim(),
+          action: shotAction,
+          style: styleGuide || String(location?.visualStyle || '').trim(),
+          styleTranslation: inferredStyleTranslation,
+          camera: cameraPrompt,
+          composition: `Aspect ratio ${aspectRatio}`,
+          mood: lightingPrompt,
+          audio: audioPrompt,
+          constraints: [
+            'Preserve character identity and wardrobe continuity.',
+            'Avoid flicker, morphing artifacts, and geometry instability.',
+            'No text overlays, subtitles, logos, or watermark.',
+          ],
+        },
+      });
+
+      const finishedAt = Date.now();
+      const nextVariantId = `pv-${finishedAt}-${Math.random().toString(16).slice(2, 8)}`;
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : (() => {
+                        const prevVariants = Array.isArray(x.production?.variants) ? x.production?.variants : [];
+                        const newVariant = {
+                          id: nextVariantId,
+                          videoUrl: out.videoUrl,
+                          createdAt: finishedAt,
+                          durationSeconds,
+                          resolution: '720p' as const,
+                          operationName: out.operationName,
+                          metadata: {
+                            prompt: videoPrompt,
+                            sourceImageUrl: imageUrl,
+                            sourceShotVersionId: String(activeVersion?.id || ''),
+                          },
+                        };
+                        return {
+                          ...x,
+                          production: {
+                            ...x.production,
+                            status: 'done',
+                            lastCompletedAt: finishedAt,
+                            lastError: '',
+                            durationSeconds,
+                            resolution: '720p',
+                            operationName: out.operationName,
+                            videoUrl: out.videoUrl,
+                            variants: [...prevVariants, newVariant],
+                            activeVariantId: newVariant.id,
+                          },
+                        };
+                      })(),
+                ),
+              },
+        ),
+      }));
+      addToast(`Shot production complete (${durationSeconds}s, 720p)`, 'success');
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      addDebugEvent({
+        level: 'error',
+        scope: 'asset.video',
+        message: 'Start production failed',
+        data: { error: err, sequenceId: args.sequenceId, shotId: args.shotId },
+      });
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : {
+                        ...x,
+                        production: {
+                          ...x.production,
+                          status: 'error',
+                          lastError: err,
+                          durationSeconds,
+                          resolution: '720p',
+                        },
+                      },
+                ),
+              },
+        ),
+      }));
+      addToast(`Shot production failed: ${err}`, 'info');
+    }
   };
 
   // ----- Render Helpers -----
@@ -1085,11 +1326,39 @@ export default function App() {
   };
 
   const handleShotUpdate = (updatedShot: Shot) => {
+    const normalizedShot: Shot = {
+      ...updatedShot,
+      duration: normalizeShotDurationSeconds(updatedShot.duration),
+    };
     updateActiveStory((prev) => ({
       ...prev,
       sequences: prev.sequences.map((seq) => {
-        if (seq.shots.some((s) => s.id === updatedShot.id)) {
-          return { ...seq, shots: seq.shots.map((s) => (s.id === updatedShot.id ? updatedShot : s)) };
+        if (seq.shots.some((s) => s.id === normalizedShot.id)) {
+          return {
+            ...seq,
+            shots: seq.shots.map((s) => {
+              if (s.id !== normalizedShot.id) return s;
+              const mergedAssetState = mergeAssetGenerationState((s as any)?.assetState, (normalizedShot as any)?.assetState);
+              const mergedProduction = mergeShotProductionState((s as any)?.production, (normalizedShot as any)?.production);
+              const terminalAsset =
+                String((mergedAssetState as any)?.status || '').toLowerCase() === 'done' ||
+                String((mergedAssetState as any)?.status || '').toLowerCase() === 'error' ||
+                String((mergedAssetState as any)?.status || '').toLowerCase() === 'blocked';
+              const terminalProduction =
+                String((mergedProduction as any)?.status || '').toLowerCase() === 'done' ||
+                String((mergedProduction as any)?.status || '').toLowerCase() === 'error';
+              const nextAiState = terminalAsset || terminalProduction ? 'idle' : (normalizedShot.aiState ?? s.aiState);
+              return {
+                ...s,
+                ...normalizedShot,
+                duration: normalizeShotDurationSeconds(normalizedShot.duration),
+                aiState: nextAiState as any,
+                aiPrompt: nextAiState === 'idle' ? '' : (normalizedShot.aiPrompt ?? s.aiPrompt),
+                assetState: mergedAssetState,
+                production: mergedProduction,
+              };
+            }),
+          };
         }
         return seq;
       }),
@@ -2419,12 +2688,25 @@ export default function App() {
               onUpdateShot={handleShotUpdate}
               imageSettings={aiSettings.image}
               onStartProduction={() => {
-                const seqId = selection.parentId || '';
-                if (!seqId) return;
+                const shotId = (activeItem as Shot).id;
+                const inferredSeqId =
+                  activeStory.sequences.find((seq) => (seq.shots || []).some((s) => s.id === shotId))?.id || '';
+                const seqId = selection.parentId || inferredSeqId;
+                if (!seqId) {
+                  addToast('Cannot determine sequence for this shot.', 'info');
+                  return;
+                }
                 setProductionTarget({ sequenceId: seqId, shotId: (activeItem as Shot).id });
               }}
               onBack={() =>
-                setSelection({ type: 'sequence', id: selection.parentId || activeStory.sequences[0]?.id || activeStory.id })
+                setSelection({
+                  type: 'sequence',
+                  id:
+                    selection.parentId ||
+                    activeStory.sequences.find((seq) => (seq.shots || []).some((s) => s.id === (activeItem as Shot).id))?.id ||
+                    activeStory.sequences[0]?.id ||
+                    activeStory.id,
+                })
               }
             />
           )}
@@ -2806,7 +3088,7 @@ export default function App() {
             return { label: `Shot #${shot.sequence}${loc?.name ? ` · ${loc.name}` : ''}`, detail: shot.description };
           })()}
           onConfirm={() => {
-            startShotProduction(productionTarget.sequenceId, productionTarget.shotId);
+            startShotProduction({ sequenceId: productionTarget.sequenceId, shotId: productionTarget.shotId });
             setProductionTarget(null);
           }}
           onClose={() => setProductionTarget(null)}

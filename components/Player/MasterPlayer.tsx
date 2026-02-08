@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Story, Shot } from '../../types';
 import { X, Play, Pause, Maximize2, SkipForward, Volume2, AlertCircle } from 'lucide-react';
 import { openLightbox } from '../../lib/ui/lightboxStore';
@@ -14,14 +14,25 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
   const [currentShotIndex, setCurrentShotIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [imgError, setImgError] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Flatten shots from all sequences to create a linear timeline
   const allShots = story.sequences.flatMap(s => s.shots);
   const currentShot = allShots[currentShotIndex];
+  const currentVideoUrl = useMemo(() => {
+    if (!currentShot) return '';
+    const variants = Array.isArray((currentShot as any)?.production?.variants)
+      ? ((currentShot as any).production.variants as any[])
+      : [];
+    const activeId = String((currentShot as any)?.production?.activeVariantId || '').trim();
+    const active = variants.find((v: any) => String(v?.id || '') === activeId) || variants[variants.length - 1];
+    return String(active?.videoUrl || (currentShot as any)?.production?.videoUrl || '').trim();
+  }, [currentShot]);
   
   // Reset error state when shot changes
   useEffect(() => {
     setImgError(false);
+    setProgress(0);
   }, [currentShotIndex]);
 
   useEffect(() => {
@@ -34,7 +45,7 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
-    if (isPlaying && currentShot) {
+    if (isPlaying && currentShot && !currentVideoUrl) {
       interval = setInterval(() => {
         setProgress(p => {
             if (p >= 100) {
@@ -53,7 +64,17 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
       }, 100);
     }
     return () => clearInterval(interval);
-  }, [isPlaying, currentShotIndex, currentShot?.duration, allShots.length]);
+  }, [isPlaying, currentShotIndex, currentShot?.duration, allShots.length, currentVideoUrl]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !currentVideoUrl) return;
+    if (isPlaying) {
+      el.play().catch(() => {});
+    } else {
+      el.pause();
+    }
+  }, [isPlaying, currentVideoUrl, currentShotIndex]);
 
   return (
     <div className="fixed inset-0 z-[100] bg-black flex flex-col animate-in fade-in duration-300 font-sans">
@@ -79,6 +100,29 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
                      <AlertCircle className="w-12 h-12 opacity-50" />
                      <span className="text-xs uppercase font-bold tracking-wider">Visual Source Unavailable</span>
                  </div>
+             ) : currentVideoUrl ? (
+                 <video
+                   ref={videoRef}
+                   src={currentVideoUrl}
+                   className="w-full h-full object-contain bg-black"
+                   playsInline
+                   autoPlay
+                   onTimeUpdate={(e) => {
+                     const el = e.currentTarget;
+                     const d = Number(el.duration || 0);
+                     const t = Number(el.currentTime || 0);
+                     if (d > 0) setProgress(Math.max(0, Math.min(100, (t / d) * 100)));
+                   }}
+                   onEnded={() => {
+                     if (currentShotIndex < allShots.length - 1) {
+                       setCurrentShotIndex((i) => i + 1);
+                     } else {
+                       setIsPlaying(false);
+                       setProgress(100);
+                     }
+                   }}
+                   onError={() => setImgError(true)}
+                 />
              ) : (
                  <img 
                     src={currentShot.thumbnailUrl} 
@@ -130,7 +174,9 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) =>
                <div className="flex items-center gap-6">
                    <button
                      disabled={!currentShot}
-                     onClick={() => setIsPlaying(!isPlaying)}
+                     onClick={() => {
+                       setIsPlaying((prev) => !prev);
+                     }}
                      className="hover:text-[#ee4d2d] transition-colors hover:scale-110 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
                    >
                        {isPlaying ? <Pause className="w-8 h-8 fill-current" /> : <Play className="w-8 h-8 fill-current" />}

@@ -465,7 +465,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
         
         <div className="relative z-20 max-w-4xl w-full animate-in slide-in-from-bottom-12 duration-1000 ease-out">
             <div className="flex items-center gap-4 mb-6">
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#ee4d2d] text-white shadow-2xl">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/24 bg-white/12 text-white shadow-2xl backdrop-blur-md">
                     <Sparkles className="w-4 h-4" />
                     <span className="text-[10px] font-black uppercase tracking-[0.2em]">Director Master Cut</span>
                 </div>
@@ -486,7 +486,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                 <button 
                     disabled={totalShots === 0}
                     onClick={onPlayCinema}
-                    className="flex items-center gap-3 px-10 py-5 bg-[#ee4d2d] hover:bg-[#f05d40] text-white rounded-2xl text-lg font-black uppercase tracking-widest transition-all shadow-[0_20px_40px_rgba(238,77,45,0.3)] hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="flex items-center gap-3 px-10 py-5 bg-zinc-900 hover:bg-black text-white dark:bg-white dark:hover:bg-zinc-100 dark:text-black rounded-2xl text-lg font-black uppercase tracking-widest transition-all shadow-[0_20px_40px_rgba(0,0,0,0.28)] hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                     <Play className="w-6 h-6 fill-current" />
                     {totalShots === 0 ? 'No Shots' : 'Screen Master'}
@@ -513,7 +513,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                 <div className="text-4xl font-black text-zinc-900 dark:text-white font-mono">{story.sequences.length}</div>
              </div>
              <div className="h-px w-20 bg-zinc-200 dark:bg-white/20 ml-auto"></div>
-             <div className="text-[10px] font-bold text-[#ee4d2d] uppercase tracking-[0.3em]">Scaffolding: 100%</div>
+             <div className="text-[10px] font-bold text-zinc-600 dark:text-zinc-300 uppercase tracking-[0.3em]">Scaffolding: 100%</div>
         </div>
       </div>
 
@@ -525,7 +525,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           <div className="p-10 flex items-start justify-between gap-8 border-b border-zinc-100 dark:border-zinc-800/50">
             <div className="min-w-0">
               <div className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400 flex items-center gap-3">
-                <Anchor className="w-5 h-5 text-[#ee4d2d]" />
+                <Anchor className="w-5 h-5 text-zinc-700 dark:text-zinc-200" />
                 Master Key Visual
               </div>
               <div className="mt-3 text-zinc-700 dark:text-zinc-200 font-medium max-w-2xl leading-relaxed">
@@ -550,7 +550,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                   className={`flex items-center gap-2 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-sm ${
                     !canGenerate
                       ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 cursor-not-allowed border border-zinc-200 dark:border-zinc-700'
-                      : 'bg-[#ee4d2d] hover:bg-[#f05d40] text-white'
+                      : 'bg-zinc-900 hover:bg-black text-white dark:bg-white dark:hover:bg-zinc-100 dark:text-black'
                   }`}
                   title={!canGenerate ? 'Image provider is Mock' : story.keyVisualUrl ? 'Generate KV variant' : 'Generate Master KV'}
                 >
@@ -726,7 +726,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                 {referenceImages.length < maxReferenceImages && (
                     <button
                       type="button"
-                      className="w-16 h-16 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:text-[#ee4d2d] hover:border-[#ee4d2d]/50 flex flex-col items-center justify-center gap-1 text-[10px] font-bold uppercase tracking-wide"
+                      className="w-16 h-16 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-500 dark:hover:border-zinc-500 flex flex-col items-center justify-center gap-1 text-[10px] font-bold uppercase tracking-wide"
                       onClick={() => referenceInputRef.current?.click()}
                       title="Upload reference images"
                     >
@@ -791,7 +791,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
         <section>
             <div className="flex items-center justify-between mb-10">
                 <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400 flex items-center gap-3">
-                    <Clapperboard className="w-5 h-5 text-[#ee4d2d]" />
+                    <Clapperboard className="w-5 h-5 text-zinc-700 dark:text-zinc-200" />
                     Story Architecture
                 </h3>
                 <div className="h-px flex-1 mx-10 bg-zinc-100 dark:bg-zinc-800/50"></div>
@@ -802,9 +802,9 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                     <div 
                         key={seq.id}
                         onClick={() => onSelect({ type: 'sequence', id: seq.id })}
-                        className="group relative flex flex-col p-8 bg-zinc-50 dark:bg-zinc-900/30 border border-zinc-200 dark:border-zinc-800 rounded-[40px] hover:border-[#ee4d2d]/30 hover:bg-white dark:hover:bg-zinc-900 transition-all cursor-pointer shadow-sm hover:shadow-2xl"
+                        className="group relative flex flex-col p-8 bg-zinc-50 dark:bg-zinc-900/30 border border-zinc-200 dark:border-zinc-800 rounded-[40px] hover:border-zinc-400 dark:hover:border-zinc-600 hover:bg-white dark:hover:bg-zinc-900 transition-all cursor-pointer shadow-sm hover:shadow-2xl"
                     >
-                        <div className="absolute top-8 right-8 text-6xl font-black text-zinc-100 dark:text-white/5 select-none group-hover:text-[#ee4d2d]/10 transition-colors">
+                        <div className="absolute top-8 right-8 text-6xl font-black text-zinc-100 dark:text-white/5 select-none group-hover:text-zinc-300 dark:group-hover:text-white/20 transition-colors">
                             {idx + 1}
                         </div>
                         <div className="relative z-10">
@@ -817,10 +817,10 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                                         <div key={s.id} className="w-10 h-10 rounded-full border-2 border-white dark:border-zinc-900 overflow-hidden bg-zinc-800 shadow-xl">
                                             <img
                                               src={s.thumbnailUrl}
-                                              className="w-full h-full object-cover cursor-zoom-in"
+                                              className="w-full h-full object-cover cursor-pointer"
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                if (s.thumbnailUrl) openLightbox({ url: s.thumbnailUrl, title: `Shot #${s.sequence}` });
+                                                onSelect({ type: 'shot', id: s.id, parentId: seq.id });
                                               }}
                                             />
                                         </div>

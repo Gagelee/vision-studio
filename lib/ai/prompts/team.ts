@@ -35,8 +35,13 @@ export const buildTeamScaffoldDirectorBriefPrompt = (args: { intent: string; asp
     `Rules:\n` +
     `- Keep it compact but concrete. Prefer 3-6 characters, 2-5 locations, 2-4 sequences.\n` +
     `- Characters MUST be distinct and reusable across shots.\n` +
+    `- If user intent explicitly specifies rendering medium/style, treat it as a HARD CONSTRAINT and repeat it verbatim in styleBible.\n` +
+    `- Never replace an explicit user medium with a different one (e.g., realistic film -> oil painting).\n` +
+    `- Infer abstract style goals into concrete prompt vocabulary. Example: cinematic -> filmic framing/contrast/depth; epic -> monumental scale/wide establishing/strong silhouettes.\n` +
+    `- Encode that translation in styleBible.visualKeywords + styleBible.cameraLanguage so downstream agents can execute it.\n` +
     `- If user didn't specify art style, YOU must decide a clear artistic core.\n` +
-    `- styleBible.visualKeywords MUST include rendering style/medium (e.g., ink wash, anime, photoreal, watercolor), palette and texture cues.\n` +
+    `- styleBible.visualKeywords MUST include rendering style/medium (e.g., ink wash, anime cel, watercolor, oil painting, live-action), palette and texture cues.\n` +
+    `- Do not default to glossy CG/3D-render wording unless the user explicitly requests that medium.\n` +
     `Intent: ${intent}\n` +
     `AspectRatio: ${aspectRatio}\n`
   );
@@ -142,6 +147,7 @@ export const buildTeamScaffoldEditorPrompt = (args: {
     `Rules:\n` +
     `- Keep continuity strong. Keep shot descriptions visual.\n` +
     `- Use location names that exist in environment list.\n` +
+    `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
     `DirectorBrief: ${brief}\n` +
     `Script: ${script}\n` +
     `Environments: ${env}\n`
@@ -174,6 +180,8 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
     `}\n` +
     `Rules:\n` +
     `- "videoPrompt" must be self-contained and consistent with director style bible.\n` +
+    `- Treat DirectorBrief style medium as HARD LOCK; do not swap to another medium.\n` +
+    `- Translate abstract user adjectives into executable visual terms (camera language, composition scale, lighting behavior, motion quality).\n` +
     `- Include environment + cast + action + lens/camera + lighting cues.\n` +
     `- Start each "videoPrompt" with a short STYLE header derived from director style bible (rendering style/medium, palette, lighting mood, camera language).\n` +
     `- No text/watermarks.\n` +
@@ -217,6 +225,8 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `Rules:\n` +
     `- Ensure sequences/shots align across editor + camera&art (same counts and order).\n` +
     `- Ensure characters/locations match names used in shots.\n` +
+    `- Keep rendering medium/style consistent with DirectorBrief. If user intent specified medium explicitly, preserve it as hard lock.\n` +
+    `- Ensure final styleGuide and shot-level camera/lighting/videoPrompt contain concrete, generation-ready style terms (not only abstract adjectives).\n` +
     `- "styleGuide" must be a concise, production-ready style bible derived from DirectorBrief.styleBible (rendering style, palette, lighting, camera language, constraints).\n` +
     `DirectorBrief: ${brief}\n` +
     `Casting: ${casting}\n` +
