@@ -189,6 +189,49 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
     notes.push('create sequence');
   }
 
+  if (includesAny(msg, ['new scene', 'add scene', '新增scene', '新增场景', '新增小节'])) {
+    if (selection.type === 'sequence') {
+      actions.push({ type: 'CREATE_SCENE', payload: { sequenceId: selection.id } });
+      notes.push('create scene');
+    } else if (selection.type === 'shot' && selection.parentId) {
+      actions.push({ type: 'CREATE_SCENE', payload: { sequenceId: selection.parentId, afterSceneId: '' } });
+      notes.push('create scene');
+    }
+  }
+
+  if (includesAny(msg, ['rename sequence', 'story part title', 'sequence title', '改段落标题', '改story part标题', '改sequence标题', '序列标题'])) {
+    const titleMatch =
+      raw.match(/(?:story\s*part|sequence|序列|段落)\s*(?:title|标题|名称)?\s*[:：]\s*(.+)$/i) ||
+      raw.match(/(?:rename\s*(?:story\s*part|sequence)|重命名(?:段落|序列))\s+(.+)$/i);
+    const nextTitle = String(titleMatch?.[1] || '').trim();
+    if (nextTitle) {
+      const targetSequenceId = selection.type === 'sequence' ? selection.id : selection.parentId || '';
+      if (targetSequenceId) {
+        actions.push({ type: 'RENAME_SEQUENCE', payload: { sequenceId: targetSequenceId, title: nextTitle } });
+        notes.push('rename sequence');
+      }
+    }
+  }
+
+  if (includesAny(msg, ['rename scene', 'scene title', '场景标题', '改scene标题', '改场景标题'])) {
+    const seqId = selection.type === 'sequence' ? selection.id : selection.parentId || '';
+    const seq = story.sequences.find((s) => s.id === seqId);
+    const scenes = Array.isArray((seq as any)?.scenes) ? ((seq as any).scenes as any[]) : [];
+    const sceneTitleMatch =
+      raw.match(/(?:scene|场景)\s*(\d+)\s*(?:title|标题)?\s*[:：]\s*(.+)$/i) ||
+      raw.match(/(?:rename\s*scene|重命名场景)\s*(\d+)?\s*(.+)$/i);
+    const sceneNum = sceneTitleMatch?.[1] ? Math.max(1, Number(sceneTitleMatch[1])) : 1;
+    const nextTitle = String(sceneTitleMatch?.[2] || '').trim();
+    const targetScene = scenes[sceneNum - 1];
+    if (seqId && targetScene?.id && nextTitle) {
+      actions.push({
+        type: 'UPDATE_SCENE',
+        payload: { sequenceId: seqId, sceneId: String(targetScene.id), patch: { title: nextTitle } },
+      });
+      notes.push(`rename scene ${sceneNum}`);
+    }
+  }
+
   if (includesAny(msg, ['new shot', '新增镜头', '新增分镜', '新增beat', 'add shot', 'add beat'])) {
     const selected = getSelectedShot();
     if (selected) {
@@ -373,6 +416,22 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
         payload: { shotId, sequenceId, elementType: ElementType.LIGHTING, prompt: 'Cool lighting, blue tones' },
       });
       notes.push('lighting → cooler');
+    }
+
+    const moveSceneMatch =
+      raw.match(/(?:move|移到|移动到|move shot to scene)\s*(?:scene|场景)?\s*(\d+)/i) ||
+      raw.match(/(?:scene|场景)\s*(\d+)/i);
+    if (moveSceneMatch?.[1]) {
+      const sceneNum = Math.max(1, Number(moveSceneMatch[1]));
+      const seq = story.sequences.find((s) => s.id === sequenceId);
+      const targetScene = (seq as any)?.scenes?.[sceneNum - 1];
+      if (targetScene?.id) {
+        actions.push({
+          type: 'MOVE_SHOT_TO_SCENE',
+          payload: { sequenceId, shotId, toSceneId: String(targetScene.id) },
+        });
+        notes.push(`move shot to scene ${sceneNum}`);
+      }
     }
   }
 

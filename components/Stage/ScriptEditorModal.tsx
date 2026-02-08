@@ -87,7 +87,7 @@ export const ScriptEditorModal: React.FC<ScriptEditorModalProps> = ({ story, onC
             <div key={seq.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-500 bg-indigo-500/10 px-2 py-1 rounded">
-                  Sequence {seqIdx + 1}
+                  Story Part {seqIdx + 1}
                 </span>
                 <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{seq.title}</span>
               </div>

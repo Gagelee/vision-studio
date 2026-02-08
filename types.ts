@@ -181,10 +181,23 @@ export interface Shot {
   };
 }
 
-export interface Sequence {
+export interface Scene {
   id: string;
   title: string;
+  summary?: string;
+  // Ordered shot list inside this scene.
+  shots: Shot[];
+}
+
+export interface Sequence {
+  id: string;
+  // Narrative unit (story part), not an environment bucket.
+  // A sequence may contain multiple locations, and locations may intercut within it.
+  title: string;
   context: string;
+  // Primary future structure.
+  scenes: Scene[];
+  // Flattened cache used by current UI modules; derived from scenes.
   shots: Shot[];
 }
 
@@ -249,9 +262,14 @@ export type AgentActionType =
   | 'CREATE_SEQUENCE'
   | 'RENAME_SEQUENCE'
   | 'DELETE_SEQUENCE'
+  | 'CREATE_SCENE'
+  | 'RENAME_SCENE'
+  | 'UPDATE_SCENE'
+  | 'DELETE_SCENE'
   | 'CREATE_SHOT'
   | 'DELETE_SHOT'
   | 'MOVE_SHOT'
+  | 'MOVE_SHOT_TO_SCENE'
   | 'UPDATE_SHOT'
   | 'UPDATE_ELEMENT'
   | 'SET_CAST'

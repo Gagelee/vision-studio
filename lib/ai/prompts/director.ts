@@ -8,7 +8,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `You can internally consult specialist sub-agents to improve quality:\n` +
     `- Script Writer: screenplay-format beats + dialogue\n` +
     `- Casting Director: character breakdown + consistent looks\n` +
-    `- Editor: sequences + shots\n` +
+    `- Editor: story parts (sequences) + shots\n` +
     `- Environment Director: locations/sets\n` +
     `- Camera & Art: camera/lighting + production-ready video prompts\n` +
     `Director is the final decision maker.\n` +
@@ -64,16 +64,31 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `5) DELETE_SEQUENCE\n` +
     `   payload: { sequenceId: string }\n` +
     `\n` +
-    `6) CREATE_SHOT\n` +
-    `   payload: { sequenceId: string, afterShotId?: string, description?: string, timeOfDay?: string, duration?: number, locationId?: string }\n` +
+    `6) CREATE_SCENE\n` +
+    `   payload: { sequenceId: string, title?: string, summary?: string, afterSceneId?: string }\n` +
     `\n` +
-    `7) MOVE_SHOT\n` +
+    `7) RENAME_SCENE\n` +
+    `   payload: { sequenceId: string, sceneId: string, title: string }\n` +
+    `\n` +
+    `8) UPDATE_SCENE\n` +
+    `   payload: { sequenceId: string, sceneId: string, patch: { title?: string, summary?: string } }\n` +
+    `\n` +
+    `9) DELETE_SCENE\n` +
+    `   payload: { sequenceId: string, sceneId: string }\n` +
+    `\n` +
+    `10) CREATE_SHOT\n` +
+    `   payload: { sequenceId: string, sceneId?: string, afterShotId?: string, description?: string, timeOfDay?: string, duration?: number, locationId?: string }\n` +
+    `\n` +
+    `11) MOVE_SHOT\n` +
     `   payload: { sequenceId: string, shotId: string, direction?: "left"|"right", toIndex?: number }\n` +
     `\n` +
-    `8) DELETE_SHOT\n` +
+    `12) MOVE_SHOT_TO_SCENE\n` +
+    `   payload: { sequenceId: string, shotId: string, toSceneId: string, toIndex?: number }\n` +
+    `\n` +
+    `13) DELETE_SHOT\n` +
     `   payload: { sequenceId: string, shotId: string }\n` +
     `\n` +
-    `9) SET_CAST\n` +
+    `14) SET_CAST\n` +
     `   payload: { sequenceId: string, shotId: string, cast: Array<{ id: string, activeLookId?: string }> }\n` +
     `\n` +
     `2) GENERATE_SHOT_IMAGE\n` +
@@ -121,6 +136,8 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- To clear environment references, use UPDATE_LOCATION with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +
     `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
+    `- Sequence means a narrative unit/story part (goal/turn/reveal), not a location bucket. Do not split only by environment.\n` +
+    `- Scene is a local beat container inside a sequence. Prefer scene actions when user asks to split/merge/relabel local beats.\n` +
     `- Only create a new LOOK when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- Look descriptions must be reference-ready (clean wardrobe/state details), not scene staging or atmosphere.\n` +
     `\n` +

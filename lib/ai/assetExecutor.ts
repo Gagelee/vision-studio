@@ -524,6 +524,8 @@ export const executeAssetJobs = async (args: {
   aspectRatio: AspectRatio;
   concurrency?: number;
   getStoryForRefs?: () => Story | null;
+  shouldCancelJob?: (job: AssetJob) => boolean;
+  getSignalForJob?: (job: AssetJob) => AbortSignal | undefined;
   maxAttempts?: number;
   stopAfterMasterKvFailure?: boolean;
   onEvent?: (e: AssetJobEvent) => void;
@@ -552,6 +554,13 @@ export const executeAssetJobs = async (args: {
   };
 
   const getJobKind = (job: AssetJob): AssetJob['kind'] => job.kind;
+  const isAbortLikeError = (e: unknown) => {
+    if (!e) return false;
+    if (typeof DOMException !== 'undefined' && e instanceof DOMException && e.name === 'AbortError') return true;
+    if ((e as any)?.name === 'AbortError') return true;
+    const msg = String((e as any)?.message || e || '').toLowerCase();
+    return msg.includes('abort') || msg.includes('aborted');
+  };
   const orderedPhases: Array<AssetJob['kind']> = ['masterkv', 'location', 'character', 'look', 'shot'];
   const phaseIndexOf = (kind: AssetJob['kind']) => orderedPhases.indexOf(kind);
 
@@ -727,9 +736,19 @@ export const executeAssetJobs = async (args: {
   };
 
   const worker = async (job: AssetJob) => {
+    if (args.shouldCancelJob?.(job)) {
+      done += 1;
+      args.onEvent?.({ type: 'blocked', job, done, total, reason: 'cancelled' });
+      return;
+    }
     args.onEvent?.({ type: 'start', job, done, total });
     try {
       const snapshot = args.getStoryForRefs?.() || null;
+      if (args.shouldCancelJob?.(job)) {
+        done += 1;
+        args.onEvent?.({ type: 'blocked', job, done, total, reason: 'cancelled' });
+        return;
+      }
       const blocked = checkBlocked(job, snapshot);
       if (blocked) {
         done += 1;
@@ -741,6 +760,8 @@ export const executeAssetJobs = async (args: {
       let lastErr: any = null;
 
       const attemptOnce = async () => {
+        const signal = args.getSignalForJob?.(job);
+        if (signal?.aborted || args.shouldCancelJob?.(job)) throw new DOMException('Aborted', 'AbortError');
         if (job.kind === 'masterkv') {
           const story = args.getStoryForRefs?.() || null;
           const refsRaw = Array.isArray((story as any)?.referenceImages) ? (story as any).referenceImages : [];
@@ -756,6 +777,7 @@ export const executeAssetJobs = async (args: {
             settings: args.settings,
             aspectRatio: args.aspectRatio,
             references,
+            signal,
             strict: true,
             requireAllReferences: false,
           });
@@ -815,6 +837,7 @@ export const executeAssetJobs = async (args: {
             settings: args.settings,
             aspectRatio: args.aspectRatio,
             references,
+            signal,
             promptSpec,
             composePrompt: true,
             composeSettings: { model: String((args as any)?.promptComposerModel || '') || 'gemini-3-pro-preview', temperature: 0.2, maxOutputTokens: 512 },
@@ -854,6 +877,7 @@ export const executeAssetJobs = async (args: {
             settings: args.settings,
             aspectRatio: args.aspectRatio,
             references,
+            signal,
             strict: true,
             requireAllReferences: false,
           });
@@ -882,6 +906,7 @@ export const executeAssetJobs = async (args: {
             settings: args.settings,
             aspectRatio: '1:1',
             references,
+            signal,
             strict: true,
             requireAllReferences: false,
           });
@@ -901,14 +926,15 @@ export const executeAssetJobs = async (args: {
 	        const avatarUrl =
 	          desiredAvatarUrl || (ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch, { activeOnly: true }) : '');
 	        const refs = avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : [];
-	        const out = await generateImageFromPrompt({
-	          prompt: job.prompt,
-	          settings: args.settings,
-	          aspectRatio: '1:1',
-	          references: refs,
-	          strict: true,
-	          requireAllReferences: refs.length > 0,
-	        });
+		        const out = await generateImageFromPrompt({
+		          prompt: job.prompt,
+		          settings: args.settings,
+		          aspectRatio: '1:1',
+		          references: refs,
+              signal,
+		          strict: true,
+		          requireAllReferences: refs.length > 0,
+		        });
           const meta = {
             prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
             references: refs.map((r) => ({ url: r.url, label: r.label })),
@@ -920,11 +946,17 @@ export const executeAssetJobs = async (args: {
 
       for (let i = 1; i <= maxAttempts; i++) {
         try {
+          if (args.shouldCancelJob?.(job)) throw new DOMException('Aborted', 'AbortError');
           const out = await attemptOnce();
           done += 1;
           args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug, meta: out.meta });
           return;
         } catch (e) {
+          if (isAbortLikeError(e) || args.shouldCancelJob?.(job)) {
+            done += 1;
+            args.onEvent?.({ type: 'blocked', job, done, total, reason: 'cancelled' });
+            return;
+          }
           lastErr = e;
           if (i < maxAttempts) {
             const backoff = Math.min(5000, Math.round(700 * Math.pow(1.6, i - 1)));

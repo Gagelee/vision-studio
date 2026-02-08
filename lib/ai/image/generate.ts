@@ -38,6 +38,7 @@ export const generateImageFromPrompt = async (req: {
     temperature?: number;
     maxOutputTokens?: number;
   };
+  signal?: AbortSignal;
   strict?: boolean;
   requireAllReferences?: boolean;
 }): Promise<GenerateShotImageResponse> => {
@@ -56,6 +57,10 @@ export const generateImageFromPrompt = async (req: {
       },
     });
     const controller = new AbortController();
+    const externalSignal = req.signal;
+    const abortFromExternal = () => controller.abort((externalSignal as any)?.reason || new DOMException('Aborted', 'AbortError'));
+    if (externalSignal?.aborted) abortFromExternal();
+    externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
     const timeout = setTimeout(() => controller.abort(), 60_000);
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -76,7 +81,10 @@ export const generateImageFromPrompt = async (req: {
         },
       }),
       signal: controller.signal,
-    }).finally(() => clearTimeout(timeout));
+    }).finally(() => {
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener('abort', abortFromExternal);
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as any;
     addDebugEvent({ level: 'info', scope: 'asset.image', message: 'Response', data });

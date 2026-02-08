@@ -33,7 +33,8 @@ export const buildTeamScaffoldDirectorBriefPrompt = (args: { intent: string; asp
     `  "sequenceOutline": Array<{ "title": string, "goal": string }>\n` +
     `}\n` +
     `Rules:\n` +
-    `- Keep it compact but concrete. Prefer 3-6 characters, 2-5 locations, 2-4 sequences.\n` +
+    `- Keep it compact but concrete. Prefer 3-6 characters, 2-5 locations, 2-4 story parts (sequences).\n` +
+    `- sequenceOutline should represent narrative units (goal/turn/reveal), not location buckets.\n` +
     `- Characters MUST be distinct and reusable across shots.\n` +
     `- If user intent explicitly specifies rendering medium/style, treat it as a HARD CONSTRAINT and repeat it verbatim in styleBible.\n` +
     `- Never replace an explicit user medium with a different one (e.g., realistic film -> oil painting).\n` +
@@ -61,15 +62,19 @@ export const buildTeamScaffoldScriptWriterPrompt = (args: {
     `{\n` +
     `  "sequences": Array<{\n` +
     `    "title": string,\n` +
-    `    "shots": Array<{\n` +
-    `      "beat": string,\n` +
-    `      "script": string,\n` +
-    `      "castNames": string[]\n` +
+    `    "scenes": Array<{\n` +
+    `      "title": string,\n` +
+    `      "summary"?: string,\n` +
+    `      "shots": Array<{\n` +
+    `        "beat": string,\n` +
+    `        "script": string,\n` +
+    `        "castNames": string[]\n` +
+    `      }>\n` +
     `    }>\n` +
     `  }>\n` +
     `}\n` +
     `Rules:\n` +
-    `- 2-4 sequences; each sequence around ${n} shots.\n` +
+    `- 2-4 story parts (sequences); each around ${n} shots.\n` +
     `- "script" must be in screenplay style (short action + optional dialogue lines with CHARACTER:).\n` +
     `- Use ONLY character names from director brief.\n` +
     `DirectorBrief: ${brief}\n`
@@ -128,24 +133,30 @@ export const buildTeamScaffoldEditorPrompt = (args: {
   return (
     `You are the EDITOR agent.\n` +
     `${jsonOnly()}\n` +
-    `Turn the script beats into sequences + shots suitable for storyboard generation.\n` +
+    `Turn the script beats into narrative-part (sequence) + shot structure suitable for storyboard generation.\n` +
     `Output schema:\n` +
     `{\n` +
     `  "sequences": Array<{\n` +
     `    "title": string,\n` +
     `    "context": string,\n` +
-    `    "shots": Array<{\n` +
-    `      "description": string,\n` +
-    `      "timeOfDay": string,\n` +
-    `      "duration": number,\n` +
-    `      "locationName": string,\n` +
-    `      "castNames": string[],\n` +
-    `      "script": string\n` +
+    `    "scenes": Array<{\n` +
+    `      "title": string,\n` +
+    `      "summary"?: string,\n` +
+    `      "shots": Array<{\n` +
+    `        "description": string,\n` +
+    `        "timeOfDay": string,\n` +
+    `        "duration": number,\n` +
+    `        "locationName": string,\n` +
+    `        "castNames": string[],\n` +
+    `        "script": string\n` +
+    `      }>\n` +
     `    }>\n` +
     `  }>\n` +
     `}\n` +
     `Rules:\n` +
     `- Keep continuity strong. Keep shot descriptions visual.\n` +
+    `- Sequence boundaries should follow narrative turns and dramatic purpose, not simple location switches.\n` +
+    `- A sequence may include multiple locations, and locations may intercut within one sequence.\n` +
     `- Use location names that exist in environment list.\n` +
     `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
     `DirectorBrief: ${brief}\n` +
@@ -170,11 +181,14 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
     `{\n` +
     `  "sequences": Array<{\n` +
     `    "title": string,\n` +
-    `    "shots": Array<{\n` +
-    `      "camera": string,\n` +
-    `      "lighting": string,\n` +
-    `      "audio": string,\n` +
-    `      "videoPrompt": string\n` +
+    `    "scenes": Array<{\n` +
+    `      "title": string,\n` +
+    `      "shots": Array<{\n` +
+    `        "camera": string,\n` +
+    `        "lighting": string,\n` +
+    `        "audio": string,\n` +
+    `        "videoPrompt": string\n` +
+    `      }>\n` +
     `    }>\n` +
     `  }>\n` +
     `}\n` +
@@ -214,16 +228,18 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `  "styleGuide": string,\n` +
     `  "locations": Array<{ "name": string, "description": string, "visualStyle": string }>,\n` +
     `  "characters": Array<{ "name": string, "description": string, "looks": Array<{ "name": string, "description": string }> }>,\n` +
-    `  "sequences": Array<{ "title": string, "context": string, "shots": Array<{\n` +
-    `     "description": string, "timeOfDay": string, "duration": number,\n` +
-    `     "camera": string, "lighting": string, "audio": string,\n` +
-    `     "locationName": string, "castNames": string[],\n` +
-    `     "script": string,\n` +
-    `     "videoPrompt": string\n` +
-    `  }> }>\n` +
+    `  "sequences": Array<{ "title": string, "context": string, "scenes": Array<{\n` +
+    `     "title": string, "summary"?: string, "shots": Array<{\n` +
+    `       "description": string, "timeOfDay": string, "duration": number,\n` +
+    `       "camera": string, "lighting": string, "audio": string,\n` +
+    `       "locationName": string, "castNames": string[],\n` +
+    `       "script": string,\n` +
+    `       "videoPrompt": string\n` +
+    `  }> }> }>\n` +
     `}\n` +
     `Rules:\n` +
     `- Ensure sequences/shots align across editor + camera&art (same counts and order).\n` +
+    `- Treat sequences as narrative units/story parts, not environment groupings.\n` +
     `- Ensure characters/locations match names used in shots.\n` +
     `- Keep rendering medium/style consistent with DirectorBrief. If user intent specified medium explicitly, preserve it as hard lock.\n` +
     `- Ensure final styleGuide and shot-level camera/lighting/videoPrompt contain concrete, generation-ready style terms (not only abstract adjectives).\n` +
@@ -247,7 +263,7 @@ export const buildTeamDirectPlannerPrompt = (args: { selectionJson: string; stor
     `Rules:\n` +
     `- requestedAgents is subset of ["script_writer","casting_director","editor","environment_director","camera_art"].\n` +
     `- Simple directives can use [].\n` +
-    `- screenplay/dialogue -> script_writer; shot/sequence continuity -> editor; character/look -> casting_director; location/world -> environment_director; camera/light/audio/videoPrompt -> camera_art.\n` +
+    `- screenplay/dialogue -> script_writer; shot/sequence (story-part) continuity -> editor; character/look -> casting_director; location/world -> environment_director; camera/light/audio/videoPrompt -> camera_art.\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +
     `Directive: ${directive}\n`
@@ -276,7 +292,7 @@ export const buildTeamDirectSpecialistPrompt = (args: {
   const roleRule: Record<string, string> = {
     script_writer: 'Prioritize script/dialogue and beat edits.',
     casting_director: 'Prioritize character identity/look consistency.',
-    editor: 'Prioritize sequence/shot structure and continuity.',
+    editor: 'Prioritize story-part (sequence)/shot structure and continuity.',
     environment_director: 'Prioritize location/set updates.',
     camera_art: 'For video prompt updates, use UPDATE_ELEMENT with elementType="CAMERA" and payload.metadata.videoPrompt.',
   };
@@ -322,7 +338,8 @@ export const buildTeamDirectMergePrompt = (args: {
     `- Use IDs that exist in the Story JSON.\n` +
     `- Keep actions 0-6.\n` +
     `- Do NOT output unknown payload fields.\n` +
-    `- For CREATE_SHOT include sequenceId and concrete visual fields (description/location/time/camera/lighting/script/videoPrompt/cast when relevant).\n` +
+    `- For scene-level edits, prefer CREATE_SCENE/RENAME_SCENE/UPDATE_SCENE/DELETE_SCENE and MOVE_SHOT_TO_SCENE.\n` +
+    `- For CREATE_SHOT include sequenceId (and sceneId when known) plus concrete visual fields (description/location/time/camera/lighting/script/videoPrompt/cast when relevant).\n` +
     `- If the user asks to generate storyboard images / 出图 / 渲染, and you create or update shots, include GENERATE_PROJECT_ASSETS with payload.scope=\"shots\" (so newly-created shot IDs don't matter).\n` +
     `Selection: ${selectionJson}\n` +
     `Story: ${storyJson}\n` +

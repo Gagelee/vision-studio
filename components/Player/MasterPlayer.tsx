@@ -6,18 +6,20 @@ import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface MasterPlayerProps {
   story: Story;
+  shots?: Shot[];
   onClose: () => void;
 }
 
-export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) => {
+export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, shots, onClose }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentShotIndex, setCurrentShotIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [imgError, setImgError] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Flatten shots from all sequences to create a linear timeline
-  const allShots = story.sequences.flatMap(s => s.shots);
+  // Flatten shots from all sequences to create a linear timeline.
+  // If a scoped list is provided (e.g. one scene), only play that subset.
+  const allShots = Array.isArray(shots) && shots.length > 0 ? shots : story.sequences.flatMap(s => s.shots);
   const currentShot = allShots[currentShotIndex];
   const currentVideoUrl = useMemo(() => {
     if (!currentShot) return '';

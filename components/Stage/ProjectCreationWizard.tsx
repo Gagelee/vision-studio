@@ -135,7 +135,10 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     const measure = () => {
       if (typeof window === 'undefined') return;
       const el = sharedInputAnchorRef.current;
-      if (!el) return;
+      if (!el) {
+        setSharedInputMeasured(true);
+        return;
+      }
       const rect = el.getBoundingClientRect();
       const centerY = rect.top + rect.height / 2;
       setSharedInputStartOffset(centerY - window.innerHeight / 2);
@@ -770,6 +773,26 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                 transform: scale(1.03);
               }
             }
+            @keyframes pcw-logo-shell-breathe {
+              0%, 100% {
+                transform: scale(1);
+                box-shadow: 0 0 0 1px rgba(255,255,255,0.38), 0 0 24px rgba(255,255,255,0.34);
+              }
+              50% {
+                transform: scale(1.03);
+                box-shadow: 0 0 0 1px rgba(255,255,255,0.56), 0 0 42px rgba(255,255,255,0.58);
+              }
+            }
+            @keyframes pcw-logo-core-breathe {
+              0%, 100% {
+                opacity: 0.84;
+                transform: scale(1);
+              }
+              50% {
+                opacity: 1;
+                transform: scale(1.04);
+              }
+            }
             .pcw-scroll {
               scrollbar-gutter: stable;
               scrollbar-width: none; /* Firefox default hidden */
@@ -833,14 +856,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
           className="relative z-10 w-full max-w-4xl text-center"
         >
             {isProcessing ? (
-                <div className="max-w-3xl mx-auto space-y-12 animate-in zoom-in-95 duration-500 rounded-[32px] border border-white/10 bg-black/55 backdrop-blur-[14px] px-8 py-10 shadow-[0_28px_80px_rgba(0,0,0,0.5)]">
-                    <div className="relative w-24 h-24 mx-auto">
-                        <div className="absolute -inset-2 rounded-full bg-white/12 blur-xl opacity-60 animate-pulse"></div>
-                        <div className="absolute inset-0 rounded-full border-2 border-white/10 animate-[ping_2s_infinite]"></div>
-                        <div className="absolute inset-0 rounded-full border-t-2 border-white/90 border-r border-r-white/25 border-b border-b-white/10 border-l border-l-white/10 animate-spin"></div>
-                        <div className="absolute inset-0 flex items-center justify-center">
-                            <Sparkles className="w-10 h-10 text-white/90 animate-pulse" />
-                        </div>
+                <div className="max-w-3xl mx-auto space-y-12 animate-in zoom-in-95 duration-500 px-8 py-10">
+                    <div
+                      className="relative w-24 h-24 min-w-24 min-h-24 aspect-square mx-auto shrink-0 rounded-full border border-zinc-300/80 bg-white/15 shadow-[0_0_0_1px_rgba(255,255,255,0.45),0_0_26px_rgba(255,255,255,0.42)]"
+                      style={{ animation: 'pcw-logo-shell-breathe 2.8s ease-in-out infinite' }}
+                    >
+                        <div className="absolute inset-[18px] rounded-full bg-white/90" style={{ animation: 'pcw-logo-core-breathe 2.8s ease-in-out infinite' }} />
                     </div>
                     <div>
 	                        <h2 className="text-4xl font-black text-white tracking-tighter mb-4">Director AI is Thinking...</h2>
@@ -1201,12 +1222,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                     {m.role === 'user' ? 'Auteur' : m.role === 'agent' ? 'Directeur' : 'System'}
                                   </div>
                                   <div
-                                    className={`max-w-[88%] px-5 py-4 text-[14px] leading-relaxed tracking-tight whitespace-pre-wrap ${
+                                    className={`max-w-[88%] px-5 py-4 text-left text-[14px] leading-relaxed tracking-tight whitespace-pre-wrap ${
                                       m.role === 'user'
-                                        ? 'bg-white text-black font-semibold rounded-[20px] rounded-tr-[6px] shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
+                                        ? 'bg-white text-black font-semibold rounded-[26px] rounded-tr-[8px] shadow-[0_16px_34px_rgba(0,0,0,0.34)]'
                                         : m.role === 'agent'
-                                          ? 'bg-black/35 border border-white/14 text-white/88 font-normal rounded-[20px] rounded-tl-[6px] backdrop-blur-xl'
-                                          : 'bg-white/[0.04] border border-white/12 text-zinc-200 rounded-[16px] backdrop-blur-xl'
+                                          ? 'bg-[linear-gradient(105deg,rgba(11,16,27,0.84)_0%,rgba(15,19,26,0.74)_48%,rgba(21,24,31,0.62)_100%)] border border-white/14 text-white/90 font-normal rounded-[26px] rounded-tl-[8px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05),0_10px_30px_rgba(0,0,0,0.34)] backdrop-blur-xl'
+                                          : 'bg-white/[0.05] border border-white/14 text-zinc-200 rounded-[22px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur-xl'
                                     }`}
                                   >
                                     {m.content}
@@ -1290,8 +1311,10 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                           style={{
                             transform: isPreflightOpen
                               ? 'translate(-50%, calc(50vh - 160px))'
-                              : `translate(-50%, ${sharedInputStartOffset+27}px)`,
-                            opacity: !isPreflightOpen && !sharedInputMeasured ? 0 : 1,
+                              : sharedInputMeasured
+                                ? `translate(-50%, ${sharedInputStartOffset + 27}px)`
+                                : 'translate(-50%, 0px)',
+                            opacity: 1,
                           }}
                         >
                           <div className="relative group">

@@ -118,15 +118,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Navigation Sections */}
         <div className="py-2 space-y-6">
             
-            {/* Timeline Sequences */}
+            {/* Story Parts */}
             <div>
                 <div className="px-4 pb-2 flex items-center justify-between">
                     <div className="flex items-center gap-2 text-xs font-bold text-zinc-500 dark:text-zinc-500 uppercase tracking-wider">
                         <LayoutTemplate className="w-3 h-3" />
-                        Sequences
+                        Story Parts
                     </div>
                     {onCreateSequence && (
-                        <button onClick={(e) => { e.stopPropagation(); onCreateSequence(); }} className="w-5 h-5 flex items-center justify-center rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors" title="New Sequence">
+                        <button onClick={(e) => { e.stopPropagation(); onCreateSequence(); }} className="w-5 h-5 flex items-center justify-center rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors" title="New Story Part">
                             <Plus className="w-3 h-3" />
                         </button>
                     )}
@@ -161,10 +161,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    if (window.confirm(`Delete sequence "${seq.title}"?`)) onDeleteSequence(seq.id);
+                                    if (window.confirm(`Delete story part "${seq.title}"?`)) onDeleteSequence(seq.id);
                                   }}
                                   className="text-zinc-400 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto"
-                                  title="Delete sequence"
+                                  title="Delete story part"
                                 >
                                   ✕
                                 </button>

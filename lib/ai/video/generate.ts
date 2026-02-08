@@ -9,6 +9,7 @@ export interface GenerateVideoFromImageRequest {
   resolution?: '720p';
   generateAudio?: boolean;
   model?: string;
+  signal?: AbortSignal;
   promptSpec?: {
     shotDescription?: string;
     action?: string;
@@ -53,6 +54,10 @@ export const generateVideoFromImage = async (
   });
 
   const controller = new AbortController();
+  const externalSignal = req.signal;
+  const abortFromExternal = () => controller.abort((externalSignal as any)?.reason || new DOMException('Aborted', 'AbortError'));
+  if (externalSignal?.aborted) abortFromExternal();
+  externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
   const timeout = setTimeout(() => controller.abort(), 12 * 60_000);
   try {
     const res = await fetch(endpoint, {
@@ -88,5 +93,6 @@ export const generateVideoFromImage = async (
     throw e;
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', abortFromExternal);
   }
 };

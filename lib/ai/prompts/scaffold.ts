@@ -10,7 +10,7 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `1) Director (overall vision + constraints)\n` +
     `2) Script Writer (screenplay-format beats + dialogue)\n` +
     `3) Casting Director (character breakdown + consistent looks)\n` +
-    `4) Editor (sequence & shot breakdown)\n` +
+    `4) Editor (narrative-part & shot breakdown)\n` +
     `5) Environment Director (locations/sets)\n` +
     `6) Camera & Art (camera/lighting + FINAL video generation prompt)\n` +
     `\n` +
@@ -21,7 +21,8 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `- styleGuide: string (DIRECTOR-created art core; assume user didn't specify style and you must decide it; include: rendering medium/style (e.g., ink wash / anime cel / watercolor / oil painting / documentary live-action), genre+tone, color palette, lighting mood, composition rules, camera language, negative constraints; 8-14 bullet-like sentences)\n` +
     `- locations: array of {name, description, visualStyle}\n` +
     `- characters: array of {name, description, looks:[{name, description}]}\n` +
-    `- sequences: array of {title, context, shots:[...]} (agent decides appropriate count)\n` +
+    `- sequences: array of {title, context, scenes:[...]} where each sequence is a narrative unit/story part (agent decides appropriate count)\n` +
+    `- each scene: { title, summary?, shots:[...] }\n` +
     `- each shot: {\n` +
     `    description, timeOfDay, duration,\n` +
     `    locationName, castNames[],\n` +
@@ -37,7 +38,9 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `- duration must be one of: 4, 6, 8 (seconds)\n` +
     `- Plan by runtime budget, not fixed counts: default target total runtime is ~60 seconds.\n` +
     `- If user explicitly requests a runtime/length, obey user requirement over default.\n` +
-    `- Choose sequence/shot counts that best fit the target runtime and story rhythm.\n` +
+    `- Choose sequence/scene/shot counts that best fit the target runtime and story rhythm.\n` +
+    `- IMPORTANT: sequence boundaries are narrative/dramatic boundaries (goal/turn/reveal), NOT a simple grouping by location/environment.\n` +
+    `- A sequence can include multiple locations, and locations can intercut inside one sequence when story logic requires it.\n` +
     `- Keep JSON VALID. If too long, reduce counts/verbosity.\n` +
     `- If the Intent includes a "Reference Assignments" section, treat it as hard constraints and preserve those mappings through Director -> Casting/Environment decisions.\n` +
     `- For character-assigned references, ensure corresponding character entries/looks are created or updated to match those references.\n` +
