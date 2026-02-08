@@ -2,6 +2,7 @@ import { IMAGES, INITIAL_STORY } from '../../../constants';
 import { AgentPlan, AiSettings, AspectRatio, ModelRuntimeSettings, Story } from '../../../types';
 import { addDebugEvent } from '../../debug/eventLog';
 import { AgentApiError, isAgentApiError, readErrorBody } from './apiError';
+import { normalizeStorySceneModel } from '../../story/sceneModel';
 
 export interface ScaffoldProjectRequest {
   intent: string;
@@ -139,7 +140,9 @@ export const scaffoldProjectStream = async (
         }
         if (parsed.event === 'done' && data) {
           addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'Response', data: { url: endpoint, json: data } });
-          return data as ScaffoldProjectResponse;
+          const payload = data as ScaffoldProjectResponse;
+          if (payload?.story) payload.story = normalizeStorySceneModel(payload.story);
+          return payload;
         }
         if (parsed.event === 'error' && data) {
           // Server-streamed errors are sent as JSON payloads.
@@ -167,7 +170,11 @@ const isUsefulScaffold = (story: Story | undefined | null) => {
   const seqs = Array.isArray(story.sequences) ? story.sequences : [];
   const locs = Array.isArray(story.locations) ? story.locations : [];
   const chars = Array.isArray(story.characters) ? story.characters : [];
-  const hasAnyShots = seqs.some((s) => Array.isArray(s.shots) && s.shots.length > 0);
+  const hasAnyShots = seqs.some((s) => {
+    const scenes = Array.isArray((s as any)?.scenes) ? (s as any).scenes : [];
+    if (scenes.some((sc: any) => Array.isArray(sc?.shots) && sc.shots.length > 0)) return true;
+    return Array.isArray((s as any)?.shots) && (s as any).shots.length > 0;
+  });
   return hasAnyShots || locs.length > 0 || chars.length > 0;
 };
 
@@ -206,7 +213,7 @@ export const createLocalMockProject = (intent: string, aspectRatio: AspectRatio,
   };
 
   return {
-    story,
+    story: normalizeStorySceneModel(story),
     plan,
     debug: {
       transport: 'mock',
@@ -298,6 +305,7 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
 
     return {
       ...res,
+      story: normalizeStorySceneModel((res as any).story),
       debug: {
         ...(res.debug || {}),
         transport: (res as any)?.debug?.transport || 'http',

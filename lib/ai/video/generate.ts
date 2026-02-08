@@ -9,6 +9,7 @@ export interface GenerateVideoFromImageRequest {
   resolution?: '720p';
   generateAudio?: boolean;
   model?: string;
+  signal?: AbortSignal;
   promptSpec?: {
     shotDescription?: string;
     action?: string;
@@ -53,6 +54,10 @@ export const generateVideoFromImage = async (
   });
 
   const controller = new AbortController();
+  const externalSignal = req.signal;
+  const abortFromExternal = () => controller.abort((externalSignal as any)?.reason || new DOMException('Aborted', 'AbortError'));
+  if (externalSignal?.aborted) abortFromExternal();
+  externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
   const timeout = setTimeout(() => controller.abort(), 12 * 60_000);
   try {
     const res = await fetch(endpoint, {
@@ -71,6 +76,20 @@ export const generateVideoFromImage = async (
       signal: controller.signal,
     });
     if (!res.ok) {
+      const ct = String(res.headers.get('content-type') || '').toLowerCase();
+      if (ct.includes('application/json')) {
+        const data = (await res.json().catch(() => null)) as any;
+        const code = String(data?.code || '').trim();
+        if (code === 'RAI_MEDIA_FILTERED') {
+          const reasons = Array.isArray(data?.debug?.raiReasons)
+            ? data.debug.raiReasons.map((x: any) => String(x || '').trim()).filter(Boolean)
+            : [];
+          const reasonText = reasons.length ? ` (${reasons.join(', ')})` : '';
+          throw new Error(`Provider safety filter blocked this video${reasonText}. Try softer/non-sensitive action wording and regenerate.`);
+        }
+        const detail = String(data?.error || '').trim();
+        throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+      }
       const text = await res.text();
       throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ''}`);
     }
@@ -88,5 +107,6 @@ export const generateVideoFromImage = async (
     throw e;
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', abortFromExternal);
   }
 };

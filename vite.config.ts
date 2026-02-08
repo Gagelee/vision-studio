@@ -159,22 +159,32 @@ const GEMINI_SCHEMA = {
     properties: {
       sequences: schemaArray(
         schemaObject({
-          required: ['title', 'context', 'shots'],
-          propertyOrdering: ['title', 'context', 'shots'],
+          required: ['title', 'context', 'scenes'],
+          propertyOrdering: ['title', 'context', 'scenes'],
           properties: {
             title: schemaString(),
             context: schemaString(),
-            shots: schemaArray(
+            scenes: schemaArray(
               schemaObject({
-                required: ['description', 'timeOfDay', 'duration', 'locationName', 'castNames', 'script'],
-                propertyOrdering: ['description', 'timeOfDay', 'duration', 'locationName', 'castNames', 'script'],
+                required: ['title', 'shots'],
+                propertyOrdering: ['title', 'summary', 'shots'],
                 properties: {
-                  description: schemaString(),
-                  timeOfDay: schemaString(),
-                  duration: schemaInt(),
-                  locationName: schemaString(),
-                  castNames: schemaArray(schemaString()),
-                  script: schemaString(),
+                  title: schemaString(),
+                  summary: schemaString(),
+                  shots: schemaArray(
+                    schemaObject({
+                      required: ['description', 'timeOfDay', 'duration', 'locationName', 'castNames', 'script'],
+                      propertyOrdering: ['description', 'timeOfDay', 'duration', 'locationName', 'castNames', 'script'],
+                      properties: {
+                        description: schemaString(),
+                        timeOfDay: schemaString(),
+                        duration: schemaInt(),
+                        locationName: schemaString(),
+                        castNames: schemaArray(schemaString()),
+                        script: schemaString(),
+                      },
+                    }),
+                  ),
                 },
               }),
             ),
@@ -189,19 +199,28 @@ const GEMINI_SCHEMA = {
     properties: {
       sequences: schemaArray(
         schemaObject({
-          required: ['title', 'shots'],
-          propertyOrdering: ['title', 'shots'],
+          required: ['title', 'scenes'],
+          propertyOrdering: ['title', 'scenes'],
           properties: {
             title: schemaString(),
-            shots: schemaArray(
+            scenes: schemaArray(
               schemaObject({
-                required: ['camera', 'lighting', 'audio', 'videoPrompt'],
-                propertyOrdering: ['camera', 'lighting', 'audio', 'videoPrompt'],
+                required: ['title', 'shots'],
+                propertyOrdering: ['title', 'shots'],
                 properties: {
-                  camera: schemaString(),
-                  lighting: schemaString(),
-                  audio: schemaString(),
-                  videoPrompt: schemaString(),
+                  title: schemaString(),
+                  shots: schemaArray(
+                    schemaObject({
+                      required: ['camera', 'lighting', 'audio', 'videoPrompt'],
+                      propertyOrdering: ['camera', 'lighting', 'audio', 'videoPrompt'],
+                      properties: {
+                        camera: schemaString(),
+                        lighting: schemaString(),
+                        audio: schemaString(),
+                        videoPrompt: schemaString(),
+                      },
+                    }),
+                  ),
                 },
               }),
             ),
@@ -243,48 +262,65 @@ const GEMINI_SCHEMA = {
       ),
       sequences: schemaArray(
         schemaObject({
-          required: ['title', 'context', 'shots'],
-          propertyOrdering: ['title', 'context', 'shots'],
+          required: ['title', 'context', 'scenes'],
+          propertyOrdering: ['title', 'context', 'scenes'],
           properties: {
             title: schemaString(),
             context: schemaString(),
-            shots: schemaArray(
+            scenes: schemaArray(
               schemaObject({
                 required: [
-                  'description',
-                  'timeOfDay',
-                  'duration',
-                  'camera',
-                  'lighting',
-                  'audio',
-                  'locationName',
-                  'castNames',
-                  'script',
-                  'videoPrompt',
+                  'title',
+                  'shots',
                 ],
                 propertyOrdering: [
-                  'description',
-                  'timeOfDay',
-                  'duration',
-                  'locationName',
-                  'castNames',
-                  'script',
-                  'camera',
-                  'lighting',
-                  'audio',
-                  'videoPrompt',
+                  'title',
+                  'summary',
+                  'shots',
                 ],
                 properties: {
-                  description: schemaString(),
-                  timeOfDay: schemaString(),
-                  duration: schemaInt(),
-                  camera: schemaString(),
-                  lighting: schemaString(),
-                  audio: schemaString(),
-                  locationName: schemaString(),
-                  castNames: schemaArray(schemaString()),
-                  script: schemaString(),
-                  videoPrompt: schemaString(),
+                  title: schemaString(),
+                  summary: schemaString(),
+                  shots: schemaArray(
+                    schemaObject({
+                      required: [
+                        'description',
+                        'timeOfDay',
+                        'duration',
+                        'camera',
+                        'lighting',
+                        'audio',
+                        'locationName',
+                        'castNames',
+                        'script',
+                        'videoPrompt',
+                      ],
+                      propertyOrdering: [
+                        'description',
+                        'timeOfDay',
+                        'duration',
+                        'locationName',
+                        'castNames',
+                        'script',
+                        'camera',
+                        'lighting',
+                        'audio',
+                        'videoPrompt',
+                      ],
+                      properties: {
+                        description: schemaString(),
+                        timeOfDay: schemaString(),
+                        duration: schemaInt(),
+                        camera: schemaString(),
+                        lighting: schemaString(),
+                        audio: schemaString(),
+                        locationName: schemaString(),
+                        castNames: schemaArray(schemaString()),
+                        script: schemaString(),
+                        videoPrompt: schemaString(),
+                      },
+                    }),
+                  ),
                 },
               }),
             ),
@@ -684,7 +720,7 @@ const callGeminiJson = async (args: {
   };
 
   const geminiDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
-  const res = await withRetries(
+  return withRetries(
     async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 90_000);
@@ -712,18 +748,27 @@ const callGeminiJson = async (args: {
           err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
           throw err;
         }
-        return res;
+        const data = (await res.json()) as any;
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (typeof text !== 'string') {
+          const err: any = new Error('Gemini: missing text response');
+          err.retryable = true;
+          throw err;
+        }
+        try {
+          return parseJsonLenient(text);
+        } catch (e) {
+          const err: any = e instanceof Error ? e : new Error(String(e));
+          // Gemini occasionally returns truncated/non-JSON text; retry often fixes it.
+          err.retryable = true;
+          throw err;
+        }
       } finally {
         clearTimeout(timeout);
       }
     },
     { label: `gemini.json:${args.model}`, maxAttempts },
   );
-
-  const data = (await res.json()) as any;
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (typeof text !== 'string') throw new Error('Gemini: missing text response');
-  return parseJsonLenient(text);
 };
 
 const callGeminiToolCall = async (args: {
@@ -1708,6 +1753,44 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           });
         }
 
+        const gvr = opData?.response?.generateVideoResponse || {};
+        const raiFilteredCount = Number(gvr?.raiMediaFilteredCount ?? gvr?.raiFilteredCount ?? 0);
+        const raiReasonsRaw = Array.isArray(gvr?.raiMediaFilteredReasons)
+          ? gvr.raiMediaFilteredReasons
+          : Array.isArray(gvr?.raiFilteredReasons)
+            ? gvr.raiFilteredReasons
+            : [];
+        const raiReasons = Array.from(
+          new Set(
+            raiReasonsRaw
+              .map((r: any) => {
+                if (!r) return '';
+                if (typeof r === 'string') return r.trim();
+                if (typeof r?.reason === 'string') return String(r.reason).trim();
+                if (typeof r?.category === 'string') return String(r.category).trim();
+                return '';
+              })
+              .filter(Boolean),
+          ),
+        );
+
+        if (!resolvedVideoUri && (raiFilteredCount > 0 || raiReasons.length > 0)) {
+          return sendJson(res, 422, {
+            ok: false,
+            code: 'RAI_MEDIA_FILTERED',
+            error: `Gemini Video blocked by safety filter (filtered=${raiFilteredCount || 1})`,
+            debug: {
+              provider: 'gemini',
+              model,
+              operationName,
+              raiFilteredCount,
+              raiReasons,
+              promptPreview: prompt.slice(0, 240),
+              promptUsedPreview: promptUsed.slice(0, 320),
+            },
+          });
+        }
+
         if (!resolvedVideoUri) {
           const responseShape = JSON.stringify(
             {
@@ -1739,7 +1822,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           },
         });
       } catch (e: any) {
-        return sendJson(res, 500, {
+        const status = Number(e?.status || 0);
+        const code = Number.isFinite(status) && status >= 400 && status <= 599 ? status : 500;
+        return sendJson(res, code, {
           ok: false,
           error: formatFetchError(e),
           debug: { provider: 'gemini', modelCandidates, imageUrlPreview: imageUrl.slice(0, 200), promptPreview: prompt.slice(0, 200), promptUsedPreview: promptUsed.slice(0, 320) },
@@ -2101,7 +2186,15 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               lastOpenedAt: now,
               locations: [],
               characters: [],
-              sequences: [{ id: mkId('seq'), title: 'Sequence 1', context: 'Auto-generated scaffold.', shots: [] }],
+              sequences: [
+                {
+                  id: mkId('seq'),
+                  title: 'Sequence 1',
+                  context: 'Auto-generated scaffold.',
+                  scenes: [{ id: mkId('scene'), title: 'Scene 1', shots: [] }],
+                  shots: [],
+                },
+              ],
             },
             plan: {
               id: mkId('plan'),
@@ -2188,6 +2281,25 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             locByName.set(item.name.toLowerCase(), item);
             return item;
           });
+          const normalizeNameKey = (v: any) =>
+            String(v || '')
+              .toLowerCase()
+              .replace(/[^\p{L}\p{N}]+/gu, ' ')
+              .trim()
+              .replace(/\s+/g, ' ');
+          const findBestLocation = (rawName: any) => {
+            const q = normalizeNameKey(rawName);
+            if (!q) return null;
+            const exact =
+              locByName.get(String(rawName || '').toLowerCase()) ||
+              mappedLocations.find((l: any) => normalizeNameKey(l?.name) === q);
+            if (exact) return exact;
+            const contains = mappedLocations.find((l: any) => {
+              const n = normalizeNameKey(l?.name);
+              return n.includes(q) || q.includes(n);
+            });
+            return contains || null;
+          };
 
 	          const charByName = new Map<string, any>();
 	          const mappedCharacters = characters.map((c: any) => {
@@ -2210,63 +2322,168 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	            charByName.set(item.name.toLowerCase(), item);
 	            return item;
 	          });
+          const findBestCharacter = (rawName: any) => {
+            const q = normalizeNameKey(rawName);
+            if (!q) return null;
+            const exact =
+              charByName.get(String(rawName || '').toLowerCase()) ||
+              mappedCharacters.find((c: any) => normalizeNameKey(c?.name) === q);
+            if (exact) return exact;
+            const contains = mappedCharacters.find((c: any) => {
+              const n = normalizeNameKey(c?.name);
+              return n.includes(q) || q.includes(n);
+            });
+            return contains || null;
+          };
+          const bindingAudit = {
+            locationFallbacks: 0,
+            locationUnresolved: [] as string[],
+            castUnresolved: [] as string[],
+          };
+
+	          const normalizeDuration = (raw: any) => {
+	            const d = Number(raw || 4);
+	            if (d <= 5) return 4;
+	            if (d <= 7) return 6;
+	            return 8;
+	          };
+	          const mapShot = (sh: any, sequenceNum: number) => {
+	            const locationNameRaw = String(sh?.locationName || '').trim();
+	            const loc = (locationNameRaw && findBestLocation(locationNameRaw)) || mappedLocations[0];
+              if (!locationNameRaw || !findBestLocation(locationNameRaw)) {
+                bindingAudit.locationFallbacks += 1;
+                if (locationNameRaw) bindingAudit.locationUnresolved.push(locationNameRaw);
+              }
+	            const castNames = Array.isArray(sh?.castNames) ? sh.castNames : [];
+	            const cast = castNames
+	              .map((n: any) => {
+	                const ch = findBestCharacter(n);
+	                if (!ch) return null;
+	                const activeLookId = ch.looks?.[0]?.id || '';
+	                return { id: ch.id, activeLookId };
+	              })
+	              .filter(Boolean);
+              for (const n of castNames) {
+                if (!findBestCharacter(n)) bindingAudit.castUnresolved.push(String(n || '').trim());
+              }
+
+	            return {
+	              id: mkId('shot'),
+	              sequence: sequenceNum,
+	              locationId: loc?.id || '',
+	              timeOfDay: String(sh?.timeOfDay || 'Day'),
+	              description: String(sh?.description || `Shot ${sequenceNum}`),
+	              duration: normalizeDuration(sh?.duration),
+	              thumbnailUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=2025&auto=format&fit=crop',
+	              activeVersionId: 'v1',
+	              versions: [
+	                {
+	                  id: 'v1',
+	                  imageUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=2025&auto=format&fit=crop',
+	                  createdAt: now,
+	                  type: 'placeholder',
+	                },
+	              ],
+	              elements: {
+	                SCRIPT: { type: 'SCRIPT', prompt: String(sh?.script || ''), status: 'auto' },
+	                CASTING: { type: 'CASTING', prompt: '', status: 'manual', metadata: { characters: cast } },
+	                CAMERA: {
+	                  type: 'CAMERA',
+	                  prompt: String(sh?.camera || 'Narrative shot'),
+	                  status: 'auto',
+	                  metadata: {
+	                    videoPrompt: applyStyleLock(
+	                      String(sh?.videoPrompt || ''),
+	                      styleLock,
+	                      [String(sh?.description || ''), String(sh?.camera || ''), String(sh?.lighting || '')],
+	                    ),
+	                  },
+	                },
+	                LIGHTING: { type: 'LIGHTING', prompt: String(sh?.lighting || 'Scene-consistent lighting'), status: 'auto' },
+	                AUDIO: { type: 'AUDIO', prompt: String(sh?.audio || 'Ambient sound'), status: 'auto' },
+	              },
+	              aiState: 'idle',
+	            };
+	          };
+	          const inferSceneTitle = (rawTitle: any, shots: any[], idx: number) => {
+	            const explicit = String(rawTitle || '').trim();
+	            if (explicit) return explicit;
+	            const first = Array.isArray(shots) ? shots[0] : null;
+	            const loc = first?.locationName ? String(first.locationName).trim() : '';
+	            const tod = first?.timeOfDay ? String(first.timeOfDay).trim() : '';
+	            if (loc && tod) return `${loc} · ${tod}`;
+	            if (loc) return loc;
+	            return `Scene ${idx + 1}`;
+	          };
 
 	          const mappedSequences = sequences.map((s: any) => {
 	            const seqId = mkId('seq');
-	            const shots = Array.isArray(s?.shots) ? s.shots : [];
-	            const mappedShots = shots.map((sh: any, idx: number) => {
-	              const locationName = String(sh?.locationName || '').toLowerCase();
-	              const loc = (locationName && locByName.get(locationName)) || mappedLocations[0];
-	              const castNames = Array.isArray(sh?.castNames) ? sh.castNames : [];
-	              const cast = castNames
-	                .map((n: any) => {
-	                  const ch = charByName.get(String(n || '').toLowerCase());
-	                  if (!ch) return null;
-	                  const activeLookId = ch.looks?.[0]?.id || '';
-	                  return { id: ch.id, activeLookId };
-	                })
-	                .filter(Boolean);
-
+	            const rawScenes = Array.isArray(s?.scenes)
+	              ? s.scenes
+	              : [{ title: '', summary: '', shots: Array.isArray(s?.shots) ? s.shots : [] }];
+	            let seqCounter = 0;
+	            const mappedScenes = rawScenes.map((sc: any, scIdx: number) => {
+	              const rawShots = Array.isArray(sc?.shots) ? sc.shots : [];
+	              const mappedShots = rawShots.map((sh: any) => {
+	                seqCounter += 1;
+	                return mapShot(sh, seqCounter);
+	              });
 	              return {
-	                id: mkId('shot'),
-	                sequence: idx + 1,
-	                locationId: loc?.id || '',
-	                timeOfDay: String(sh?.timeOfDay || 'Day'),
-	                description: String(sh?.description || `Shot ${idx + 1}`),
-	                duration: Number(sh?.duration || 4),
-	                thumbnailUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=2025&auto=format&fit=crop',
-	                activeVersionId: 'v1',
-	                versions: [
-	                  {
-	                    id: 'v1',
-	                    imageUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=2025&auto=format&fit=crop',
-	                    createdAt: now,
-	                    type: 'placeholder',
-	                  },
-	                ],
-	                elements: {
-	                  SCRIPT: { type: 'SCRIPT', prompt: String(sh?.script || ''), status: 'auto' },
-	                  CASTING: { type: 'CASTING', prompt: '', status: 'manual', metadata: { characters: cast } },
-	                  CAMERA: {
-	                    type: 'CAMERA',
-	                    prompt: String(sh?.camera || 'Narrative shot'),
-	                    status: 'auto',
-	                    metadata: { videoPrompt: applyStyleLock(String(sh?.videoPrompt || ''), styleLock, [String(sh?.description || ''), String(sh?.camera || ''), String(sh?.lighting || '')]) },
-	                  },
-	                  LIGHTING: { type: 'LIGHTING', prompt: String(sh?.lighting || 'Scene-consistent lighting'), status: 'auto' },
-	                  AUDIO: { type: 'AUDIO', prompt: String(sh?.audio || 'Ambient sound'), status: 'auto' },
-	                },
-	                aiState: 'idle',
+	                id: mkId('scene'),
+	                title: inferSceneTitle(sc?.title, rawShots, scIdx),
+	                summary: String(sc?.summary || '').trim() || undefined,
+	                shots: mappedShots,
 	              };
 	            });
-
+	            const flatShots = mappedScenes.flatMap((sc: any) => sc.shots || []);
 	            return {
 	              id: seqId,
 	              title: String(s?.title || 'Sequence'),
 	              context: String(s?.context || ''),
-	              shots: mappedShots,
+	              scenes: mappedScenes,
+	              shots: flatShots,
 	            };
 	          });
+
+	          // Ensure each mapped location appears in at least one shot to avoid orphan environment assets.
+	          const usedLocationIds = new Set(
+	            mappedSequences.flatMap((seq: any) => (seq.shots || []).map((sh: any) => String(sh?.locationId || ''))),
+	          );
+	          const missingLocations = mappedLocations.filter((loc: any) => !usedLocationIds.has(String(loc.id || '')));
+	          if (missingLocations.length) {
+	            if (!mappedSequences.length) {
+	              mappedSequences.push({
+	                id: mkId('seq'),
+	                title: 'Sequence 1',
+	                context: 'Auto-generated scaffold.',
+	                scenes: [{ id: mkId('scene'), title: 'Scene 1', shots: [] }],
+	                shots: [],
+	              });
+	            }
+	            const targetSeq = mappedSequences[mappedSequences.length - 1];
+	            if (!Array.isArray(targetSeq.scenes) || !targetSeq.scenes.length) {
+	              targetSeq.scenes = [{ id: mkId('scene'), title: 'Scene 1', shots: [] }];
+	            }
+	            for (const loc of missingLocations) {
+	              const nextNum = (targetSeq.shots || []).length + 1;
+	              const filler = mapShot(
+	                {
+	                  locationName: String(loc?.name || ''),
+	                  timeOfDay: 'Day',
+	                  duration: 4,
+	                  description: `Establishing shot of ${String(loc?.name || 'the location')}.`,
+	                  script: '',
+	                  camera: 'Wide establishing shot',
+	                  lighting: 'Natural scene-consistent lighting',
+	                  audio: 'Ambient environmental sound',
+	                  videoPrompt: `Establishing shot of ${String(loc?.name || 'location')}, preserve environment continuity.`,
+	                },
+	                nextNum,
+	              );
+	              targetSeq.scenes[targetSeq.scenes.length - 1].shots.push(filler);
+	              targetSeq.shots.push(filler);
+	            }
+	          }
 
 	          return {
 	            ok: true,
@@ -2288,7 +2505,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              characters: mappedCharacters,
 	              sequences: mappedSequences.length
 	                ? mappedSequences
-	                : [{ id: mkId('seq'), title: 'Sequence 1', context: 'Auto-generated scaffold.', shots: [] }],
+	                : [{
+	                    id: mkId('seq'),
+	                    title: 'Sequence 1',
+	                    context: 'Auto-generated scaffold.',
+	                    scenes: [{ id: mkId('scene'), title: 'Scene 1', shots: [] }],
+	                    shots: [],
+	                  }],
 	            },
 	            plan: {
 	              id: mkId('plan'),
@@ -2304,6 +2527,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              actions: [{ type: 'SCAFFOLD_PROJECT' }],
 	            },
 	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source, ...(debugExtra || {}) },
+	            bindingAudit,
 	          };
 	        };
 

@@ -1,8 +1,8 @@
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ElementType, Sequence, Shot, Location, AspectRatio } from '../../types';
 import { ShotCard } from './ShotCard';
-import { Clock, Plus, Maximize2, Minimize2, Play, LayoutGrid, ChevronLeft, ChevronRight, Trash2, List, ScrollText, Copy } from 'lucide-react';
+import { Clock, Plus, Maximize2, Minimize2, Play, LayoutGrid, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2, List, ScrollText, Copy, Check, Pencil } from 'lucide-react';
 
 interface StageViewProps {
   sequence: Sequence;
@@ -14,10 +14,13 @@ interface StageViewProps {
   onUpdateShot: (shot: Shot) => void;
   onDeleteShot: (id: string) => void;
   onMoveShot: (id: string, direction: 'left' | 'right') => void;
-  onAddShot: (opts?: { afterShotId?: string; locationId?: string; timeOfDay?: string }) => void;
+  onMoveShotToScene?: (shotId: string, toSceneId: string) => void;
+  onAddShot: (opts?: { sceneId?: string; afterShotId?: string; locationId?: string; timeOfDay?: string }) => void;
+  onRenameSequence?: (title: string) => void;
+  onRenameScene?: (sceneId: string, title: string) => void;
+  onPlayScene?: (sceneId: string) => void;
   onBackToSequence: () => void;
   onEditLocation: () => void;
-  onPlay?: () => void;
 }
 
 export const StageView: React.FC<StageViewProps> = ({ 
@@ -29,26 +32,30 @@ export const StageView: React.FC<StageViewProps> = ({
     onSelectShot, 
     onDeleteShot,
     onMoveShot,
+    onMoveShotToScene,
     onAddShot,
-    onPlay
+    onRenameSequence,
+    onRenameScene,
+    onPlayScene,
 }) => {
   const [isPromptPanelOpen, setIsPromptPanelOpen] = useState(false);
+  const [isEditingSequenceTitle, setIsEditingSequenceTitle] = useState(false);
+  const [sequenceTitleInput, setSequenceTitleInput] = useState(sequence.title || '');
+  const [editingSceneId, setEditingSceneId] = useState<string | null>(null);
+  const [sceneTitleInput, setSceneTitleInput] = useState('');
 
-  // Group shots by visual scene (Location + Time)
-  const groupedScenes: { id: string; locationId: string; timeOfDay: string; shots: Shot[] }[] = [];
-  sequence.shots.forEach((shot, idx) => {
-    const lastGroup = groupedScenes[groupedScenes.length - 1];
-    if (lastGroup && lastGroup.locationId === shot.locationId && lastGroup.timeOfDay === shot.timeOfDay) {
-      lastGroup.shots.push(shot);
-    } else {
-      groupedScenes.push({
-        id: `scene-${idx}`,
-        locationId: shot.locationId,
-        timeOfDay: shot.timeOfDay,
-        shots: [shot]
-      });
-    }
-  });
+  useEffect(() => {
+    setSequenceTitleInput(sequence.title || '');
+    setIsEditingSequenceTitle(false);
+    setEditingSceneId(null);
+    setSceneTitleInput('');
+  }, [sequence.id, sequence.title]);
+
+  const groupedScenes = useMemo(() => {
+    const raw = Array.isArray((sequence as any)?.scenes) ? (sequence as any).scenes : [];
+    if (raw.length) return raw;
+    return [{ id: `${sequence.id}-scene-1`, title: 'Scene 1', shots: sequence.shots || [] }];
+  }, [sequence]);
 
   const shotPrompts = useMemo(() => {
     return (sequence.shots || []).map((shot) => {
@@ -74,7 +81,51 @@ export const StageView: React.FC<StageViewProps> = ({
                     <LayoutGrid className="w-3 h-3" />
                     Storyboard
                 </span>
-                <h2 className="text-xl font-bold text-zinc-900 dark:text-white tracking-tight">{sequence.title}</h2>
+                {isEditingSequenceTitle ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={sequenceTitleInput}
+                      onChange={(e) => setSequenceTitleInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const next = String(sequenceTitleInput || '').trim();
+                          if (next) onRenameSequence?.(next);
+                          setIsEditingSequenceTitle(false);
+                        }
+                        if (e.key === 'Escape') {
+                          setSequenceTitleInput(sequence.title || '');
+                          setIsEditingSequenceTitle(false);
+                        }
+                      }}
+                      className="h-9 min-w-[260px] rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 text-lg font-bold text-zinc-900 dark:text-white"
+                      autoFocus
+                    />
+                    <button
+                      onClick={() => {
+                        const next = String(sequenceTitleInput || '').trim();
+                        if (next) onRenameSequence?.(next);
+                        setIsEditingSequenceTitle(false);
+                      }}
+                      className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                      title="Save story part title"
+                    >
+                      <Check className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSequenceTitleInput(sequence.title || '');
+                      setIsEditingSequenceTitle(true);
+                    }}
+                    className="group flex items-center gap-2 text-xl font-bold text-zinc-900 dark:text-white tracking-tight"
+                    title="Edit story part title"
+                  >
+                    <span>{sequence.title}</span>
+                    <Pencil className="w-4 h-4 opacity-0 group-hover:opacity-70 transition-opacity" />
+                  </button>
+                )}
             </div>
             {!isImmersive && (
                 <p className="text-zinc-500 text-sm leading-relaxed max-w-3xl font-medium truncate">
@@ -85,13 +136,6 @@ export const StageView: React.FC<StageViewProps> = ({
         
         {/* Controls */}
         <div className="flex gap-2">
-            <button 
-                onClick={onPlay}
-                className="group flex items-center gap-2 px-4 py-2 bg-zinc-900 dark:bg-white text-white dark:text-black border border-transparent rounded-lg hover:opacity-90 transition-all text-xs font-bold uppercase tracking-wide shadow-lg"
-            >
-                <Play className="w-3 h-3 fill-current group-hover:scale-110 transition-transform" />
-                <span>Play All</span>
-            </button>
             <button
               onClick={() => setIsPromptPanelOpen((v) => !v)}
               className={`group flex items-center gap-2 px-4 py-2 rounded-lg border transition-all text-xs font-bold uppercase tracking-wide shadow-lg ${
@@ -172,20 +216,74 @@ export const StageView: React.FC<StageViewProps> = ({
             </div>
           ) : (
             <div className="space-y-16 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                {groupedScenes.map((group, i) => (
+                {groupedScenes.map((group: any, i: number) => (
                   <div key={group.id} className="relative pl-12 border-l-2 border-zinc-200 dark:border-zinc-800/50">
                       {/* Scene Heading */}
                       <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-zinc-200 dark:bg-zinc-900 border-2 border-zinc-400 dark:border-zinc-700"></div>
                       <div className="flex items-center gap-4 mb-6">
                           <span className="text-2xl font-black text-zinc-300 dark:text-white/20 select-none">0{i+1}</span>
                           <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-white/5 px-4 py-2 rounded-lg backdrop-blur-sm shadow-sm">
-                              <span className="text-zinc-800 dark:text-white font-bold text-lg tracking-tight mr-3">
-                                {allLocations.find((l) => l.id === group.locationId)?.name || 'Unknown Location'}
-                              </span>
-                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-100 dark:bg-black/40 border border-zinc-200 dark:border-white/10 text-[10px] text-zinc-500 dark:text-zinc-400 font-mono uppercase">
-                                 <Clock className="w-3 h-3" />
-                                 {group.timeOfDay}
-                              </span>
+                              {editingSceneId === String(group.id || '') ? (
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    value={sceneTitleInput}
+                                    onChange={(e) => setSceneTitleInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        const next = String(sceneTitleInput || '').trim();
+                                        if (next) onRenameScene?.(String(group.id || ''), next);
+                                        setEditingSceneId(null);
+                                        setSceneTitleInput('');
+                                      }
+                                      if (e.key === 'Escape') {
+                                        setEditingSceneId(null);
+                                        setSceneTitleInput('');
+                                      }
+                                    }}
+                                    className="h-8 min-w-[220px] rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 text-sm font-semibold text-zinc-900 dark:text-white"
+                                    autoFocus
+                                  />
+                                  <button
+                                    onClick={() => {
+                                      const next = String(sceneTitleInput || '').trim();
+                                      if (next) onRenameScene?.(String(group.id || ''), next);
+                                      setEditingSceneId(null);
+                                      setSceneTitleInput('');
+                                    }}
+                                    className="p-1 rounded-md border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                                    title="Save scene title"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingSceneId(String(group.id || ''));
+                                      setSceneTitleInput(String(group.title || `Scene ${i + 1}`));
+                                    }}
+                                    className="group flex items-center gap-2 text-zinc-800 dark:text-white font-bold text-lg tracking-tight mr-1"
+                                    title="Edit scene title"
+                                  >
+                                    <span>{String(group.title || `Scene ${i + 1}`)}</span>
+                                    <Pencil className="w-3.5 h-3.5 opacity-0 group-hover:opacity-70 transition-opacity" />
+                                  </button>
+                                  <button
+                                    onClick={() => onPlayScene?.(String(group.id || ''))}
+                                    disabled={!Array.isArray(group.shots) || group.shots.length === 0}
+                                    className="group inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white/90 dark:bg-zinc-900 text-[10px] font-black uppercase tracking-wider text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-40"
+                                    title="Play this scene"
+                                  >
+                                    <Play className="w-3 h-3 fill-current" />
+                                    <span>Play Scene</span>
+                                  </button>
+                                </div>
+                              )}
+                              {group.summary ? (
+                                <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{String(group.summary)}</span>
+                              ) : null}
                           </div>
                       </div>
 
@@ -197,6 +295,19 @@ export const StageView: React.FC<StageViewProps> = ({
                                   
                                   {/* Quick Actions */}
                                   <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1 opacity-0 group-hover/shot:opacity-100 transition-all z-30 translate-y-2 group-hover/shot:translate-y-0">
+                                      {onMoveShotToScene && i > 0 && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            const prevId = String(groupedScenes[i - 1]?.id || '');
+                                            if (prevId) onMoveShotToScene(shot.id, prevId);
+                                          }}
+                                          className="p-1.5 rounded-lg bg-zinc-900 text-white hover:bg-emerald-600 transition-colors shadow-xl"
+                                          title="Move to previous scene"
+                                        >
+                                          <ChevronUp className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
                                       <button 
                                         onClick={(e) => { e.stopPropagation(); onMoveShot(shot.id, 'left'); }}
                                         className="p-1.5 rounded-lg bg-zinc-900 text-white hover:bg-indigo-600 transition-colors shadow-xl"
@@ -218,6 +329,19 @@ export const StageView: React.FC<StageViewProps> = ({
                                       >
                                           <ChevronRight className="w-3.5 h-3.5" />
                                       </button>
+                                      {onMoveShotToScene && i < groupedScenes.length - 1 && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            const nextId = String(groupedScenes[i + 1]?.id || '');
+                                            if (nextId) onMoveShotToScene(shot.id, nextId);
+                                          }}
+                                          className="p-1.5 rounded-lg bg-zinc-900 text-white hover:bg-emerald-600 transition-colors shadow-xl"
+                                          title="Move to next scene"
+                                        >
+                                          <ChevronDown className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
                                   </div>
                               </div>
                           ))}
@@ -226,9 +350,10 @@ export const StageView: React.FC<StageViewProps> = ({
                           <div 
                               onClick={() =>
                                 onAddShot({
+                                  sceneId: String(group.id || ''),
                                   afterShotId: group.shots[group.shots.length - 1]?.id,
-                                  locationId: group.locationId,
-                                  timeOfDay: group.timeOfDay,
+                                  locationId: group.shots[group.shots.length - 1]?.locationId,
+                                  timeOfDay: group.shots[group.shots.length - 1]?.timeOfDay,
                                 })
                               }
                               className="aspect-video border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl flex flex-col gap-3 items-center justify-center text-zinc-400 dark:text-zinc-600 hover:text-indigo-600 dark:hover:text-white hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/5 cursor-pointer transition-all group/add"
@@ -250,7 +375,7 @@ export const StageView: React.FC<StageViewProps> = ({
           <div className="absolute bottom-0 left-0 right-0 h-24 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-xl border-t border-zinc-200 dark:border-zinc-800 px-8 flex items-center gap-4 z-40 overflow-x-auto no-scrollbar shadow-[0_-10px_40px_rgba(0,0,0,0.1)]">
               <div className="flex items-center gap-2 shrink-0 pr-4 border-r border-zinc-200 dark:border-zinc-800">
                   <List className="w-4 h-4 text-zinc-700 dark:text-zinc-200" />
-                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Sequence Strip</span>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Story Part Strip</span>
               </div>
               <div className="flex items-center gap-3 py-2">
                   {sequence.shots.map((shot, idx) => (

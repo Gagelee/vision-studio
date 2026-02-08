@@ -18,6 +18,7 @@ import { StartProductionModal } from './components/Production/StartProductionMod
 import { DebugPanel } from './components/Debug/DebugPanel';
 import { ImageLightbox } from './components/Overlay/ImageLightbox';
 import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
+import { normalizeStorySceneModel } from './lib/story/sceneModel';
 import { loadAiSettings, saveAiSettings } from './lib/ai/aiSettingsStorage';
 import { runDirectorCommand, runDirectorCommandStream, type DirectorCommandResponse, type DirectorStreamEvent } from './lib/ai/agent/direct';
 import { isAgentApiError } from './lib/ai/agent/apiError';
@@ -68,6 +69,14 @@ interface PendingInteractionGeneration {
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
 const STALE_GENERATION_MAX_AGE_MS = 5 * 60_000;
 const STALE_PRODUCTION_MAX_AGE_MS = 20 * 60_000;
+
+const assetJobKey = (projectId: string, job: AssetJob): string => {
+  if (job.kind === 'masterkv') return `${projectId}|masterkv`;
+  if (job.kind === 'location') return `${projectId}|location|${job.locationId}`;
+  if (job.kind === 'character') return `${projectId}|character|${job.characterId}`;
+  if (job.kind === 'look') return `${projectId}|look|${job.characterId}|${job.lookId}`;
+  return `${projectId}|shot|${job.sequenceId}|${job.shot.id}`;
+};
 
 const recoverAssetStateIfStale = (state: any, now: number, fallbackTs: number): { next: any; fixed: boolean } => {
   if (!state) return { next: state, fixed: false };
@@ -170,6 +179,59 @@ const recoverStoryStaleGenerationStates = (story: Story, now: number): { next: S
   };
 };
 
+const mergeIncomingStoryPreferRealPreviews = (incoming: Story, existing?: Story | null): Story => {
+  if (!existing || existing.id !== incoming.id) return incoming;
+  const pickUrl = (nextUrl: string, prevUrl: string) => {
+    const n = String(nextUrl || '').trim();
+    const p = String(prevUrl || '').trim();
+    const nReal = n && !isLikelyPlaceholderImageUrl(n);
+    const pReal = p && !isLikelyPlaceholderImageUrl(p);
+    if (nReal) return n;
+    if (pReal) return p;
+    return n || p;
+  };
+  const mergeVersions = (nextVersions: any[], prevVersions: any[]) => {
+    const out: any[] = [];
+    const seen = new Set<string>();
+    for (const v of [...(Array.isArray(nextVersions) ? nextVersions : []), ...(Array.isArray(prevVersions) ? prevVersions : [])]) {
+      const key = String(v?.id || '') || String(v?.imageUrl || '');
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(v);
+    }
+    return out;
+  };
+  const nextSequences = (incoming.sequences || []).map((seq) => {
+    const prevSeq = (existing.sequences || []).find((s) => s.id === seq.id);
+    if (!prevSeq) return seq;
+    return {
+      ...seq,
+      shots: (seq.shots || []).map((shot) => {
+        const prevShot = (prevSeq.shots || []).find((s) => s.id === shot.id);
+        if (!prevShot) return shot;
+        const nextThumb = pickUrl(String((shot as any).thumbnailUrl || ''), String((prevShot as any).thumbnailUrl || ''));
+        const nextVersions = mergeVersions((shot as any).versions || [], (prevShot as any).versions || []);
+        const currentActive = nextVersions.find((v: any) => String(v?.id || '') === String((shot as any).activeVersionId || ''));
+        const prevActive = nextVersions.find((v: any) => String(v?.id || '') === String((prevShot as any).activeVersionId || ''));
+        const currentActiveReal = Boolean(currentActive?.imageUrl) && !isLikelyPlaceholderImageUrl(String(currentActive.imageUrl));
+        const prevActiveReal = Boolean(prevActive?.imageUrl) && !isLikelyPlaceholderImageUrl(String(prevActive.imageUrl));
+        const activeVersionId =
+          currentActiveReal || !prevActiveReal ? (shot as any).activeVersionId : (prevShot as any).activeVersionId;
+        return {
+          ...shot,
+          thumbnailUrl: nextThumb,
+          versions: nextVersions,
+          activeVersionId,
+        } as any;
+      }),
+    };
+  });
+  return {
+    ...incoming,
+    sequences: nextSequences,
+  };
+};
+
 function renumberShots(shots: Shot[]): Shot[] {
   return shots.map((s, idx) => ({ ...s, sequence: idx + 1 }));
 }
@@ -259,7 +321,55 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       }))
       .filter((r) => r.url);
 
-  return actions.reduce<Story>((acc, action) => {
+  const getSeqScenes = (seq: Sequence) => {
+    const scenes = Array.isArray((seq as any).scenes) ? ((seq as any).scenes as any[]) : [];
+    if (scenes.length) return scenes;
+    return [{ id: `${seq.id}-scene-1`, title: 'Scene 1', shots: Array.isArray(seq.shots) ? seq.shots : [] }];
+  };
+  const syncSequenceFromScenes = (seq: Sequence, rawScenes: any[]): Sequence => {
+    const scenes = (Array.isArray(rawScenes) ? rawScenes : [])
+      .map((sc: any, idx: number) => ({
+        id: String(sc?.id || `${seq.id}-scene-${idx + 1}`),
+        title: String(sc?.title || `Scene ${idx + 1}`),
+        summary: typeof sc?.summary === 'string' ? sc.summary : undefined,
+        shots: Array.isArray(sc?.shots) ? sc.shots : [],
+      }))
+      .filter((sc: any) => Array.isArray(sc.shots));
+    const nonEmpty = scenes.filter((sc: any) => sc.shots.length > 0);
+    const safeScenes = nonEmpty.length ? nonEmpty : [{ id: `${seq.id}-scene-1`, title: 'Scene 1', shots: [] }];
+    const flat = renumberShots(safeScenes.flatMap((sc: any) => sc.shots || []));
+    const byId = new Map(flat.map((s) => [s.id, s]));
+    const syncedScenes = safeScenes.map((sc: any) => ({
+      ...sc,
+      shots: (sc.shots || []).map((s: any) => byId.get(String(s?.id || '')) || s).filter(Boolean),
+    }));
+    return { ...seq, scenes: syncedScenes as any, shots: flat };
+  };
+  const syncSequenceFromShots = (seq: Sequence, nextShots: Shot[]): Sequence => {
+    const ordered = renumberShots(nextShots);
+    const byId = new Map(ordered.map((s) => [s.id, s]));
+    const existing = getSeqScenes(seq);
+    const assigned = new Set<string>();
+    const remapped = existing.map((sc: any) => {
+      const keep = (Array.isArray(sc?.shots) ? sc.shots : [])
+        .map((s: any) => byId.get(String(s?.id || '')))
+        .filter(Boolean) as Shot[];
+      for (const s of keep) assigned.add(String(s.id));
+      return { ...sc, shots: keep };
+    });
+    const remaining = ordered.filter((s) => !assigned.has(String(s.id)));
+    if (remaining.length) {
+      if (remapped.length) {
+        const last = remapped[remapped.length - 1];
+        remapped[remapped.length - 1] = { ...last, shots: [...(last.shots || []), ...remaining] };
+      } else {
+        remapped.push({ id: `${seq.id}-scene-1`, title: 'Scene 1', shots: remaining });
+      }
+    }
+    return syncSequenceFromScenes(seq, remapped);
+  };
+
+  const nextStory = actions.reduce((acc: Story, action) => {
     if (action.type === 'UPDATE_STORY') {
       const patch = action.payload?.patch || action.payload || {};
       let next: Story = {
@@ -319,9 +429,15 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
 
     if (action.type === 'CREATE_SEQUENCE') {
       const now = Date.now();
-      const title = typeof action.payload?.title === 'string' ? action.payload.title : 'New Sequence';
+      const title = typeof action.payload?.title === 'string' ? action.payload.title : 'New Story Part';
       const context = typeof action.payload?.context === 'string' ? action.payload.context : 'Describe the narrative beat...';
-      const newSeq: Sequence = { id: `seq-${now}-${Math.random().toString(16).slice(2, 8)}`, title, context, shots: [] };
+      const newSeq: Sequence = {
+        id: `seq-${now}-${Math.random().toString(16).slice(2, 8)}`,
+        title,
+        context,
+        scenes: [{ id: `scene-${now}-1`, title: 'Scene 1', shots: [] }],
+        shots: [],
+      };
       return { ...acc, sequences: [...acc.sequences, newSeq], updatedAt: Date.now() };
     }
 
@@ -340,6 +456,82 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       const sequenceId = String(action.payload?.sequenceId || '');
       if (!sequenceId) return acc;
       return { ...acc, sequences: acc.sequences.filter((s) => s.id !== sequenceId), updatedAt: Date.now() };
+    }
+
+    if (action.type === 'CREATE_SCENE') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      if (!sequenceId) return acc;
+      const title = typeof action.payload?.title === 'string' ? String(action.payload.title).trim() : '';
+      const summary = typeof action.payload?.summary === 'string' ? String(action.payload.summary).trim() : '';
+      const afterSceneId = action.payload?.afterSceneId ? String(action.payload.afterSceneId) : '';
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          const scenes = getSeqScenes(seq).slice();
+          const now = Date.now();
+          const newScene = {
+            id: `scene-${now}-${Math.random().toString(16).slice(2, 8)}`,
+            title: title || `Scene ${scenes.length + 1}`,
+            summary: summary || undefined,
+            shots: [],
+          };
+          let insertAt = scenes.length;
+          if (afterSceneId) {
+            const idx = scenes.findIndex((sc: any) => String(sc?.id || '') === afterSceneId);
+            if (idx >= 0) insertAt = idx + 1;
+          }
+          scenes.splice(insertAt, 0, newScene);
+          return syncSequenceFromScenes(seq, scenes);
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'RENAME_SCENE' || action.type === 'UPDATE_SCENE') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      const sceneId = String(action.payload?.sceneId || '');
+      if (!sequenceId || !sceneId) return acc;
+      const patch = action.type === 'UPDATE_SCENE' ? action.payload?.patch || {} : { title: action.payload?.title };
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          const scenes = getSeqScenes(seq).map((sc: any) => {
+            if (String(sc?.id || '') !== sceneId) return sc;
+            return {
+              ...sc,
+              title: typeof patch?.title === 'string' ? patch.title : sc.title,
+              summary: typeof patch?.summary === 'string' ? patch.summary : sc.summary,
+            };
+          });
+          return syncSequenceFromScenes(seq, scenes);
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'DELETE_SCENE') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      const sceneId = String(action.payload?.sceneId || '');
+      if (!sequenceId || !sceneId) return acc;
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          const scenes = getSeqScenes(seq).slice();
+          const idx = scenes.findIndex((sc: any) => String(sc?.id || '') === sceneId);
+          if (idx < 0) return seq;
+          const removed = scenes[idx];
+          const carry = Array.isArray(removed?.shots) ? removed.shots : [];
+          scenes.splice(idx, 1);
+          if (!scenes.length) scenes.push({ id: `${seq.id}-scene-1`, title: 'Scene 1', shots: [] });
+          const targetIdx = Math.max(0, Math.min(idx, scenes.length - 1));
+          scenes[targetIdx] = { ...scenes[targetIdx], shots: [...(scenes[targetIdx].shots || []), ...carry] };
+          return syncSequenceFromScenes(seq, scenes);
+        }),
+        updatedAt: Date.now(),
+      };
     }
 
     if (action.type === 'CREATE_SHOT') {
@@ -406,14 +598,27 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
               metadata: { ...((newShot.elements as any)[ElementType.CASTING]?.metadata || {}), characters: cast },
             };
           }
-          const shots = seq.shots.slice();
-          let insertAt = shots.length;
+          const sceneId = action.payload?.sceneId ? String(action.payload.sceneId) : '';
+          const scenes = getSeqScenes(seq).map((sc: any) => ({
+            ...sc,
+            shots: Array.isArray(sc?.shots) ? sc.shots.slice() : [],
+          }));
+          let target = sceneId ? scenes.find((sc: any) => String(sc?.id || '') === sceneId) : null;
+          if (!target && afterShotId) {
+            target = scenes.find((sc: any) => (Array.isArray(sc?.shots) ? sc.shots : []).some((s: any) => String(s?.id || '') === afterShotId)) || null;
+          }
+          if (!target) target = scenes[scenes.length - 1] || scenes[0];
+          if (!target) {
+            scenes.push({ id: `${seq.id}-scene-1`, title: 'Scene 1', shots: [newShot] });
+            return syncSequenceFromScenes(seq, scenes);
+          }
+          let insertAt = target.shots.length;
           if (afterShotId) {
-            const idx = shots.findIndex((s) => s.id === afterShotId);
+            const idx = target.shots.findIndex((s: any) => String(s?.id || '') === afterShotId);
             if (idx >= 0) insertAt = idx + 1;
           }
-          shots.splice(insertAt, 0, newShot);
-          return { ...seq, shots: renumberShots(shots) };
+          target.shots.splice(insertAt, 0, newShot);
+          return syncSequenceFromScenes(seq, scenes);
         }),
         updatedAt: Date.now(),
       };
@@ -427,7 +632,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         ...acc,
         sequences: acc.sequences.map((seq) => {
           if (seq.id !== sequenceId) return seq;
-          return { ...seq, shots: renumberShots(seq.shots.filter((s) => s.id !== shotId)) };
+          return syncSequenceFromShots(seq, seq.shots.filter((s) => s.id !== shotId));
         }),
         updatedAt: Date.now(),
       };
@@ -452,7 +657,41 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
           if (direction) insertAt = direction === 'left' ? Math.max(0, idx - 1) : Math.min(next.length, idx + 1);
           if (toIndex !== null) insertAt = Math.min(Math.max(0, toIndex), next.length);
           next.splice(insertAt, 0, item);
-          return { ...seq, shots: renumberShots(next) };
+          return syncSequenceFromShots(seq, next);
+        }),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'MOVE_SHOT_TO_SCENE') {
+      const sequenceId = String(action.payload?.sequenceId || '');
+      const shotId = String(action.payload?.shotId || '');
+      const toSceneId = String(action.payload?.toSceneId || '');
+      const toIndex = typeof action.payload?.toIndex === 'number' ? Math.max(0, Math.floor(action.payload.toIndex)) : null;
+      if (!sequenceId || !shotId || !toSceneId) return acc;
+      return {
+        ...acc,
+        sequences: acc.sequences.map((seq) => {
+          if (seq.id !== sequenceId) return seq;
+          const scenes = getSeqScenes(seq).map((sc: any) => ({
+            ...sc,
+            shots: Array.isArray(sc?.shots) ? sc.shots.slice() : [],
+          }));
+          let moved: Shot | null = null;
+          for (const sc of scenes) {
+            const idx = sc.shots.findIndex((s: any) => String(s?.id || '') === shotId);
+            if (idx >= 0) {
+              const [taken] = sc.shots.splice(idx, 1);
+              if (taken) moved = taken;
+              break;
+            }
+          }
+          if (!moved) return seq;
+          const target = scenes.find((sc: any) => String(sc?.id || '') === toSceneId);
+          if (!target) return syncSequenceFromScenes(seq, scenes);
+          if (toIndex === null || toIndex >= target.shots.length) target.shots.push(moved);
+          else target.shots.splice(toIndex, 0, moved);
+          return syncSequenceFromScenes(seq, scenes);
         }),
         updatedAt: Date.now(),
       };
@@ -468,9 +707,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         sequences: acc.sequences.map((seq) => {
           if (sequenceId && seq.id !== sequenceId) return seq;
           if (!seq.shots.some((s) => s.id === shotId)) return seq;
-          return {
-            ...seq,
-            shots: seq.shots.map((s) => {
+          const nextShots = seq.shots.map((s) => {
               if (s.id !== shotId) return s;
               return {
                 ...s,
@@ -479,8 +716,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 locationId: typeof patch.locationId === 'string' ? patch.locationId : s.locationId,
                 duration: typeof patch.duration === 'number' && Number.isFinite(patch.duration) ? normalizeShotDurationSeconds(patch.duration) : s.duration,
               };
-            }),
-          };
+            });
+          return syncSequenceFromShots(seq, nextShots);
         }),
         updatedAt: Date.now(),
       };
@@ -495,9 +732,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         ...acc,
         sequences: acc.sequences.map((seq) => {
           if (seq.id !== sequenceId) return seq;
-          return {
-            ...seq,
-            shots: seq.shots.map((shot) => {
+          const nextShots = seq.shots.map((shot) => {
               if (shot.id !== shotId) return shot;
               return {
                 ...shot,
@@ -510,8 +745,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                   },
                 },
               };
-            }),
-          };
+            });
+          return syncSequenceFromShots(seq, nextShots);
         }),
         updatedAt: Date.now(),
       };
@@ -539,10 +774,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       return {
         ...acc,
         locations: acc.locations.filter((l) => l.id !== locationId),
-        sequences: acc.sequences.map((seq) => ({
-          ...seq,
-          shots: seq.shots.map((shot) => (shot.locationId === locationId ? { ...shot, locationId: '' } : shot)),
-        })),
+        sequences: acc.sequences.map((seq) => syncSequenceFromShots(seq, seq.shots.map((shot) => (shot.locationId === locationId ? { ...shot, locationId: '' } : shot)))),
         updatedAt: Date.now(),
       };
     }
@@ -591,9 +823,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
       return {
         ...acc,
         characters: acc.characters.filter((c) => c.id !== characterId),
-        sequences: acc.sequences.map((seq) => ({
-          ...seq,
-          shots: seq.shots.map((shot) => {
+        sequences: acc.sequences.map((seq) => syncSequenceFromShots(seq, seq.shots.map((shot) => {
             const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
             const castArr = Array.isArray(cast) ? cast : [];
             const nextCast = castArr.filter((c: any) => String(c?.id || '') !== characterId);
@@ -608,15 +838,14 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                 },
               },
             };
-          }),
-        })),
+          }))),
         updatedAt: Date.now(),
       };
     }
 
     if (action.type === 'UPDATE_CHARACTER') {
       const characterId = String(action.payload?.characterId || '');
-      const patch = action.payload?.patch || {};
+      const patch = action.payload?.patch || action.payload || {};
       if (!characterId) return acc;
       return {
         ...acc,
@@ -705,9 +934,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         ...acc,
         sequences: acc.sequences.map((seq) => {
           if (seq.id !== sequenceId) return seq;
-          return {
-            ...seq,
-            shots: seq.shots.map((shot) => {
+          const nextShots = seq.shots.map((shot) => {
               if (shot.id !== shotId) return shot;
               const prev = shot.elements[elementType as ElementType] || null;
               const nextMetadata =
@@ -726,20 +953,22 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
                   },
                 },
               };
-            }),
-          };
+            });
+          return syncSequenceFromShots(seq, nextShots);
         }),
       };
     }
 
     return acc;
-  }, story);
+  }, story as Story);
+  return normalizeStorySceneModel(nextStory);
 };
 
 export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
+  const [masterPlayerShots, setMasterPlayerShots] = useState<Shot[] | null>(null);
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'info' }>>([]);
   const [pendingDirectorFallback, setPendingDirectorFallback] = useState<null | { projectId: string; res: DirectorCommandResponse }>(null);
   const [pendingDirectorFallbackArmed, setPendingDirectorFallbackArmed] = useState(false);
@@ -771,11 +1000,15 @@ export default function App() {
   }>(null);
   const [pendingInteractionGeneration, setPendingInteractionGeneration] = useState<PendingInteractionGeneration | null>(null);
   const staleRecoveryDoneRef = useRef(false);
+  const cancelledAssetJobKeysRef = useRef<Set<string>>(new Set());
+  const assetJobAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const shotProductionAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   const activeStory = useMemo<Story | null>(() => {
     if (!workspace.activeProjectId) return null;
     return workspace.projects.find((p) => p.id === workspace.activeProjectId) || null;
   }, [workspace]);
+  const workspaceRef = useRef(workspace);
 
   const agentHistory = useMemo<AgentLogEntry[]>(() => {
     if (!workspace.activeProjectId) return [];
@@ -799,7 +1032,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      for (const ctrl of assetJobAbortControllersRef.current.values()) ctrl.abort();
+      assetJobAbortControllersRef.current.clear();
+      for (const ctrl of shotProductionAbortControllersRef.current.values()) ctrl.abort();
+      shotProductionAbortControllersRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
     saveWorkspace(workspace);
+    workspaceRef.current = workspace;
   }, [workspace]);
 
   useEffect(() => {
@@ -880,7 +1123,7 @@ export default function App() {
       if (idx < 0) return prev;
       const now = Date.now();
       const projects = prev.projects.slice();
-      projects[idx] = { ...updater(projects[idx]), updatedAt: now };
+      projects[idx] = { ...normalizeStorySceneModel(updater(projects[idx])), updatedAt: now };
       return { ...prev, projects };
     });
   };
@@ -894,11 +1137,30 @@ export default function App() {
 
       const now = Date.now();
       const current = prev.projects[idx];
-      const updated = updater(current);
+      const updated = normalizeStorySceneModel(updater(current));
       const projects = prev.projects.slice();
       projects[idx] = { ...updated, updatedAt: now };
       return { ...prev, projects };
     });
+  };
+
+  const cancelAssetJobs = (matcher: (key: string) => boolean) => {
+    for (const key of Array.from(assetJobAbortControllersRef.current.keys())) {
+      if (!matcher(key)) continue;
+      cancelledAssetJobKeysRef.current.add(key);
+      const ctrl = assetJobAbortControllersRef.current.get(key);
+      ctrl?.abort();
+      assetJobAbortControllersRef.current.delete(key);
+    }
+  };
+
+  const cancelShotProduction = (matcher: (key: string) => boolean) => {
+    for (const key of Array.from(shotProductionAbortControllersRef.current.keys())) {
+      if (!matcher(key)) continue;
+      const ctrl = shotProductionAbortControllersRef.current.get(key);
+      ctrl?.abort();
+      shotProductionAbortControllersRef.current.delete(key);
+    }
   };
 
   const queueKvConsoleAction = (type: 'generate' | 'accept' | 'discard' | 'regenerate', projectId: string) => {
@@ -937,6 +1199,19 @@ export default function App() {
     const existing = workspace.projects.find((p) => p.id === projectId);
     if (!existing) return;
     if (!window.confirm(`Delete project "${existing.title}"? This cannot be undone.`)) return;
+
+    cancelledAssetJobKeysRef.current.add(`${projectId}|masterkv`);
+    for (const loc of existing.locations || []) cancelledAssetJobKeysRef.current.add(`${projectId}|location|${loc.id}`);
+    for (const ch of existing.characters || []) {
+      cancelledAssetJobKeysRef.current.add(`${projectId}|character|${ch.id}`);
+      for (const lk of ch.looks || []) cancelledAssetJobKeysRef.current.add(`${projectId}|look|${ch.id}|${lk.id}`);
+    }
+    for (const seq of existing.sequences || []) {
+      for (const sh of seq.shots || []) cancelledAssetJobKeysRef.current.add(`${projectId}|shot|${seq.id}|${sh.id}`);
+    }
+    cancelAssetJobs((key) => key.startsWith(`${projectId}|`));
+    cancelShotProduction((key) => key.startsWith(`${projectId}|`));
+    setPendingInteractionGeneration((prev) => (prev?.projectId === projectId ? null : prev));
 
     setWorkspace((prev) => {
       const nextProjects = prev.projects.filter((p) => p.id !== projectId);
@@ -980,7 +1255,7 @@ export default function App() {
       const idx = prev.projects.findIndex((p) => p.id === project.id);
       if (idx < 0) return { ...prev, projects: [project, ...prev.projects] };
       const projects = prev.projects.slice();
-      projects[idx] = project;
+      projects[idx] = mergeIncomingStoryPreferRealPreviews(project, projects[idx]);
       return { ...prev, projects };
     });
   };
@@ -990,7 +1265,7 @@ export default function App() {
       const idx = prev.projects.findIndex((p) => p.id === project.id);
       const projects = prev.projects.slice();
       if (idx < 0) projects.unshift(project);
-      else projects[idx] = project;
+      else projects[idx] = mergeIncomingStoryPreferRealPreviews(project, projects[idx]);
       return { ...prev, projects, activeProjectId: project.id };
     });
     setSelection({ type: 'story', id: project.id });
@@ -1063,6 +1338,10 @@ export default function App() {
         .join('\n');
 
     const durationSeconds = normalizeShotDurationSeconds(shot.duration);
+    const productionKey = `${storyNow.id}|${args.sequenceId}|${args.shotId}`;
+    shotProductionAbortControllersRef.current.get(productionKey)?.abort();
+    const productionController = new AbortController();
+    shotProductionAbortControllersRef.current.set(productionKey, productionController);
 
     updateActiveStory((prev) => ({
       ...prev,
@@ -1099,6 +1378,7 @@ export default function App() {
         aspectRatio,
         resolution: '720p',
         generateAudio: true,
+        signal: productionController.signal,
         promptSpec: {
           shotDescription: String(shot.description || '').trim(),
           action: shotAction,
@@ -1166,6 +1446,35 @@ export default function App() {
       addToast(`Shot production complete (${durationSeconds}s, 720p)`, 'success');
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
+      const aborted =
+        productionController.signal.aborted ||
+        (e instanceof DOMException && e.name === 'AbortError') ||
+        /abort/i.test(String((e as any)?.message || ''));
+      if (aborted) {
+        updateActiveStory((prev) => ({
+          ...prev,
+          sequences: prev.sequences.map((s) =>
+            s.id !== args.sequenceId
+              ? s
+              : {
+                  ...s,
+                  shots: s.shots.map((x) =>
+                    x.id !== args.shotId
+                      ? x
+                      : {
+                          ...x,
+                          production: {
+                            ...x.production,
+                            status: 'idle',
+                            lastError: '',
+                          },
+                        },
+                  ),
+                },
+          ),
+        }));
+        return;
+      }
       addDebugEvent({
         level: 'error',
         scope: 'asset.video',
@@ -1197,6 +1506,8 @@ export default function App() {
         ),
       }));
       addToast(`Shot production failed: ${err}`, 'info');
+    } finally {
+      shotProductionAbortControllersRef.current.delete(productionKey);
     }
   };
 
@@ -1246,76 +1557,85 @@ export default function App() {
     const newId = `seq-${now}`;
     const newSeq: Sequence = {
       id: newId,
-      title: 'New Sequence',
+      title: 'New Story Part',
       context: 'Describe the narrative beat...',
+      scenes: [{ id: `${newId}-scene-1`, title: 'Scene 1', shots: [] }],
       shots: [],
     };
     updateActiveStory((prev) => ({ ...prev, sequences: [...prev.sequences, newSeq] }));
     setSelection({ type: 'sequence', id: newId });
-    addToast('New sequence added', 'success');
+    addToast('New story part added', 'success');
   };
 
   const handleAddShot = (
     seqId: string,
-    opts?: { afterShotId?: string; locationId?: string; timeOfDay?: string },
+    opts?: { sceneId?: string; afterShotId?: string; locationId?: string; timeOfDay?: string },
   ) => {
     if (!activeStory) return;
     updateActiveStory((prev) => {
-      const seq = prev.sequences.find((s) => s.id === seqId);
-      if (!seq) return prev;
-      const newShot = createBlankShot(prev, seq, { locationId: opts?.locationId, timeOfDay: opts?.timeOfDay });
-
-      const shots = seq.shots.slice();
-      let insertAt = shots.length;
-      if (opts?.afterShotId) {
-        const idx = shots.findIndex((s) => s.id === opts.afterShotId);
-        if (idx >= 0) insertAt = idx + 1;
-      }
-
-      shots.splice(insertAt, 0, newShot);
-      const nextShots = renumberShots(shots);
-      return {
-        ...prev,
-        sequences: prev.sequences.map((s) => (s.id === seqId ? { ...s, shots: nextShots } : s)),
-      };
+      return applyActionsToStory(prev, [
+        {
+          type: 'CREATE_SHOT',
+          payload: {
+            sequenceId: seqId,
+            sceneId: opts?.sceneId,
+            afterShotId: opts?.afterShotId,
+            locationId: opts?.locationId,
+            timeOfDay: opts?.timeOfDay,
+          },
+        } as any,
+      ]);
     });
     addToast('New shot added to sequence', 'success');
   };
 
   const handleDeleteShot = (seqId: string, shotId: string) => {
-    updateActiveStory((prev) => {
-      return {
-        ...prev,
-        sequences: prev.sequences.map((s) => {
-          if (s.id !== seqId) return s;
-          const nextShots = renumberShots(s.shots.filter((sh) => sh.id !== shotId));
-          return { ...s, shots: nextShots };
-        }),
-      };
-    });
+    if (activeStory?.id) {
+      const projectId = activeStory.id;
+      const prefix = `${projectId}|shot|${seqId}|${shotId}`;
+      cancelledAssetJobKeysRef.current.add(prefix);
+      cancelAssetJobs((key) => key === prefix);
+      cancelShotProduction((key) => key === `${projectId}|${seqId}|${shotId}`);
+    }
+    updateActiveStory((prev) =>
+      applyActionsToStory(prev, [{ type: 'DELETE_SHOT', payload: { sequenceId: seqId, shotId } } as any]),
+    );
     if (selection.type === 'shot' && selection.id === shotId) setSelection({ type: 'sequence', id: seqId });
     addToast('Shot removed', 'info');
   };
 
   const handleMoveShot = (seqId: string, shotId: string, direction: 'left' | 'right') => {
     updateActiveStory((prev) => {
-      const seq = prev.sequences.find((s) => s.id === seqId);
-      if (!seq) return prev;
-      const idx = seq.shots.findIndex((s) => s.id === shotId);
-      if (idx < 0) return prev;
-      const nextIdx = direction === 'left' ? idx - 1 : idx + 1;
-      if (nextIdx < 0 || nextIdx >= seq.shots.length) return prev;
-
-      const nextShots = seq.shots.slice();
-      const tmp = nextShots[idx];
-      nextShots[idx] = nextShots[nextIdx];
-      nextShots[nextIdx] = tmp;
-
-      return {
-        ...prev,
-        sequences: prev.sequences.map((s) => (s.id === seqId ? { ...s, shots: renumberShots(nextShots) } : s)),
-      };
+      return applyActionsToStory(prev, [
+        { type: 'MOVE_SHOT', payload: { sequenceId: seqId, shotId, direction } } as any,
+      ]);
     });
+  };
+
+  const handleMoveShotToScene = (seqId: string, shotId: string, toSceneId: string) => {
+    updateActiveStory((prev) =>
+      applyActionsToStory(prev, [
+        { type: 'MOVE_SHOT_TO_SCENE', payload: { sequenceId: seqId, shotId, toSceneId } } as any,
+      ]),
+    );
+  };
+
+  const handleRenameSequence = (seqId: string, title: string) => {
+    const nextTitle = String(title || '').trim();
+    if (!nextTitle) return;
+    updateActiveStory((prev) =>
+      applyActionsToStory(prev, [
+        { type: 'RENAME_SEQUENCE', payload: { sequenceId: seqId, title: nextTitle } } as any,
+      ]),
+    );
+  };
+
+  const handleUpdateScene = (seqId: string, sceneId: string, patch: { title?: string; summary?: string }) => {
+    updateActiveStory((prev) =>
+      applyActionsToStory(prev, [
+        { type: 'UPDATE_SCENE', payload: { sequenceId: seqId, sceneId, patch } } as any,
+      ]),
+    );
   };
 
   const handleSequenceUpdate = (updatedSeq: Sequence) => {
@@ -1406,14 +1726,29 @@ export default function App() {
   };
 
   const handleDeleteSequence = (id: string) => {
+    if (activeStory?.id) {
+      const projectId = activeStory.id;
+      const prefix = `${projectId}|shot|${id}|`;
+      const seq = activeStory.sequences.find((s) => s.id === id);
+      for (const sh of seq?.shots || []) {
+        cancelledAssetJobKeysRef.current.add(`${projectId}|shot|${id}|${sh.id}`);
+      }
+      cancelAssetJobs((key) => key.startsWith(prefix));
+      cancelShotProduction((key) => key.startsWith(`${projectId}|${id}|`));
+    }
     updateActiveStory((prev) => ({ ...prev, sequences: prev.sequences.filter((s) => s.id !== id) }));
     if ((selection.type === 'sequence' && selection.id === id) || (selection.type === 'shot' && selection.parentId === id)) {
       if (activeStory) setSelection({ type: 'story', id: activeStory.id });
     }
-    addToast('Sequence removed', 'info');
+    addToast('Story part removed', 'info');
   };
 
   const handleDeleteLocation = (id: string) => {
+    if (activeStory?.id) {
+      const projectId = activeStory.id;
+      cancelledAssetJobKeysRef.current.add(`${projectId}|location|${id}`);
+      cancelAssetJobs((key) => key === `${projectId}|location|${id}`);
+    }
     updateActiveStory((prev) => ({
       ...prev,
       locations: prev.locations.filter((l) => l.id !== id),
@@ -1427,6 +1762,15 @@ export default function App() {
   };
 
   const handleDeleteCharacter = (id: string) => {
+    if (activeStory?.id) {
+      const projectId = activeStory.id;
+      cancelledAssetJobKeysRef.current.add(`${projectId}|character|${id}`);
+      const ch = activeStory.characters.find((c) => c.id === id);
+      for (const lk of ch?.looks || []) {
+        cancelledAssetJobKeysRef.current.add(`${projectId}|look|${id}|${lk.id}`);
+      }
+      cancelAssetJobs((key) => key === `${projectId}|character|${id}` || key.startsWith(`${projectId}|look|${id}|`));
+    }
     updateActiveStory((prev) => ({
       ...prev,
       characters: prev.characters.filter((c) => c.id !== id),
@@ -1491,6 +1835,22 @@ export default function App() {
     // TODO: structured dialogue lines (future).
   };
 
+  const isJobCancelledOrMissing = (projectId: string, job: AssetJob): boolean => {
+    const key = assetJobKey(projectId, job);
+    if (cancelledAssetJobKeysRef.current.has(key)) return true;
+    const project = workspaceRef.current.projects.find((p) => p.id === projectId);
+    if (!project) return true;
+    if (job.kind === 'masterkv') return false;
+    if (job.kind === 'location') return !(project.locations || []).some((l) => l.id === job.locationId);
+    if (job.kind === 'character') return !(project.characters || []).some((c) => c.id === job.characterId);
+    if (job.kind === 'look') {
+      const ch = (project.characters || []).find((c) => c.id === job.characterId);
+      return !ch || !(ch.looks || []).some((lk) => lk.id === job.lookId);
+    }
+    const seq = (project.sequences || []).find((s) => s.id === job.sequenceId);
+    return !seq || !(seq.shots || []).some((s) => s.id === job.shot.id);
+  };
+
   const runAssetJobsForDirector = (args: {
     projectId: string;
     story: Story;
@@ -1505,6 +1865,14 @@ export default function App() {
       return;
     }
 
+    const jobKeys = jobs.map((job) => assetJobKey(projectId, job));
+    for (const key of jobKeys) {
+      cancelledAssetJobKeysRef.current.delete(key);
+    }
+    const releaseJobController = (job: AssetJob) => {
+      const key = assetJobKey(projectId, job);
+      assetJobAbortControllersRef.current.delete(key);
+    };
     const applyQueued = (s: Story) => jobs.reduce((acc, job) => applyAssetQueued(acc, job), s);
     const queuedStory = applyQueued(story);
     updateStoryById(projectId, (prev) => applyQueued(prev));
@@ -1520,6 +1888,7 @@ export default function App() {
           addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
         }
         if (ev.type === 'success') {
+          releaseJobController(ev.job);
           storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl, ev.meta);
           updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl, ev.meta));
           addDebugEvent({
@@ -1554,6 +1923,16 @@ export default function App() {
                   aspectRatio: storyRef.aspectRatio,
                   concurrency,
                   getStoryForRefs: () => storyRef,
+                  shouldCancelJob: (job) => isJobCancelledOrMissing(projectId, job),
+                  getSignalForJob: (job) => {
+                    const key = assetJobKey(projectId, job);
+                    if (cancelledAssetJobKeysRef.current.has(key)) return undefined;
+                    const existing = assetJobAbortControllersRef.current.get(key);
+                    if (existing) return existing.signal;
+                    const ctrl = new AbortController();
+                    assetJobAbortControllersRef.current.set(key, ctrl);
+                    return ctrl.signal;
+                  },
                   maxAttempts: 3,
                   stopAfterMasterKvFailure: true,
                   onEvent: handleAssetEvent,
@@ -1563,9 +1942,10 @@ export default function App() {
           }
         }
         if (ev.type === 'blocked') {
+          releaseJobController(ev.job);
           storyRef = applyAssetBlocked(storyRef, ev.job, ev.reason);
           updateStoryById(projectId, (prev) => applyAssetBlocked(prev, ev.job, ev.reason));
-          addToast(`Blocked: ${ev.reason}`, 'info');
+          if (String(ev.reason || '').toLowerCase() !== 'cancelled') addToast(`Blocked: ${ev.reason}`, 'info');
           addDebugEvent({
             level: 'warn',
             scope: 'asset.exec',
@@ -1574,6 +1954,7 @@ export default function App() {
           });
         }
         if (ev.type === 'error') {
+          releaseJobController(ev.job);
           storyRef = applyAssetError(storyRef, ev.job, ev.error);
           updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
           addDebugEvent({
@@ -1591,6 +1972,16 @@ export default function App() {
         aspectRatio: story.aspectRatio,
         concurrency,
         getStoryForRefs: () => storyRef,
+        shouldCancelJob: (job) => isJobCancelledOrMissing(projectId, job),
+        getSignalForJob: (job) => {
+          const key = assetJobKey(projectId, job);
+          if (cancelledAssetJobKeysRef.current.has(key)) return undefined;
+          const existing = assetJobAbortControllersRef.current.get(key);
+          if (existing) return existing.signal;
+          const ctrl = new AbortController();
+          assetJobAbortControllersRef.current.set(key, ctrl);
+          return ctrl.signal;
+        },
         maxAttempts: 3,
         stopAfterMasterKvFailure: true,
         onEvent: handleAssetEvent,
@@ -1645,11 +2036,33 @@ export default function App() {
       if (t === 'CREATE_SHOT') {
         return p?.sequenceId ? { ok: true } : { ok: false, reason: 'CREATE_SHOT missing sequenceId' };
       }
+      if (t === 'CREATE_SCENE') {
+        return p?.sequenceId ? { ok: true } : { ok: false, reason: 'CREATE_SCENE missing sequenceId' };
+      }
+      if (t === 'RENAME_SEQUENCE') {
+        return p?.sequenceId && typeof p?.title === 'string'
+          ? { ok: true }
+          : { ok: false, reason: 'RENAME_SEQUENCE missing fields' };
+      }
+      if (t === 'RENAME_SCENE') {
+        return p?.sequenceId && p?.sceneId && typeof p?.title === 'string'
+          ? { ok: true }
+          : { ok: false, reason: 'RENAME_SCENE missing fields' };
+      }
+      if (t === 'UPDATE_SCENE') {
+        return p?.sequenceId && p?.sceneId ? { ok: true } : { ok: false, reason: 'UPDATE_SCENE missing ids' };
+      }
+      if (t === 'DELETE_SCENE') {
+        return p?.sequenceId && p?.sceneId ? { ok: true } : { ok: false, reason: 'DELETE_SCENE missing ids' };
+      }
       if (t === 'DELETE_SHOT') {
         return p?.sequenceId && p?.shotId ? { ok: true } : { ok: false, reason: 'DELETE_SHOT missing ids' };
       }
       if (t === 'MOVE_SHOT') {
         return p?.sequenceId && p?.shotId ? { ok: true } : { ok: false, reason: 'MOVE_SHOT missing ids' };
+      }
+      if (t === 'MOVE_SHOT_TO_SCENE') {
+        return p?.sequenceId && p?.shotId && p?.toSceneId ? { ok: true } : { ok: false, reason: 'MOVE_SHOT_TO_SCENE missing ids' };
       }
       if (t === 'UPDATE_SHOT') {
         return p?.shotId ? { ok: true } : { ok: false, reason: 'UPDATE_SHOT missing shotId' };
@@ -1686,24 +2099,247 @@ export default function App() {
       if (t === 'GENERATE_MASTER_KV_PROPOSAL' || t === 'ACCEPT_KV_PROPOSAL' || t === 'DISCARD_KV_PROPOSAL') {
         return { ok: true };
       }
-      return { ok: true };
+      return { ok: false, reason: `Unknown action type: ${String(t)}` };
     };
 
+    const lookOwnerById = new Map<string, string>();
+    for (const ch of Array.isArray(story?.characters) ? story.characters : []) {
+      const characterId = String((ch as any)?.id || '').trim();
+      if (!characterId) continue;
+      for (const lk of Array.isArray((ch as any)?.looks) ? (ch as any).looks : []) {
+        const lookId = String((lk as any)?.id || '').trim();
+        if (!lookId || lookOwnerById.has(lookId)) continue;
+        lookOwnerById.set(lookId, characterId);
+      }
+    }
+
+    const parseRawObject = (v: any): Record<string, any> => {
+      if (!v) return {};
+      if (typeof v === 'object' && !Array.isArray(v)) return v as Record<string, any>;
+      if (typeof v !== 'string') return {};
+      const s = String(v || '').trim();
+      if (!s) return {};
+      try {
+        const parsed = JSON.parse(s);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, any>) : {};
+      } catch {
+        return {};
+      }
+    };
+
+    const normalizeActionPayload = (a: AgentAction): AgentAction => {
+      const payload: any = (a as any)?.payload || {};
+      const payloadRaw = parseRawObject(payload?._raw);
+      const metadataRaw = parseRawObject(payload?.metadata?._raw);
+      const mergedPayload = { ...payloadRaw, ...payload, ...metadataRaw };
+      const patchRaw = parseRawObject(mergedPayload?.patch?._raw);
+      const mergedPatch =
+        mergedPayload?.patch && typeof mergedPayload.patch === 'object'
+          ? { ...patchRaw, ...mergedPayload.patch }
+          : { ...patchRaw };
+      const withPatch = Object.keys(mergedPatch).length ? { ...mergedPayload, patch: mergedPatch } : mergedPayload;
+
+      const normalizeByType = () => {
+        if (a.type === 'UPDATE_STORY') {
+          const patch = Object.keys(mergedPatch).length ? mergedPatch : mergedPayload?.patch || {};
+          return { ...withPatch, patch };
+        }
+        if (a.type === 'UPDATE_LOCATION') {
+          return {
+            ...withPatch,
+            locationId: String(withPatch.locationId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'DELETE_LOCATION') {
+          return {
+            ...withPatch,
+            locationId: String(withPatch.locationId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'UPDATE_CHARACTER') {
+          const patch = {
+            ...(mergedPatch || {}),
+            ...(typeof withPatch?.name === 'string' ? { name: withPatch.name } : {}),
+            ...(typeof withPatch?.description === 'string' ? { description: withPatch.description } : {}),
+          };
+          const normalized: any = {
+            ...withPatch,
+            characterId: String(withPatch.characterId || withPatch.id || '').trim(),
+            patch,
+          };
+          if (typeof withPatch?.regenerateDependents === 'boolean') normalized.regenerateDependents = withPatch.regenerateDependents;
+          if (typeof withPatch?.syncDependents === 'boolean') normalized.syncDependents = withPatch.syncDependents;
+          return normalized;
+        }
+        if (a.type === 'DELETE_CHARACTER') {
+          return {
+            ...withPatch,
+            characterId: String(withPatch.characterId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'UPDATE_CHARACTER_LOOK') {
+          const patch = {
+            ...(mergedPatch || {}),
+            ...(typeof withPatch?.name === 'string' ? { name: withPatch.name } : {}),
+            ...(typeof withPatch?.description === 'string' ? { description: withPatch.description } : {}),
+          };
+          const normalized: any = {
+            ...withPatch,
+            characterId: String(withPatch.characterId || '').trim(),
+            lookId: String(withPatch.lookId || withPatch.id || '').trim(),
+            patch,
+          };
+          if (typeof withPatch?.regenerateDependents === 'boolean') normalized.regenerateDependents = withPatch.regenerateDependents;
+          if (typeof withPatch?.syncDependents === 'boolean') normalized.syncDependents = withPatch.syncDependents;
+          return normalized;
+        }
+        if (a.type === 'DELETE_SHOT' || a.type === 'MOVE_SHOT' || a.type === 'MOVE_SHOT_TO_SCENE') {
+          return {
+            ...withPatch,
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+            shotId: String(withPatch.shotId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'UPDATE_SHOT') {
+          return {
+            ...withPatch,
+            shotId: String(withPatch.shotId || withPatch.id || '').trim(),
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+            patch: mergedPatch,
+          };
+        }
+        if (a.type === 'UPDATE_ELEMENT' || a.type === 'SET_CAST' || a.type === 'GENERATE_SHOT_IMAGE') {
+          return {
+            ...withPatch,
+            shotId: String(withPatch.shotId || withPatch.id || '').trim(),
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+          };
+        }
+        if (a.type === 'GENERATE_LOCATION_PREVIEW') {
+          return {
+            ...withPatch,
+            locationId: String(withPatch.locationId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'GENERATE_CHARACTER_AVATAR') {
+          return {
+            ...withPatch,
+            characterId: String(withPatch.characterId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'RENAME_SEQUENCE') {
+          return {
+            ...withPatch,
+            sequenceId: String(withPatch.sequenceId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'RENAME_SCENE' || a.type === 'UPDATE_SCENE' || a.type === 'DELETE_SCENE') {
+          return {
+            ...withPatch,
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+            sceneId: String(withPatch.sceneId || withPatch.id || '').trim(),
+            patch: mergedPatch,
+          };
+        }
+        if (a.type === 'CREATE_SCENE' || a.type === 'CREATE_SHOT') {
+          return {
+            ...withPatch,
+            sequenceId: String(withPatch.sequenceId || withPatch.parentId || '').trim(),
+          };
+        }
+        return withPatch;
+      };
+
+      const normalizedByType = normalizeByType();
+
+      if (a.type === 'UPDATE_CHARACTER') {
+        const patch = {
+          ...(normalizedByType?.patch || {}),
+          ...(typeof normalizedByType?.name === 'string' ? { name: normalizedByType.name } : {}),
+          ...(typeof normalizedByType?.description === 'string' ? { description: normalizedByType.description } : {}),
+        };
+        const normalized: any = {
+          ...normalizedByType,
+          patch,
+        };
+        if (typeof normalizedByType?.regenerateDependents === 'boolean') normalized.regenerateDependents = normalizedByType.regenerateDependents;
+        if (typeof normalizedByType?.syncDependents === 'boolean') normalized.syncDependents = normalizedByType.syncDependents;
+        return { ...a, payload: normalized };
+      }
+
+      if (a.type === 'UPDATE_CHARACTER_LOOK') {
+        const patch = {
+          ...(normalizedByType?.patch || {}),
+          ...(typeof normalizedByType?.name === 'string' ? { name: normalizedByType.name } : {}),
+          ...(typeof normalizedByType?.description === 'string' ? { description: normalizedByType.description } : {}),
+        };
+        return {
+          ...a,
+          payload: {
+            ...normalizedByType,
+            patch,
+          },
+        };
+      }
+
+      if (a.type === 'GENERATE_CHARACTER_LOOK') {
+        const lookId = String(normalizedByType.lookId || normalizedByType.id || '').trim();
+        const characterId = String(normalizedByType.characterId || '').trim() || (lookId ? String(lookOwnerById.get(lookId) || '') : '');
+        if (
+          lookId &&
+          characterId &&
+          (normalizedByType.lookId !== lookId || normalizedByType.characterId !== characterId || normalizedByType.id)
+        ) {
+          return {
+            ...a,
+            payload: {
+              ...normalizedByType,
+              lookId,
+              characterId,
+            },
+          };
+        }
+      }
+      if (Object.keys(payloadRaw).length || Object.keys(metadataRaw).length || normalizedByType !== payload) {
+        return { ...a, payload: normalizedByType };
+      }
+      return a;
+    };
+
+    const normalizedActions = actions.map(normalizeActionPayload);
+    const repaired = normalizedActions.filter((a, i) => {
+      const before = actions[i] as any;
+      const after = a as any;
+      return JSON.stringify(before?.payload || {}) !== JSON.stringify(after?.payload || {});
+    });
+    if (repaired.length) {
+      addDebugEvent({
+        level: 'info',
+        scope: 'agent.direct',
+        message: 'Repaired action payloads',
+        data: { repaired },
+      });
+    }
+
     const invalid: AgentAction[] = [];
-    const validActions = actions.filter((a) => {
+    const invalidReasons: Array<{ action: AgentAction; reason?: string }> = [];
+    const validActions = normalizedActions.filter((a) => {
       const v = validateAction(a);
-      if (!v.ok) invalid.push(a);
+      if (!v.ok) {
+        invalid.push(a);
+        invalidReasons.push({ action: a, reason: v.reason });
+      }
       return v.ok;
     });
 
     if (!validActions.length) {
       addToast('Director actions were invalid (missing payload).', 'info');
-      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Dropped invalid actions', data: { actions } });
+      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Dropped invalid actions', data: { actions, invalidReasons } });
       return { applied: 0, dropped: invalid.length, droppedActions: invalid };
     }
 
     if (invalid.length) {
-      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Some actions dropped', data: { invalid } });
+      addDebugEvent({ level: 'warn', scope: 'agent.direct', message: 'Some actions dropped', data: { invalid, invalidReasons } });
     }
 
     const navigateActions = validActions.filter((a) => a.type === 'NAVIGATE');
@@ -1850,6 +2486,7 @@ export default function App() {
 
     // Auto-generate look images when look descriptions are updated.
     const updatedLooks: Array<{ characterId: string; lookId: string }> = [];
+    const updatedLooksWithDependentSync: Array<{ characterId: string; lookId: string }> = [];
     for (const a of mutationActions) {
       if (a.type !== 'UPDATE_CHARACTER_LOOK') continue;
       const payload = (a as any).payload || {};
@@ -1861,11 +2498,19 @@ export default function App() {
         typeof patch.name === 'string' ||
         typeof payload.description === 'string' ||
         typeof payload.name === 'string';
+      const wantsDependentSync =
+        payload.regenerateDependents === true ||
+        payload.syncDependents === true ||
+        patch.regenerateDependents === true ||
+        patch.syncDependents === true;
       if (!characterId && lookId) {
         const found = storyAfterUpdates.characters.find((c) => (c.looks || []).some((l) => String(l.id) === lookId));
         if (found) characterId = String(found.id || '').trim();
       }
-      if (characterId && lookId && hasVisualChange) updatedLooks.push({ characterId, lookId });
+      if (characterId && lookId && hasVisualChange) {
+        updatedLooks.push({ characterId, lookId });
+        if (wantsDependentSync) updatedLooksWithDependentSync.push({ characterId, lookId });
+      }
     }
     if (updatedLooks.length) {
       const styleGuide = (storyAfterUpdates as any)?.styleGuide;
@@ -1880,6 +2525,85 @@ export default function App() {
           prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
           avatarVersionId: getAvatarVersionId(ch),
         });
+      }
+    }
+    if (updatedLooksWithDependentSync.length) {
+      scopeLabel = scopeLabel === 'director' ? 'director:look->dependent-shots' : scopeLabel;
+      for (const { characterId, lookId } of updatedLooksWithDependentSync) {
+        for (const seq of storyAfterUpdates.sequences || []) {
+          for (const shot of seq.shots || []) {
+            const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+            const castArr = Array.isArray(cast) ? cast : [];
+            const included = castArr.some(
+              (c: any) =>
+                String(c?.id || '').trim() === characterId &&
+                String(c?.activeLookId || '').trim() === lookId,
+            );
+            if (!included) continue;
+            addJob(`shot:${seq.id}:${shot.id}`, {
+              kind: 'shot',
+              sequenceId: String(seq.id || ''),
+              shot,
+            });
+          }
+        }
+      }
+    }
+
+    // Auto-generate dependent assets when character identity is updated.
+    // This makes directives like "rename character + remove minor traits + sync keyframes" executable in one step.
+    const updatedCharacterIds = new Set<string>();
+    for (const a of mutationActions) {
+      if (a.type !== 'UPDATE_CHARACTER') continue;
+      const payload = (a as any).payload || {};
+      const characterId = String(payload.characterId || '').trim();
+      const patch = payload.patch || payload || {};
+      const hasIdentityChange = typeof patch.name === 'string' || typeof patch.description === 'string';
+      const wantsDependentSync =
+        payload.regenerateDependents === true ||
+        payload.syncDependents === true ||
+        patch.regenerateDependents === true ||
+        patch.syncDependents === true;
+      if (characterId && hasIdentityChange && wantsDependentSync) updatedCharacterIds.add(characterId);
+    }
+    if (updatedCharacterIds.size) {
+      scopeLabel = scopeLabel === 'director' ? 'director:character->dependents' : scopeLabel;
+      const styleGuide = String((storyAfterUpdates as any)?.styleGuide || '').trim();
+      for (const characterId of updatedCharacterIds) {
+        const ch = storyAfterUpdates.characters.find((c) => String(c.id || '') === characterId);
+        if (!ch) continue;
+
+        addJob(`character:${characterId}`, {
+          kind: 'character',
+          characterId,
+          prompt: buildCharacterAvatarPrompt(ch, styleGuide),
+        });
+
+        for (const lk of ch.looks || []) {
+          const lookId = String((lk as any)?.id || '').trim();
+          if (!lookId) continue;
+          addJob(`look:${characterId}:${lookId}`, {
+            kind: 'look',
+            characterId,
+            lookId,
+            prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+            avatarVersionId: getAvatarVersionId(ch),
+          });
+        }
+
+        for (const seq of storyAfterUpdates.sequences || []) {
+          for (const shot of seq.shots || []) {
+            const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+            const castArr = Array.isArray(cast) ? cast : [];
+            const included = castArr.some((c: any) => String(c?.id || '').trim() === characterId);
+            if (!included) continue;
+            addJob(`shot:${seq.id}:${shot.id}`, {
+              kind: 'shot',
+              sequenceId: String(seq.id || ''),
+              shot,
+            });
+          }
+        }
       }
     }
 
@@ -1992,12 +2716,34 @@ export default function App() {
             characterId,
             lookId,
             prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
-            avatarVersionId: getAvatarVersionId(ch),
+            // Do not pin to a possibly stale avatar version in shot prerequisite batches.
+            // If character jobs run in the same batch, look jobs must bind to the latest active avatar.
+            avatarVersionId: undefined,
           });
         }
       }
     };
     ensurePrerequisiteJobs();
+
+    // If a character avatar job exists in this batch, clear look-job avatar pinning for that character.
+    // This prevents "look not bound to active avatar" blocks when active avatar changes during the same batch.
+    const queuedCharacterIds = new Set(
+      Array.from(deduped.values())
+        .filter((j): j is Extract<AssetJob, { kind: 'character' }> => j.kind === 'character')
+        .map((j) => String(j.characterId || '').trim())
+        .filter(Boolean),
+    );
+    if (queuedCharacterIds.size) {
+      for (const [key, job] of deduped.entries()) {
+        if (job.kind !== 'look') continue;
+        const characterId = String(job.characterId || '').trim();
+        if (!characterId || !queuedCharacterIds.has(characterId)) continue;
+        deduped.set(key, {
+          ...job,
+          avatarVersionId: undefined,
+        });
+      }
+    }
 
     const jobs = Array.from(deduped.values());
     if (jobs.length && opts?.deferGeneration) {
@@ -2152,6 +2898,32 @@ export default function App() {
       concurrency: pending.concurrency,
     });
     setPendingInteractionGeneration(null);
+  };
+
+  const narrowShotScopedGenerateActions = (actions: AgentAction[], sel: SelectionState): AgentAction[] => {
+    if (sel.type !== 'shot') return actions;
+    const sequenceId = String(sel.parentId || '').trim();
+    const shotId = String(sel.id || '').trim();
+    if (!sequenceId || !shotId) return actions;
+    // If new shots are being created, keep broad generation because IDs may be unstable.
+    if (actions.some((a) => a.type === 'CREATE_SHOT')) return actions;
+
+    let injected = false;
+    const next: AgentAction[] = [];
+    for (const a of actions) {
+      if (a.type === 'GENERATE_PROJECT_ASSETS') {
+        const scope = String((a as any)?.payload?.scope || 'all').toLowerCase();
+        if (scope === 'shots' || scope === 'all') {
+          if (!injected) {
+            next.push({ type: 'GENERATE_SHOT_IMAGE', payload: { sequenceId, shotId } } as any);
+            injected = true;
+          }
+          continue;
+        }
+      }
+      next.push(a);
+    }
+    return next;
   };
 
   // ----- Director Console -----
@@ -2341,7 +3113,8 @@ export default function App() {
           return;
         }
 		
-        const exec = applyDirectorActions(projectId, storyWithAttachments, res.actions, {
+        const scopedActions = narrowShotScopedGenerateActions(res.actions || [], selectionSnapshot);
+        const exec = applyDirectorActions(projectId, storyWithAttachments, scopedActions, {
           deferGeneration: isInteractionMode,
         });
         if (isInteractionMode && exec.deferredJobs?.length) {
@@ -2485,7 +3258,8 @@ export default function App() {
             return;
           }
 
-          const exec = applyDirectorActions(projectId, activeStory, res.actions, {
+          const scopedActions = narrowShotScopedGenerateActions(res.actions || [], selectionSnapshot);
+          const exec = applyDirectorActions(projectId, activeStory, scopedActions, {
             deferGeneration: isInteractionMode,
           });
           if (isInteractionMode && exec.deferredJobs?.length) {
@@ -2609,7 +3383,16 @@ export default function App() {
       }`}
     >
       {/* Global Player Overlay */}
-      {isPlayingMaster && <MasterPlayer story={activeStory} onClose={() => setIsPlayingMaster(false)} />}
+      {isPlayingMaster && (
+        <MasterPlayer
+          story={activeStory}
+          shots={masterPlayerShots || undefined}
+          onClose={() => {
+            setIsPlayingMaster(false);
+            setMasterPlayerShots(null);
+          }}
+        />
+      )}
 
       {/* 1. Left Sidebar */}
       {!isCinemaMode && !isPlayingMaster && (
@@ -2622,6 +3405,7 @@ export default function App() {
             setScreen('library');
             setIsCinemaMode(false);
             setIsPlayingMaster(false);
+            setMasterPlayerShots(null);
           }}
           onOpenAiSettings={() => setIsAiSettingsOpen(true)}
           onOpenDebug={() => setIsDebugOpen(true)}
@@ -2654,6 +3438,7 @@ export default function App() {
               }}
               onToast={addToast}
               onPlayCinema={() => {
+                setMasterPlayerShots(null);
                 setIsPlayingMaster(true);
                 addToast('Starting Master Screen...', 'success');
               }}
@@ -2671,10 +3456,24 @@ export default function App() {
               onAddShot={(opts) => handleAddShot((activeItem as Sequence).id, opts)}
               onDeleteShot={(id) => handleDeleteShot((activeItem as Sequence).id, id)}
               onMoveShot={(id, direction) => handleMoveShot((activeItem as Sequence).id, id, direction)}
+              onMoveShotToScene={(shotId, toSceneId) => handleMoveShotToScene((activeItem as Sequence).id, shotId, toSceneId)}
+              onRenameSequence={(title) => handleRenameSequence((activeItem as Sequence).id, title)}
+              onRenameScene={(sceneId, title) => handleUpdateScene((activeItem as Sequence).id, sceneId, { title })}
+              onPlayScene={(sceneId) => {
+                const seq = activeItem as Sequence;
+                const scenes = Array.isArray((seq as any)?.scenes) ? ((seq as any).scenes as any[]) : [];
+                const scene = scenes.find((sc: any) => String(sc?.id || '') === String(sceneId || ''));
+                const sceneShots = Array.isArray(scene?.shots) ? (scene.shots as Shot[]) : [];
+                if (!sceneShots.length) {
+                  addToast('No shots in this scene to play.', 'info');
+                  return;
+                }
+                setMasterPlayerShots(sceneShots);
+                setIsPlayingMaster(true);
+              }}
               onUpdateShot={handleShotUpdate}
               onBackToSequence={() => setSelection({ type: 'story', id: activeStory.id })}
               onEditLocation={() => {}}
-              onPlay={() => setIsPlayingMaster(true)}
             />
           )}
 
@@ -2802,6 +3601,9 @@ export default function App() {
           onScriptUpdate={handleScriptUpdate}
           onSequenceUpdate={handleSequenceUpdate}
           onShotUpdate={handleShotUpdate}
+          sequences={activeStory.sequences}
+          onMoveShotToScene={handleMoveShotToScene}
+          onUpdateScene={handleUpdateScene}
         />
       )}
 

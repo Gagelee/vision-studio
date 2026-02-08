@@ -195,6 +195,20 @@ const createShot = (id: string, seq: number, locId: string, time: string, desc: 
   aiState: 'idle'
 });
 
+const createSequenceWithScene = (id: string, title: string, context: string, sceneTitle: string, shots: any[]) => ({
+  id,
+  title,
+  context,
+  scenes: [
+    {
+      id: `${id}-scene-1`,
+      title: sceneTitle,
+      shots,
+    },
+  ],
+  shots,
+});
+
 export const INITIAL_STORY: Story = {
   id: 'proj-protocol-7',
   title: 'Neon Shadows: Protocol 7',
@@ -206,45 +220,49 @@ export const INITIAL_STORY: Story = {
   locations: MOCK_LOCATIONS,
   characters: MOCK_CHARACTERS,
   sequences: [
-    {
-      id: 'seq-1',
-      title: 'The Awakening',
-      context: 'Kenji is woken up by a disturbance in the alleyway below his apartment.',
-      shots: [
+    createSequenceWithScene(
+      'seq-1',
+      'The Awakening',
+      'Kenji is woken up by a disturbance in the alleyway below his apartment.',
+      'Night Wake-Up',
+      [
         createShot('shot-1-1', 1, 'loc-apt', 'Night', 'Close up on Kenji\'s face, eyes opening. The neon light from the window reflects in his synthetic iris.', 3, IMAGES.KENJI, [{ id: 'char-kenji', activeLookId: 'look-kenji-2' }]),
         createShot('shot-1-2', 2, 'loc-apt', 'Night', 'Kenji sits up on the edge of the bed. Silhouette against the bright window.', 4, IMAGES.APARTMENT, [{ id: 'char-kenji', activeLookId: 'look-kenji-2' }]),
         createShot('shot-1-3', 3, 'loc-alley', 'Night', 'POV from the window looking down at the rainy alley. A mysterious figure moves in the shadows.', 5, IMAGES.RAMEN_ALLEY, [])
-      ]
-    },
-    {
-      id: 'seq-2',
-      title: 'Ramen Shop Meeting',
-      context: 'Kenji meets Anya to get intel on the new drug circulating the streets.',
-      shots: [
+      ],
+    ),
+    createSequenceWithScene(
+      'seq-2',
+      'Ramen Shop Meeting',
+      'Kenji meets Anya to get intel on the new drug circulating the streets.',
+      'Intel Exchange',
+      [
         createShot('shot-2-1', 1, 'loc-alley', 'Night', 'Wide shot of the Ramen shop. Steam rising. Kenji walks into frame.', 6, IMAGES.SHOT_WIDE, [{ id: 'char-kenji', activeLookId: 'look-kenji-1' }]),
         createShot('shot-2-2', 2, 'loc-alley', 'Night', 'Over the shoulder shot. Anya is eating, not looking at Kenji.', 4, IMAGES.ANYA, [{ id: 'char-kenji', activeLookId: 'look-kenji-1' }, { id: 'char-anya', activeLookId: 'look-anya-2' }]),
         createShot('shot-2-3', 3, 'loc-alley', 'Night', 'Close up on Anya. She slides a data chip across the table.', 3, IMAGES.SHOT_MEDIUM, [{ id: 'char-anya', activeLookId: 'look-anya-2' }])
-      ]
-    },
-    {
-      id: 'seq-3',
-      title: 'Infiltration',
-      context: 'Kenji and Kaito break into the Bio-Core facility.',
-      shots: [
+      ],
+    ),
+    createSequenceWithScene(
+      'seq-3',
+      'Infiltration',
+      'Kenji and Kaito break into the Bio-Core facility.',
+      'Break-In',
+      [
         createShot('shot-3-1', 1, 'loc-lab', 'Night', 'Kaito hacking the door panel. Sparks fly.', 4, IMAGES.KAITO, [{ id: 'char-kaito', activeLookId: 'look-kaito-2' }]),
         createShot('shot-3-2', 2, 'loc-lab', 'Night', 'The door slides open. Kenji enters with weapon drawn.', 5, IMAGES.SHOT_LAB, [{ id: 'char-kenji', activeLookId: 'look-kenji-1' }]),
         createShot('shot-3-3', 3, 'loc-lab', 'Night', 'Security droids (Unit 734s) activate in the background.', 4, IMAGES.CHEF, [{ id: 'char-chef', activeLookId: 'look-chef-2' }])
-      ]
-    },
-    {
-      id: 'seq-4',
-      title: 'The Confrontation',
-      context: 'Kenji confronts Silas in his office.',
-      shots: [
+      ],
+    ),
+    createSequenceWithScene(
+      'seq-4',
+      'The Confrontation',
+      'Kenji confronts Silas in his office.',
+      'Boardroom Duel',
+      [
         createShot('shot-4-1', 1, 'loc-board', 'Sunset', 'Wide shot of the boardroom. Silas stands by the window, back to camera.', 6, IMAGES.SILAS, [{ id: 'char-silas', activeLookId: 'look-silas-1' }]),
         createShot('shot-4-2', 2, 'loc-board', 'Sunset', 'Kenji aims his gun. "It ends here, Silas."', 3, IMAGES.KENJI_RAIN, [{ id: 'char-kenji', activeLookId: 'look-kenji-3' }]),
         createShot('shot-4-3', 3, 'loc-board', 'Sunset', 'Silas turns around, smiling. "Does it?"', 4, IMAGES.SILAS, [{ id: 'char-silas', activeLookId: 'look-silas-1' }])
-      ]
-    }
+      ],
+    ),
   ]
 };
