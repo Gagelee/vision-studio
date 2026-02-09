@@ -64,6 +64,8 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const [isSplittingGrid, setIsSplittingGrid] = useState(false);
   const [splitError, setSplitError] = useState<string | null>(null);
   const [activePanelIndex, setActivePanelIndex] = useState(0);
+  const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string>('');
 
   useEffect(() => {
     setVideoLoadFailed(false);
@@ -72,6 +74,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   useEffect(() => {
     setActivePanelIndex(0);
   }, [activeVersion?.id]);
+
+  useEffect(() => {
+    // Clear multi-select when switching active version normally.
+    // Keeps behavior predictable and avoids "accidentally grouping" old selections.
+    setSelectedVersionIds([]);
+    setSelectionAnchorId('');
+  }, [shot.activeVersionId]);
 
   const probeVideoHead = async (url: string) => {
     const u = String(url || '').trim();
@@ -448,22 +457,24 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     });
   };
 
-  const ungroupPanelsToVersions = () => {
-    if (!activeVersion) return;
-    const group: any = (activeVersion as any)?.metadata?.panelGroup;
-    const panels = Array.isArray(group?.panels) ? group.panels : [];
-    if (!panels.length) return;
-    if (!window.confirm(`Ungroup into ${panels.length} separate versions?`)) return;
+	  const ungroupPanelsToVersions = () => {
+	    if (!activeVersion) return;
+	    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+	    const panels = Array.isArray(group?.panels) ? group.panels : [];
+	    if (!panels.length) return;
+	    if (!window.confirm(`Ungroup into ${panels.length} separate versions?`)) return;
 
-    const existing = Array.isArray(shot.versions) ? shot.versions : [];
-    const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
-    const baseList = cleaned.length ? cleaned : existing;
-    const baseIndex = baseList.length;
-    const now = Date.now();
-    const created = panels.map((p: any, i: number): ShotVersion => {
-      const panelUrl = String(p?.imageUrl || '').trim();
-      return {
-        id: `v${baseIndex + i + 1}-${now + i}`,
+	    const existing = Array.isArray(shot.versions) ? shot.versions : [];
+	    const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+	    const baseList = cleaned.length ? cleaned : existing;
+	    // Remove the stack itself; ungroup is a destructive "split" action.
+	    const baseListWithoutGroup = baseList.filter((v) => String(v?.id || '') !== String(activeVersion.id || ''));
+	    const baseIndex = baseListWithoutGroup.length;
+	    const now = Date.now();
+	    const created = panels.map((p: any, i: number): ShotVersion => {
+	      const panelUrl = String(p?.imageUrl || '').trim();
+	      return {
+	        id: `v${baseIndex + i + 1}-${now + i}`,
         imageUrl: panelUrl || String(activeVersion.imageUrl || '').trim(),
         createdAt: now + i,
         type: 'grid_panel',
@@ -480,15 +491,15 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         } as any,
       };
     });
-    const nextActive = created[0] || null;
-    if (!nextActive) return;
-    onUpdateShot({
-      ...shot,
-      versions: [...baseList, ...created],
-      activeVersionId: nextActive.id,
-      thumbnailUrl: nextActive.imageUrl,
-    });
-  };
+	    const nextActive = created[0] || null;
+	    if (!nextActive) return;
+	    onUpdateShot({
+	      ...shot,
+	      versions: [...baseListWithoutGroup, ...created],
+	      activeVersionId: nextActive.id,
+	      thumbnailUrl: nextActive.imageUrl,
+	    });
+	  };
 
   const selectVideoVariant = (variantId: string) => {
     const hit = scopedVideoVariants.find((v) => v.id === variantId);
@@ -522,6 +533,88 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             thumbnailUrl: version.imageUrl 
         });
     }
+  };
+
+  const timelineVersions = useMemo(() => displayVersions.slice().reverse(), [displayVersions]);
+  const selectedSet = useMemo(() => new Set(selectedVersionIds), [selectedVersionIds]);
+
+  const clearSelection = () => {
+    setSelectedVersionIds([]);
+    setSelectionAnchorId('');
+  };
+
+  const selectRange = (toId: string) => {
+    const ids = timelineVersions.map((v) => String(v?.id || '')).filter(Boolean);
+    const anchor = String(selectionAnchorId || '').trim() || toId;
+    const a = ids.indexOf(anchor);
+    const b = ids.indexOf(toId);
+    if (a < 0 || b < 0) {
+      setSelectedVersionIds([toId]);
+      setSelectionAnchorId(toId);
+      return;
+    }
+    const [lo, hi] = a < b ? [a, b] : [b, a];
+    const next = ids.slice(lo, hi + 1);
+    setSelectedVersionIds(next);
+    setSelectionAnchorId(anchor);
+  };
+
+  const toggleSelected = (id: string) => {
+    const next = selectedSet.has(id) ? selectedVersionIds.filter((x) => x !== id) : [...selectedVersionIds, id];
+    setSelectedVersionIds(next);
+    if (!selectionAnchorId) setSelectionAnchorId(id);
+  };
+
+  const createStackFromSelection = () => {
+    const ids = selectedVersionIds.map((x) => String(x || '').trim()).filter(Boolean);
+    const byId = new Map(timelineVersions.map((v) => [String(v?.id || ''), v] as const));
+    const selected = ids.map((id) => byId.get(id)).filter(Boolean) as ShotVersion[];
+    const usable = selected.filter((v) => String(v?.type || '') !== 'placeholder' && String(v?.type || '') !== 'panel_group');
+    if (usable.length < 2) {
+      setSplitError('Select at least 2 non-stack versions to create a new stack.');
+      return;
+    }
+    const now = Date.now();
+    const existing = Array.isArray(shot.versions) ? shot.versions : [];
+    const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+    const baseList = cleaned.length ? cleaned : existing;
+
+    const panels = usable.map((v, i) => ({ index: i, imageUrl: String(v.imageUrl || '').trim() })).filter((p) => p.imageUrl);
+    if (panels.length < 2) {
+      setSplitError('Selected versions are missing image URLs.');
+      return;
+    }
+
+    const groupVersion: ShotVersion = {
+      id: `v${baseList.length + 1}-${now}`,
+      imageUrl: panels[0].imageUrl,
+      createdAt: now,
+      type: 'panel_group',
+      metadata: {
+        keyframe: { mode: 'single_frame' },
+        source: { sourceType: 'manual_group' },
+        panelGroup: { kind: 'stack', activeIndex: 0, panels },
+      } as any,
+    };
+
+    onUpdateShot({
+      ...shot,
+      versions: [...baseList, groupVersion],
+      activeVersionId: groupVersion.id,
+      thumbnailUrl: groupVersion.imageUrl,
+    });
+    setActivePanelIndex(0);
+    clearSelection();
+  };
+
+  const onVersionCardClick = (e: React.MouseEvent, versionId: string) => {
+    e.stopPropagation();
+    const id = String(versionId || '').trim();
+    if (!id) return;
+    if (e.shiftKey) return selectRange(id);
+    if (e.metaKey || e.ctrlKey) return toggleSelected(id);
+    clearSelection();
+    handleVersionSelect(id);
   };
 
   const ratioStyles: Record<AspectRatio, string> = {
@@ -1035,53 +1128,108 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         
         <div className={`flex-1 pt-4 px-4 pb-10 overflow-x-auto flex items-center gap-4 custom-scrollbar transition-opacity duration-300 ${isHistoryOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
             {/* Generate New Button */}
-            <button 
-                onClick={(e) => { e.stopPropagation(); handleGenerateVersion(); }}
-                disabled={isBusyGenerating}
-                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-indigo-400 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all group disabled:opacity-40 disabled:cursor-not-allowed"
-            >
+	            <button 
+	                onClick={(e) => { e.stopPropagation(); handleGenerateVersion(); }}
+	                disabled={isBusyGenerating}
+	                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-indigo-400 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all group disabled:opacity-40 disabled:cursor-not-allowed"
+	            >
                 <div className="p-3 rounded-full bg-zinc-900 group-hover:bg-indigo-500/20 transition-colors">
                     <RefreshCw className={`w-6 h-6 ${isBusyGenerating ? 'animate-spin' : 'group-hover:animate-spin'}`} />
                 </div>
                 <span className="text-xs font-bold uppercase tracking-wide">
                   {assetStatus === 'queued' ? 'Queued…' : isBusyGenerating ? 'Generating...' : isPlaceholderActive ? 'Generate' : 'Generate Variant'}
-                </span>
-            </button>
+	                </span>
+	            </button>
 
-            {/* Version List */}
-            {displayVersions.slice().reverse().map((version, index) => {
-                const isActive = version.id === shot.activeVersionId;
-                const versionNumber = displayVersions.length - index;
-                return (
-                    <div 
-                        key={version.id}
-                        onClick={(e) => { e.stopPropagation(); handleVersionSelect(version.id); }}
-                        className={`relative flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden border-2 cursor-pointer transition-all group shadow-lg ${isActive ? 'border-indigo-500 ring-4 ring-indigo-500/10' : 'border-zinc-800 hover:border-zinc-600'}`}
-                    >
+	            {selectedVersionIds.length > 0 && (
+	              <div className="flex-shrink-0 h-32 w-64 rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 flex flex-col justify-between">
+	                <div>
+	                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Selection</div>
+	                  <div className="mt-1 text-xs text-zinc-200 font-bold">{selectedVersionIds.length} selected</div>
+	                  <div className="mt-1 text-[10px] text-zinc-500">Cmd/Ctrl click: toggle, Shift: range</div>
+	                </div>
+	                <div className="flex items-center gap-2">
+	                  <button
+	                    type="button"
+	                    onClick={(e) => {
+	                      e.stopPropagation();
+	                      createStackFromSelection();
+	                    }}
+	                    disabled={selectedVersionIds.length < 2}
+	                    className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest border ${
+	                      selectedVersionIds.length < 2
+	                        ? 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'
+	                        : 'bg-indigo-500/20 border-indigo-500/30 text-indigo-200 hover:bg-indigo-500/30'
+	                    }`}
+	                    title="Create a stack group from the selected versions"
+	                  >
+	                    Create Stack
+	                  </button>
+	                  <button
+	                    type="button"
+	                    onClick={(e) => {
+	                      e.stopPropagation();
+	                      clearSelection();
+	                    }}
+	                    className="px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest border bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+	                    title="Clear selection"
+	                  >
+	                    Clear
+	                  </button>
+	                </div>
+	              </div>
+	            )}
+
+	            {/* Version List */}
+	            {timelineVersions.map((version, index) => {
+	                const isActive = version.id === shot.activeVersionId;
+	                const isSelected = selectedSet.has(String(version.id || ''));
+	                const versionNumber = displayVersions.length - index;
+	                return (
+	                    <div 
+	                        key={version.id}
+	                        onClick={(e) => onVersionCardClick(e, version.id)}
+	                        className={`relative flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden border-2 cursor-pointer transition-all group shadow-lg ${
+	                          isActive
+	                            ? 'border-indigo-500 ring-4 ring-indigo-500/10'
+	                            : isSelected
+	                              ? 'border-amber-400 ring-4 ring-amber-400/10'
+	                              : 'border-zinc-800 hover:border-zinc-600'
+	                        }`}
+	                    >
                         {String(version.type || '') === 'placeholder' ? (
                           <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-600">
                             <MonitorPlay className="w-8 h-8 opacity-60" />
                           </div>
                         ) : (
-                          <img
-                            src={version.imageUrl}
-                            className="w-full h-full object-cover cursor-zoom-in"
-                            loading="lazy"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openLightbox({ url: version.imageUrl, title: `Shot #${shot.sequence} (${version.id})` });
-                            }}
-                          />
-                        )}
-                        
-	                        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
-	                            v{versionNumber}
-	                        </div>
-	                        {String((version as any)?.type || '') === 'panel_group' && Array.isArray((version as any)?.metadata?.panelGroup?.panels) && (
-	                          <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
-	                            stack {((version as any).metadata.panelGroup.panels as any[]).length}
-	                          </div>
+	                          <img
+	                            src={version.imageUrl}
+	                            className="w-full h-full object-cover cursor-zoom-in"
+	                            loading="lazy"
+	                            onClick={(e) => {
+	                              e.stopPropagation();
+	                              if (e.shiftKey || e.metaKey || e.ctrlKey) {
+	                                onVersionCardClick(e as any, version.id);
+	                                return;
+	                              }
+	                              openLightbox({ url: version.imageUrl, title: `Shot #${shot.sequence} (${version.id})` });
+	                            }}
+	                          />
 	                        )}
+                        
+		                        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
+		                            v{versionNumber}
+		                        </div>
+		                        {isSelected && (
+		                          <div className="absolute bottom-2 left-2 bg-amber-500/30 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-amber-100 border border-amber-500/30">
+		                            Selected
+		                          </div>
+		                        )}
+		                        {String((version as any)?.type || '') === 'panel_group' && Array.isArray((version as any)?.metadata?.panelGroup?.panels) && (
+		                          <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
+		                            stack {((version as any).metadata.panelGroup.panels as any[]).length}
+		                          </div>
+		                        )}
 	                        {version.metadata && (
 	                          <button
                             onClick={(e) => {

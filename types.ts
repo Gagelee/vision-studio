@@ -136,7 +136,7 @@ export interface ShotVersion {
       grid?: '2x2' | '3x3';
     };
     source?: {
-      sourceType?: 'single' | 'grid_panel_group' | 'grid_panel' | 'unknown';
+      sourceType?: 'single' | 'grid_panel_group' | 'grid_panel' | 'manual_group' | 'unknown';
       sourceGridId?: string;
       sourcePanelGroupId?: string;
       panelIndex?: number;
