@@ -119,6 +119,20 @@ const GEMINI_SCHEMA = {
       negativePrompt: schemaString(),
     },
   }),
+  imageDescribe: schemaObject({
+    required: ['description'],
+    propertyOrdering: ['description', 'keySubjects', 'environment', 'composition', 'camera', 'lighting', 'style', 'constraints'],
+    properties: {
+      description: schemaString(),
+      keySubjects: schemaArray(schemaString()),
+      environment: schemaString(),
+      composition: schemaString(),
+      camera: schemaString(),
+      lighting: schemaString(),
+      style: schemaString(),
+      constraints: schemaArray(schemaString()),
+    },
+  }),
   scaffoldEnvironments: schemaObject({
     required: ['locations'],
     propertyOrdering: ['locations'],
@@ -846,6 +860,108 @@ const callGeminiJson = async (args: {
     },
     { label: `gemini.json:${args.model}`, maxAttempts },
   );
+};
+
+const callGeminiVisionJson = async (args: {
+  apiKey: string;
+  model: string;
+  temperature: number;
+  maxOutputTokens?: number;
+  prompt: string;
+  image: { mimeType: string; bytes: Buffer };
+  env?: Record<string, string>;
+  responseSchema?: any;
+  baseUrl?: string;
+}): Promise<{ value: any; usage?: TokenUsage; raw?: any }> => {
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
+  const maxAttempts = Math.max(1, Math.min(6, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 4)));
+  const geminiDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
+
+  const parseJsonLenient = (raw: string) => {
+    const text = String(raw || '').trim();
+    const stripped = text
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+    const normalizeQuotes = (s: string) =>
+      s
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/\uFEFF/g, '');
+    const stripJsonComments = (s: string) =>
+      s
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|\s)\/\/.*$/gm, '$1');
+    const stripTrailingCommas = (s: string) => {
+      let out = s;
+      for (let i = 0; i < 8; i++) {
+        const next = out.replace(/,\s*([}\]])/g, '$1');
+        if (next === out) return out;
+        out = next;
+      }
+      return out;
+    };
+    const repaired = stripTrailingCommas(stripJsonComments(normalizeQuotes(stripped))).trim();
+    return JSON.parse(repaired);
+  };
+
+  const raw = await withRetries(
+    async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90_000);
+      try {
+        const init: any = {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': args.apiKey },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { inlineData: { mimeType: args.image.mimeType, data: args.image.bytes.toString('base64') } },
+                  { text: args.prompt },
+                ],
+              },
+            ],
+            ...(args.responseSchema ? { generationConfig: { responseMimeType: 'application/json', responseSchema: args.responseSchema, temperature: args.temperature, maxOutputTokens: args.maxOutputTokens ?? 512 } } : {
+              generationConfig: { temperature: args.temperature, maxOutputTokens: args.maxOutputTokens ?? 512 },
+            }),
+          }),
+        };
+        if (geminiDispatcher) init.dispatcher = geminiDispatcher;
+        const res = await fetch(url, init);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          const err: any = new Error(`Gemini HTTP ${res.status}${text ? `: ${text}` : ''}`);
+          err.status = res.status;
+          err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
+          throw err;
+        }
+        return (await res.json()) as any;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    { label: `gemini.vision:${args.model}`, maxAttempts },
+  );
+
+  const usage = extractGeminiUsage(raw);
+  const parts = raw?.candidates?.[0]?.content?.parts;
+  const list = Array.isArray(parts) ? parts : [];
+  const text = list.find((p: any) => p && typeof p === 'object' && typeof p.text === 'string')?.text;
+  if (typeof text !== 'string' || !text.trim()) {
+    const preview = raw?.candidates?.[0]?.content?.parts?.[0]?.text;
+    throw new Error(`Gemini: missing text response. Preview: ${String(preview || JSON.stringify(raw)).slice(0, 240)}`);
+  }
+  try {
+    const parsed = parseJsonLenient(text);
+    return { value: parsed, usage, raw };
+  } catch (e) {
+    const err: any = e instanceof Error ? e : new Error(String(e));
+    err.retryable = true;
+    throw err;
+  }
 };
 
 const callGeminiToolCall = async (args: {
@@ -2003,6 +2119,85 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	      const filename = `${Date.now()}-${safeHint ? `${safeHint}-` : ''}${hash}${ext}`;
 	      fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), bytes);
 	      return sendJson(res, 200, { ok: true, imageUrl: `/__generated__/${filename}`, mimeType, bytes: bytes.length });
+	    });
+
+	    middlewares.use('/api/asset/image/describe', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'POST') return next();
+	      const body = await readJsonBody(req);
+	      const imageUrl = String(body?.imageUrl || '').trim();
+	      if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
+	      if (!geminiDirectApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+
+	      const loadImageBytes = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
+	        const u = String(url || '').trim();
+	        if (!u) return null;
+	        if (u.startsWith('/__generated__/')) {
+	          const clean = u.split('?')[0].split('#')[0];
+	          const filePath = safeGeneratedAssetPath(clean);
+	          if (!filePath) return null;
+	          const bytes = await fs.promises.readFile(filePath);
+	          return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+	        }
+	        if (u.startsWith('data:image/')) {
+	          const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(u);
+	          if (!match) return null;
+	          return { mimeType: match[1], bytes: Buffer.from(match[2], 'base64') };
+	        }
+	        if (u.startsWith('http://') || u.startsWith('https://')) {
+	          const controller = new AbortController();
+	          const timeout = setTimeout(() => controller.abort(), 20_000);
+	          try {
+	            const init: any = { signal: controller.signal };
+	            const dispatcher = getProxyDispatcher(u, env);
+	            if (dispatcher) init.dispatcher = dispatcher;
+	            const resp = await fetch(u, init);
+	            if (!resp.ok) return null;
+	            const ct = String(resp.headers.get('content-type') || '');
+	            if (!ct.startsWith('image/')) return null;
+	            const bytes = Buffer.from(await resp.arrayBuffer());
+	            if (!bytes.length) return null;
+	            return { mimeType: ct.split(';')[0] || 'image/png', bytes };
+	          } finally {
+	            clearTimeout(timeout);
+	          }
+	        }
+	        return null;
+	      };
+
+	      const loaded = await loadImageBytes(imageUrl);
+	      if (!loaded?.bytes?.length) return sendJson(res, 400, { ok: false, error: 'Could not load imageUrl bytes' });
+
+	      const describeModel = String(env.VISION_DESCRIBE_MODEL || env.GEMINI_VISION_MODEL || 'gemini-2.0-flash').trim();
+	      const prompt =
+	        'You are a vision assistant. Analyze the provided image frame for refinement.\n' +
+	        'Return JSON with:\n' +
+	        '- description: 1-2 sentences, literal visual facts\n' +
+	        '- keySubjects: list of key subjects (names if visible, otherwise generic)\n' +
+	        '- environment: brief setting description\n' +
+	        '- composition: framing and layout (shot scale, subject placement)\n' +
+	        '- camera: angle and lens impression (if inferable)\n' +
+	        '- lighting: direction, quality, color temperature\n' +
+	        '- style: material/texture/grade keywords (literal)\n' +
+	        '- constraints: do-not-change items for refinement\n' +
+	        'Do not mention grids/contact sheets unless clearly present. Do not invent story context.';
+
+	      try {
+	        const out = await callGeminiVisionJson({
+	          apiKey: geminiDirectApiKey,
+	          model: describeModel,
+	          temperature: 0.2,
+	          maxOutputTokens: 768,
+	          prompt,
+	          image: loaded,
+	          env,
+	          responseSchema: GEMINI_SCHEMA.imageDescribe,
+	          baseUrl: geminiDirectBaseUrl || undefined,
+	        });
+	        return sendJson(res, 200, { ok: true, describe: out.value, usage: out.usage });
+	      } catch (e: any) {
+	        const errText = formatFetchError(e);
+	        return sendJson(res, 502, { ok: false, error: errText });
+	      }
 	    });
 
 			    middlewares.use('/api/asset/image/generate', async (req, res, next) => {

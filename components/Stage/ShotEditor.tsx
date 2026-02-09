@@ -1,15 +1,16 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
+import { buildStylePromptTranslation } from '../../lib/ai/styleIntent';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
-import { buildShotKeyframePrompt, buildShotSingleFramePrompt } from '../../lib/ai/prompts';
+import { describeImageForRefine } from '../../lib/ai/image/describe';
+import { buildRefineFromDescribePrompt, buildShotKeyframePrompt } from '../../lib/ai/prompts';
 import { selectContactSheetPanelCount } from '../../lib/ai/prompts/image';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info, ChevronRight } from 'lucide-react';
 import {
   getCharacterActiveAvatarUrl,
   getLocationActivePreviewUrl,
   getLookActivePreviewUrl,
-  getStoryActiveKvUrl,
   resolveShotActiveVideo,
 } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
@@ -330,13 +331,20 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       })
       .filter(Boolean) as string[];
 
-    const prompt = buildShotSingleFramePrompt({
-      shot,
-      styleGuide,
-      environmentName: loc?.name,
-      environmentStyle: String(loc?.visualStyle || '').trim(),
-      castNames,
-      focusBeat: `Panel ${idx + 1} of ${panels.length}`,
+    const inferredStyleTranslation = buildStylePromptTranslation({
+      texts: [String((story as any)?.intent || '').trim(), styleGuide, String(loc?.visualStyle || '').trim()],
+      maxItems: 6,
+    });
+    const describe = await describeImageForRefine({ imageUrl: panelUrl });
+    const prompt = buildRefineFromDescribePrompt({
+      describe,
+      styleGuide: styleGuide || String(loc?.visualStyle || '').trim(),
+      styleTranslation: inferredStyleTranslation,
+      extraConstraints: [
+        `Aspect ratio: ${aspectRatio}.`,
+        castNames.length ? `Key subjects must match references: ${castNames.join(', ')}.` : '',
+        `Panel context: ${idx + 1}/${panels.length}.`,
+      ].filter(Boolean),
     });
 
     const startedAt = Date.now();
@@ -471,13 +479,19 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
     const references: ImageReference[] = pickRefineReferences({ frameUrl: baseImageUrl, parentRefs, story });
 
-    const prompt = buildShotSingleFramePrompt({
-      shot,
-      styleGuide,
-      environmentName: loc?.name,
-      environmentStyle: String(loc?.visualStyle || '').trim(),
-      castNames,
-      focusBeat: String((activeVersion as any)?.metadata?.source?.panelIndex) ? `Panel ${Number((activeVersion as any)?.metadata?.source?.panelIndex) + 1}` : '',
+    const inferredStyleTranslation = buildStylePromptTranslation({
+      texts: [String((story as any)?.intent || '').trim(), styleGuide, String(loc?.visualStyle || '').trim()],
+      maxItems: 6,
+    });
+    const describe = await describeImageForRefine({ imageUrl: baseImageUrl });
+    const prompt = buildRefineFromDescribePrompt({
+      describe,
+      styleGuide: styleGuide || String(loc?.visualStyle || '').trim(),
+      styleTranslation: inferredStyleTranslation,
+      extraConstraints: [
+        `Aspect ratio: ${aspectRatio}.`,
+        castNames.length ? `Key subjects must match references: ${castNames.join(', ')}.` : '',
+      ].filter(Boolean),
     });
 
     const startedAt = Date.now();

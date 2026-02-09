@@ -213,6 +213,57 @@ export const buildShotSingleFramePrompt = (args: {
   );
 };
 
+export const buildRefineFromDescribePrompt = (args: {
+  describe: {
+    description: string;
+    keySubjects?: string[];
+    environment?: string;
+    composition?: string;
+    camera?: string;
+    lighting?: string;
+    style?: string;
+    constraints?: string[];
+  };
+  styleGuide?: string;
+  styleTranslation?: string;
+  extraConstraints?: string[];
+}) => {
+  const d = args.describe || ({} as any);
+  const styleGuide = String(args.styleGuide || '').trim();
+  const styleTranslation = String(args.styleTranslation || '').trim();
+  const keySubjects = Array.isArray(d.keySubjects) ? d.keySubjects.map((s: any) => String(s || '').trim()).filter(Boolean) : [];
+  const constraints = [
+    'Output a single full-frame still image (NOT a grid/contact sheet).',
+    'Use the provided frame reference as the ground truth for composition and camera angle.',
+    'Preserve subject identity, wardrobe, and environment continuity from references.',
+    'Improve clarity/detail and fix artifacts; do not drift.',
+    ...(Array.isArray(d.constraints) ? d.constraints.map((s: any) => String(s || '').trim()).filter(Boolean) : []),
+    ...(Array.isArray(args.extraConstraints) ? args.extraConstraints.map((s) => String(s || '').trim()).filter(Boolean) : []),
+  ].filter(Boolean);
+
+  return (
+    `You are refining a keyframe from an existing frame reference.\n\n` +
+    `INPUTS\n` +
+    `- FRAME REFERENCE (image): must be preserved in composition and camera angle.\n` +
+    `- IDENTITY/ENV REFERENCES (images): preserve identity and environment.\n` +
+    `- STYLE GUIDE (text): apply grade, materials, and art direction.\n\n` +
+    `FRAME DESCRIPTION (vision)\n` +
+    `- ${String(d.description || '').trim() || 'N/A'}\n` +
+    (keySubjects.length ? `- Key subjects: ${keySubjects.join(', ')}\n` : '') +
+    (d.environment ? `- Environment: ${String(d.environment).trim()}\n` : '') +
+    (d.composition ? `- Composition: ${String(d.composition).trim()}\n` : '') +
+    (d.camera ? `- Camera: ${String(d.camera).trim()}\n` : '') +
+    (d.lighting ? `- Lighting: ${String(d.lighting).trim()}\n` : '') +
+    (d.style ? `- Visual cues: ${String(d.style).trim()}\n` : '') +
+    `\n` +
+    `STYLE\n` +
+    `- Style guide: ${styleGuide || 'N/A'}\n` +
+    `- Style translation hints: ${styleTranslation || 'N/A'}\n\n` +
+    `CONSTRAINTS (STRICT)\n` +
+    constraints.map((c, i) => `${i + 1}. ${c}`).join('\n')
+  );
+};
+
 export const buildShotImagePrompt = (shot: Shot) => {
   return buildShotKeyframePrompt({ shot });
 };
