@@ -442,6 +442,138 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     }
   };
 
+  const refineActiveVersionInPlace = async () => {
+    if (isBusyGenerating || !activeVersion) return;
+    if (String((activeVersion as any)?.type || '') === 'panel_group') return;
+    if (!String((activeVersion as any)?.imageUrl || '').trim()) return;
+
+    const settings =
+      imageSettings || {
+        provider: 'mock',
+        model: 'mock',
+        temperature: 0.5,
+      };
+
+    const loc = story?.locations?.find((l) => l.id === shot.locationId);
+    const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
+    const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+    const castArr = Array.isArray(cast) ? cast : [];
+    const castNames = (castArr || [])
+      .map((c: any) => {
+        const master = story?.characters?.find((x) => x.id === String(c?.id || ''));
+        if (!master) return null;
+        const activeLookId = String(c?.activeLookId || '');
+        const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
+        return `${master.name}${look?.name ? ` (${look.name})` : ''}`;
+      })
+      .filter(Boolean) as string[];
+
+    const baseImageUrl = String((activeVersion as any)?.imageUrl || '').trim();
+    const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
+    const references: ImageReference[] = [{ url: baseImageUrl, label: 'panel frame' }, ...parentRefs].slice(0, 6);
+
+    const prompt = buildShotSingleFramePrompt({
+      shot,
+      styleGuide,
+      environmentName: loc?.name,
+      environmentStyle: String(loc?.visualStyle || '').trim(),
+      castNames,
+      focusBeat: String((activeVersion as any)?.metadata?.source?.panelIndex) ? `Panel ${Number((activeVersion as any)?.metadata?.source?.panelIndex) + 1}` : '',
+    });
+
+    const startedAt = Date.now();
+    setIsGenerating(true);
+    setGenerationError(null);
+    try {
+      const img = await generateImageFromPrompt({
+        prompt,
+        settings,
+        aspectRatio,
+        references,
+        promptSpec: {
+          kind: 'shot',
+          styleGuide,
+          aspectRatio,
+          keyframeMode: 'single_frame',
+          source: {
+            sourceType: String((activeVersion as any)?.metadata?.source?.sourceType || ''),
+            sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+            sourcePanelGroupId: String((activeVersion as any)?.metadata?.source?.sourcePanelGroupId || ''),
+            panelIndex: (activeVersion as any)?.metadata?.source?.panelIndex,
+          },
+          environment: loc ? { name: loc.name, description: loc.description, visualStyle: loc.visualStyle } : null,
+          cast: castNames,
+          shot: {
+            id: shot.id,
+            description: shot.description,
+            timeOfDay: shot.timeOfDay,
+            duration: shot.duration,
+            script: String((shot.elements as any)?.SCRIPT?.prompt || '').trim(),
+            camera: String((shot.elements as any)?.CAMERA?.prompt || '').trim(),
+            lighting: String((shot.elements as any)?.LIGHTING?.prompt || '').trim(),
+            audio: String((shot.elements as any)?.AUDIO?.prompt || '').trim(),
+          },
+        },
+        composePrompt: true,
+        composeSettings: { model: 'gemini-3-pro-preview', temperature: 0.2, maxOutputTokens: 512 },
+        strict: true,
+        requireAllReferences: references.length > 0,
+      });
+
+      const now = Date.now();
+      const prevUrl = String((activeVersion as any)?.imageUrl || '').trim();
+      const sourcePrev = (activeVersion as any)?.metadata?.source || {};
+      const originalImageUrl = String(sourcePrev?.originalImageUrl || prevUrl).trim();
+
+      const updatedVersion: ShotVersion = {
+        ...(activeVersion as any),
+        imageUrl: String(img.imageUrl || '').trim(),
+        metadata: {
+          ...((activeVersion as any)?.metadata || {}),
+          prompt,
+          references,
+          settings: { provider: settings.provider, model: settings.model, temperature: settings.temperature },
+          keyframe: { mode: 'single_frame' },
+          source: {
+            ...(sourcePrev && typeof sourcePrev === 'object' ? sourcePrev : {}),
+            originalImageUrl,
+            refinedImageUrl: String(img.imageUrl || '').trim(),
+            refinedAt: now,
+          },
+        } as any,
+      };
+
+      const existing = Array.isArray(shot.versions) ? shot.versions : [];
+      const nextVersions = existing.map((v) => (String(v?.id || '') === String(activeVersion.id || '') ? updatedVersion : v));
+      onUpdateShot({
+        ...shot,
+        versions: nextVersions,
+        activeVersionId: updatedVersion.id,
+        thumbnailUrl: updatedVersion.imageUrl || shot.thumbnailUrl,
+        aiState: 'idle',
+        aiPrompt: '',
+      });
+
+      addDebugEvent({
+        level: 'info',
+        scope: 'asset.image',
+        message: 'Refine version in-place',
+        data: { ms: Date.now() - startedAt, versionId: updatedVersion.id, imageUrl: updatedVersion.imageUrl },
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      setGenerationError(err);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const stripPanelGroupMeta = (meta: any) => {
+    if (!meta || typeof meta !== 'object') return {};
+    const { panelGroup, ...rest } = meta as any;
+    return rest;
+  };
+
   const extractActivePanelAsVersion = () => {
     if (!activeVersion) return;
     const group: any = (activeVersion as any)?.metadata?.panelGroup;
@@ -462,12 +594,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       createdAt: now,
       type: 'grid_panel',
       metadata: {
-        ...(activeVersion.metadata || {}),
-        keyframe: (activeVersion as any)?.metadata?.keyframe || { mode: 'single_frame' },
+        ...stripPanelGroupMeta(activeVersion.metadata || {}),
+        keyframe: { mode: 'single_frame' },
         source: {
           sourceType: 'grid_panel',
           sourcePanelGroupId: activeVersion.id,
           sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+          originalImageUrl: panelUrl,
           panelIndex: idx,
           panelBBox: (hit as any)?.bbox,
         },
@@ -503,12 +636,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         createdAt: now + i,
         type: 'grid_panel',
         metadata: {
-          ...(activeVersion.metadata || {}),
-          keyframe: (activeVersion as any)?.metadata?.keyframe || { mode: 'single_frame' },
+          ...stripPanelGroupMeta(activeVersion.metadata || {}),
+          keyframe: { mode: 'single_frame' },
           source: {
             sourceType: 'grid_panel',
             sourcePanelGroupId: activeVersion.id,
             sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+            originalImageUrl: panelUrl || String(activeVersion.imageUrl || '').trim(),
             panelIndex: Number(p?.index) || i,
             panelBBox: p?.bbox,
           },
@@ -1137,6 +1271,29 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                              title="Create separate versions for all panels"
 	                            >
 	                              Ungroup
+	                            </button>
+	                          </div>
+	                        )}
+	                        {previewMode === 'frame' && String((activeVersion as any)?.type || '') === 'grid_panel' && (
+	                          <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
+	                            <div className="px-2.5 py-1 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-bold uppercase tracking-wider">
+	                              Panel
+	                            </div>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                void refineActiveVersionInPlace();
+	                              }}
+	                              disabled={isBusyGenerating}
+	                              className={`px-3 py-2 rounded-full border text-[10px] font-black uppercase tracking-widest ${
+	                                isBusyGenerating
+	                                  ? 'bg-white/5 border-white/10 text-white/50 cursor-not-allowed'
+	                                  : 'bg-white/10 border-white/20 text-white hover:bg-white/15'
+	                              }`}
+	                              title="Refine this panel into a single-frame keyframe (replaces this version)"
+	                            >
+	                              Refine
 	                            </button>
 	                          </div>
 	                        )}

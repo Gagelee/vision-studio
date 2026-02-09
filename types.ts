@@ -140,6 +140,9 @@ export interface ShotVersion {
       sourceGridId?: string;
       sourcePanelGroupId?: string;
       mergedFromVersionIds?: string[];
+      originalImageUrl?: string;
+      refinedImageUrl?: string;
+      refinedAt?: number;
       panelIndex?: number;
       panelBBox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
     };
