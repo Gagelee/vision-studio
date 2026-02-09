@@ -204,7 +204,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     }
     const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
     const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
-    return String(hit?.imageUrl || activeVersion.imageUrl || '').trim();
+    return String(hit?.refinedImageUrl || hit?.imageUrl || activeVersion.imageUrl || '').trim();
   };
 
   const handleSplitGrid = async (panelCount: 4 | 9) => {
@@ -270,7 +270,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
           panelGroup: {
             kind: 'stack',
             activeIndex: 0,
-            panels: storedPanels.map((p) => ({ index: p.index, imageUrl: p.imageUrl, bbox: p.bbox })),
+            panels: storedPanels.map((p) => ({ index: p.index, imageUrl: p.imageUrl, originalImageUrl: p.imageUrl, refinedImageUrl: '', refinedAt: 0, bbox: p.bbox })),
           },
         } as any,
       };
@@ -304,7 +304,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     if (!panels.length) return;
     const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
     const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
-    const panelUrl = String(hit?.imageUrl || '').trim();
+    const panelUrl = String(hit?.refinedImageUrl || hit?.imageUrl || '').trim();
     if (!panelUrl) return;
 
     const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
@@ -378,49 +378,59 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         requireAllReferences: references.length > 0,
       });
 
-      const versionMeta: any = {
-        prompt,
-        references,
-        settings: {
-          provider: settings.provider,
-          model: settings.model,
-          temperature: settings.temperature,
-        },
-        aspectRatio,
-        keyframe: { mode: 'single_frame' },
-        source: {
-          sourceType: 'single',
-          sourcePanelGroupId: activeVersion.id,
-          sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
-          panelIndex: idx,
-          panelBBox: (hit as any)?.bbox,
-        },
-      };
-
       const now = Date.now();
-      const existing = Array.isArray(shot.versions) ? shot.versions : [];
-      const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
-      const baseList = cleaned.length ? cleaned : existing;
-      const newVersion: ShotVersion = {
-        id: `v${baseList.length + 1}-${now}`,
-        imageUrl: img.imageUrl,
-        createdAt: now,
-        type: 'variation',
-        metadata: versionMeta,
+      const effectivePanels = Array.isArray((activeVersion as any)?.metadata?.panelGroup?.panels)
+        ? ((activeVersion as any).metadata.panelGroup.panels as any[])
+        : [];
+      const nextPanels = effectivePanels.map((p: any) => {
+        if (Number(p?.index) !== idx) return p;
+        const originalImageUrl = String(p?.originalImageUrl || p?.imageUrl || '').trim();
+        return {
+          ...p,
+          originalImageUrl: originalImageUrl || String(p?.imageUrl || '').trim(),
+          imageUrl: String(img.imageUrl || '').trim(),
+          refinedImageUrl: String(img.imageUrl || '').trim(),
+          refinedAt: now,
+          refine: {
+            prompt,
+            references,
+            settings: {
+              provider: settings.provider,
+              model: settings.model,
+              temperature: settings.temperature,
+            },
+          },
+        };
+      });
+
+      const firstPanel = nextPanels.find((p: any) => Number(p?.index) === 0) || nextPanels[0];
+      const stackThumb = String(firstPanel?.refinedImageUrl || firstPanel?.imageUrl || '').trim() || String(activeVersion.imageUrl || '').trim();
+      const updatedVersion: ShotVersion = {
+        ...(activeVersion as any),
+        imageUrl: stackThumb,
+        metadata: {
+          ...((activeVersion as any)?.metadata || {}),
+          panelGroup: {
+            ...((activeVersion as any)?.metadata?.panelGroup || {}),
+            panels: nextPanels,
+          },
+        },
       };
 
       addDebugEvent({
         level: 'info',
         scope: 'asset.image',
-        message: 'Refine from grid panel',
-        data: { ms: Date.now() - startedAt, panelIndex: idx, imageUrl: img.imageUrl },
+        message: 'Refine stack panel',
+        data: { ms: Date.now() - startedAt, panelIndex: idx, imageUrl: img.imageUrl, stackId: activeVersion.id },
       });
 
+      const existing = Array.isArray(shot.versions) ? shot.versions : [];
+      const nextVersions = existing.map((v) => (String(v?.id || '') === String(activeVersion.id || '') ? updatedVersion : v));
       onUpdateShot({
         ...shot,
-        versions: [...baseList, newVersion],
-        activeVersionId: newVersion.id,
-        thumbnailUrl: newVersion.imageUrl,
+        versions: nextVersions,
+        activeVersionId: updatedVersion.id,
+        thumbnailUrl: stackThumb || shot.thumbnailUrl,
         aiState: 'idle',
         aiPrompt: '',
       });
@@ -439,7 +449,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     if (!panels.length) return;
     const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
     const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
-    const panelUrl = String(hit?.imageUrl || '').trim();
+    const panelUrl = String(hit?.refinedImageUrl || hit?.imageUrl || '').trim();
     if (!panelUrl) return;
 
     const now = Date.now();
@@ -471,7 +481,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     });
   };
 
-	  const ungroupPanelsToVersions = () => {
+  const ungroupPanelsToVersions = () => {
 	    if (!activeVersion) return;
 	    const group: any = (activeVersion as any)?.metadata?.panelGroup;
 	    const panels = Array.isArray(group?.panels) ? group.panels : [];
@@ -485,10 +495,10 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	    const baseListWithoutGroup = baseList.filter((v) => String(v?.id || '') !== String(activeVersion.id || ''));
 	    const baseIndex = baseListWithoutGroup.length;
 	    const now = Date.now();
-	    const created = panels.map((p: any, i: number): ShotVersion => {
-	      const panelUrl = String(p?.imageUrl || '').trim();
-	      return {
-	        id: `v${baseIndex + i + 1}-${now + i}`,
+    const created = panels.map((p: any, i: number): ShotVersion => {
+      const panelUrl = String(p?.refinedImageUrl || p?.imageUrl || '').trim();
+      return {
+        id: `v${baseIndex + i + 1}-${now + i}`,
         imageUrl: panelUrl || String(activeVersion.imageUrl || '').trim(),
         createdAt: now + i,
         type: 'grid_panel',

@@ -149,6 +149,14 @@ export interface ShotVersion {
       panels?: Array<{
         index: number;
         imageUrl: string;
+        originalImageUrl?: string;
+        refinedImageUrl?: string;
+        refinedAt?: number;
+        refine?: {
+          prompt?: string;
+          references?: Array<{ url: string; label?: string }>;
+          settings?: { provider?: string; model?: string; temperature?: number };
+        };
         bbox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
       }>;
     };
