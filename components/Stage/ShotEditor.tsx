@@ -9,6 +9,7 @@ import {
   getCharacterActiveAvatarUrl,
   getLocationActivePreviewUrl,
   getLookActivePreviewUrl,
+  getStoryActiveKvUrl,
   resolveShotActiveVideo,
 } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
@@ -128,8 +129,6 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     const v: any = activeVersion as any;
     const mode = String(v?.metadata?.keyframe?.mode || '').trim();
     if (mode === 'contact_sheet') return true;
-    const prompt = String(v?.metadata?.prompt || '').toLowerCase();
-    if (prompt.includes('contact sheet') || prompt.includes('contact-sheet')) return true;
     return false;
   }, [activeVersion]);
 
@@ -308,7 +307,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     if (!panelUrl) return;
 
     const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
-    const references: ImageReference[] = [{ url: panelUrl, label: `grid panel ${idx + 1}` }, ...parentRefs].slice(0, 6);
+    const kvUrl = getStoryActiveKvUrl(story, { activeOnly: true });
+    const references: ImageReference[] = mergeReferences(
+      [
+        { url: panelUrl, label: `frame: grid panel ${idx + 1}` },
+        ...(kvUrl ? [{ url: kvUrl, label: 'key visual' }] : []),
+      ],
+      parentRefs,
+    ).slice(0, 6);
 
     const settings =
       imageSettings || {
@@ -468,9 +474,16 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       })
       .filter(Boolean) as string[];
 
-    const baseImageUrl = String((activeVersion as any)?.imageUrl || '').trim();
+    const baseImageUrl = String((activeVersion as any)?.metadata?.source?.originalImageUrl || (activeVersion as any)?.imageUrl || '').trim();
     const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
-    const references: ImageReference[] = [{ url: baseImageUrl, label: 'panel frame' }, ...parentRefs].slice(0, 6);
+    const kvUrl = getStoryActiveKvUrl(story, { activeOnly: true });
+    const references: ImageReference[] = mergeReferences(
+      [
+        { url: baseImageUrl, label: 'frame: panel' },
+        ...(kvUrl ? [{ url: kvUrl, label: 'key visual' }] : []),
+      ],
+      parentRefs,
+    ).slice(0, 6);
 
     const prompt = buildShotSingleFramePrompt({
       shot,
@@ -767,6 +780,19 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     });
     setActivePanelIndex(0);
     clearSelection();
+  };
+
+  const mergeReferences = (primary: ImageReference[], extra: ImageReference[]) => {
+    const seen = new Set<string>();
+    const out: ImageReference[] = [];
+    for (const r of [...primary, ...extra]) {
+      const url = String(r?.url || '').trim();
+      if (!url) continue;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({ url, label: r?.label });
+    }
+    return out;
   };
 
   const onVersionCardClick = (e: React.MouseEvent, versionId: string) => {
@@ -1203,6 +1229,16 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                        />
 	                        {previewMode === 'frame' && String((activeVersion as any)?.type || '') === 'panel_group' && (
 	                          <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
+	                            {(() => {
+	                              const group: any = (activeVersion as any)?.metadata?.panelGroup;
+	                              const panels = Array.isArray(group?.panels) ? group.panels : [];
+	                              const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
+	                              const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
+	                              const refined = Boolean(String(hit?.refinedImageUrl || '').trim());
+	                              const label = refined ? 'Re-Refine' : 'Refine';
+	                              const title = refined ? 'Refine again (replaces the refined panel)' : 'Refine this panel into a single-frame keyframe';
+	                              return (
+	                                <>
 	                            <div className="px-2.5 py-1 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-bold uppercase tracking-wider">
 	                              Stack
 	                            </div>
@@ -1246,10 +1282,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                                  ? 'bg-white/5 border-white/10 text-white/50 cursor-not-allowed'
 	                                  : 'bg-white/10 border-white/20 text-white hover:bg-white/15'
 	                              }`}
-	                              title="Regenerate a single-frame image from this panel"
+	                              title={title}
 	                            >
-	                              Refine
+	                              {label}
 	                            </button>
+	                                </>
+	                              );
+	                            })()}
 	                            <button
 	                              type="button"
 	                              onClick={(e) => {
@@ -1276,6 +1315,12 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                        )}
 	                        {previewMode === 'frame' && String((activeVersion as any)?.type || '') === 'grid_panel' && (
 	                          <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
+	                            {(() => {
+	                              const refined = Boolean(String((activeVersion as any)?.metadata?.source?.refinedImageUrl || '').trim());
+	                              const label = refined ? 'Re-Refine' : 'Refine';
+	                              const title = refined ? 'Refine again (replaces this version)' : 'Refine this panel into a single-frame keyframe (replaces this version)';
+	                              return (
+	                                <>
 	                            <div className="px-2.5 py-1 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-bold uppercase tracking-wider">
 	                              Panel
 	                            </div>
@@ -1291,10 +1336,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                                  ? 'bg-white/5 border-white/10 text-white/50 cursor-not-allowed'
 	                                  : 'bg-white/10 border-white/20 text-white hover:bg-white/15'
 	                              }`}
-	                              title="Refine this panel into a single-frame keyframe (replaces this version)"
+	                              title={title}
 	                            >
-	                              Refine
+	                              {label}
 	                            </button>
+	                                </>
+	                              );
+	                            })()}
 	                          </div>
 	                        )}
 	                      </>

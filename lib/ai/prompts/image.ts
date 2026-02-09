@@ -184,21 +184,23 @@ export const buildShotSingleFramePrompt = (args: {
     .filter(Boolean)
     .join('\n- ');
 
-  return (
-    `You are a professional cinematographer.\n\n` +
-    `INPUTS\n` +
-    `- REFERENCE IMAGE(S): preserve identity exactly (face, body, proportions, costume, hair, accessories, materials, colors).\n` +
-    `- SCENE INPUT (text): scene description, setting, mood, and actions.\n\n` +
-    `TASK\n` +
-    `Create ONE photorealistic cinematic still frame in 16:9 aspect ratio.\n` +
-    `This is NOT a grid/contact-sheet. Output a single full-frame image only.\n` +
-    `No text, subtitles, watermarks, logos, UI overlays, or panel borders.\n\n` +
-    `CONTINUITY RULES (STRICT)\n` +
-    `- Do not introduce new key subjects.\n` +
-    `- Keep wardrobe and identity consistent with references.\n` +
-    `- Keep environment/time-of-day consistent.\n\n` +
-    `FILM LOOK\n` +
-    `- Photoreal cinematic still, filmic contrast, controlled highlights, natural texture.\n` +
+	return (
+	  `You are a professional cinematographer.\n\n` +
+	  `INPUTS\n` +
+	  `- REFERENCE IMAGE(S): preserve identity exactly (face, body, proportions, costume, hair, accessories, materials, colors).\n` +
+	  `- If a reference is a "frame" to refine: treat it as the primary source of composition.\n` +
+	  `- SCENE INPUT (text): scene description, setting, mood, and actions.\n\n` +
+	  `TASK\n` +
+	  `Create ONE photorealistic cinematic still frame in 16:9 aspect ratio.\n` +
+	  `This is NOT a grid/contact-sheet. Output a single full-frame image only.\n` +
+	  `No text, subtitles, watermarks, logos, UI overlays, or panel borders.\n\n` +
+	  `CONTINUITY RULES (STRICT)\n` +
+	  `- Do not introduce new key subjects.\n` +
+	  `- Keep wardrobe and identity consistent with references.\n` +
+	  `- Keep environment/time-of-day consistent.\n\n` +
+	  `- If a frame reference is provided: preserve framing, camera angle, subject poses, and spatial layout. Improve clarity/detail without drifting.\n\n` +
+	  `FILM LOOK\n` +
+	  `- Photoreal cinematic still, filmic contrast, controlled highlights, natural texture.\n` +
     `- Plausible lens choice and depth of field.\n\n` +
     `PROJECT STYLE LOCK\n` +
     `- Style guide (hard lock when provided): ${styleGuide || 'N/A'}\n` +
