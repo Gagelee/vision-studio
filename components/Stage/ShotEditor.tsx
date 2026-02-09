@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
 import { buildShotKeyframePrompt } from '../../lib/ai/prompts';
@@ -56,6 +56,11 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const activeVideoVariant = activeVideoState.activeVariant;
   const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
   const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
+  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
+
+  useEffect(() => {
+    setVideoLoadFailed(false);
+  }, [activeVideoUrl, activeVideoVariant?.id]);
 
   const selectVideoVariant = (variantId: string) => {
     const hit = scopedVideoVariants.find((v) => v.id === variantId);
@@ -383,7 +388,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
-                {activeVideoUrl ? (
+                {activeVideoUrl && !videoLoadFailed ? (
                     <>
                       <video
                           src={activeVideoUrl}
@@ -392,6 +397,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                           loop
                           playsInline
                           preload="metadata"
+                          onError={() => setVideoLoadFailed(true)}
                       />
                       {scopedVideoVariants.length > 1 && (
                         <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
@@ -445,11 +451,16 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 )}
 
                 {/* Hover play hint: only when an actual video is present, never block controls. */}
-                {activeVideoUrl && (
+                {activeVideoUrl && !videoLoadFailed && (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all bg-black/10 backdrop-blur-[1px]">
                       <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow-[0_0_40px_rgba(255,255,255,0.2)]">
                           <Play className="w-8 h-8 fill-current ml-2" />
                       </div>
+                  </div>
+                )}
+                {activeVideoUrl && videoLoadFailed && (
+                  <div className="absolute bottom-3 left-3 right-3 z-20 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200 text-[11px] px-3 py-2">
+                    Video failed to load. Showing keyframe instead — try regenerating or switching variant.
                   </div>
                 )}
             </div>

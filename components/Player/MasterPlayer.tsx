@@ -16,6 +16,7 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, shots, onClos
   const [currentShotIndex, setCurrentShotIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [imgError, setImgError] = useState(false);
+  const [videoError, setVideoError] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Flatten shots from all sequences to create a linear timeline.
@@ -31,6 +32,7 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, shots, onClos
   // Reset error state when shot changes
   useEffect(() => {
     setImgError(false);
+    setVideoError(false);
     setProgress(0);
   }, [currentShotIndex]);
 
@@ -94,43 +96,43 @@ export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, shots, onClos
                        This project has no shots to play yet. Create shots in a sequence, then come back to Screen Master.
                      </div>
                  </div>
-             ) : imgError ? (
-                 <div className="flex flex-col items-center justify-center text-zinc-600 gap-2">
-                     <AlertCircle className="w-12 h-12 opacity-50" />
-                     <span className="text-xs uppercase font-bold tracking-wider">Visual Source Unavailable</span>
-                 </div>
-             ) : currentVideoUrl ? (
-                 <video
-                   ref={videoRef}
-                   src={currentVideoUrl}
-                   className="w-full h-full object-contain bg-black"
-                   playsInline
-                   autoPlay
+	             ) : imgError ? (
+	                 <div className="flex flex-col items-center justify-center text-zinc-600 gap-2">
+	                     <AlertCircle className="w-12 h-12 opacity-50" />
+	                     <span className="text-xs uppercase font-bold tracking-wider">Visual Source Unavailable</span>
+	                 </div>
+	             ) : currentVideoUrl && !videoError ? (
+	                 <video
+	                   ref={videoRef}
+	                   src={currentVideoUrl}
+	                   className="w-full h-full object-contain bg-black"
+	                   playsInline
+	                   autoPlay
                    onTimeUpdate={(e) => {
                      const el = e.currentTarget;
                      const d = Number(el.duration || 0);
                      const t = Number(el.currentTime || 0);
                      if (d > 0) setProgress(Math.max(0, Math.min(100, (t / d) * 100)));
                    }}
-                   onEnded={() => {
-                     if (currentShotIndex < allShots.length - 1) {
-                       setCurrentShotIndex((i) => i + 1);
-                     } else {
-                       setIsPlaying(false);
-                       setProgress(100);
-                     }
-                   }}
-                   onError={() => setImgError(true)}
-                 />
-             ) : (
-                 <img 
-                    src={currentShot.thumbnailUrl} 
-                    className="w-full h-full object-contain cursor-zoom-in" 
-                    alt="Current Shot" 
-                    onError={() => setImgError(true)}
-                    onClick={() => currentShot?.thumbnailUrl && openLightbox({ url: currentShot.thumbnailUrl, title: `Shot #${currentShot.sequence}` })}
-                 />
-             )}
+	                   onEnded={() => {
+	                     if (currentShotIndex < allShots.length - 1) {
+	                       setCurrentShotIndex((i) => i + 1);
+	                     } else {
+	                       setIsPlaying(false);
+	                       setProgress(100);
+	                     }
+	                   }}
+	                   onError={() => setVideoError(true)}
+	                 />
+	             ) : (
+	                 <img 
+	                    src={currentShot.thumbnailUrl} 
+	                    className="w-full h-full object-contain cursor-zoom-in" 
+	                    alt="Current Shot" 
+	                    onError={() => setImgError(true)}
+	                    onClick={() => currentShot?.thumbnailUrl && openLightbox({ url: currentShot.thumbnailUrl, title: `Shot #${currentShot.sequence}` })}
+	                 />
+	             )}
              
              {/* Cinematic Subtitles / Context Overlay */}
              {currentShot && (

@@ -655,6 +655,35 @@ const extractGeminiUsage = (raw: any): TokenUsage | undefined => {
   return Object.keys(out).length ? out : undefined;
 };
 
+const mergeTokenUsage = (...items: Array<TokenUsage | null | undefined>): TokenUsage | undefined => {
+  let promptTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let any = false;
+  for (const u of items) {
+    if (!u) continue;
+    if (typeof u.promptTokens === 'number' && Number.isFinite(u.promptTokens)) {
+      promptTokens += u.promptTokens;
+      any = true;
+    }
+    if (typeof u.outputTokens === 'number' && Number.isFinite(u.outputTokens)) {
+      outputTokens += u.outputTokens;
+      any = true;
+    }
+    if (typeof u.totalTokens === 'number' && Number.isFinite(u.totalTokens)) {
+      totalTokens += u.totalTokens;
+      any = true;
+    }
+  }
+  if (!any) return undefined;
+  const out: TokenUsage = {};
+  if (promptTokens > 0) out.promptTokens = promptTokens;
+  if (outputTokens > 0) out.outputTokens = outputTokens;
+  if (totalTokens > 0) out.totalTokens = totalTokens;
+  if (!out.totalTokens && (out.promptTokens || out.outputTokens)) out.totalTokens = (out.promptTokens || 0) + (out.outputTokens || 0);
+  return out;
+};
+
 const callGeminiJson = async (args: {
   apiKey: string;
   model: string;
@@ -1195,7 +1224,7 @@ const callGeminiImage = async (args: {
   references?: Array<{ mimeType: string; bytes: Buffer; label?: string }>;
   env?: Record<string, string>;
   baseUrl?: string;
-}): Promise<{ mimeType: string; bytes: Buffer }> => {
+}): Promise<{ mimeType: string; bytes: Buffer; raw?: any; usage?: TokenUsage }> => {
   const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
   const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
 
@@ -1231,7 +1260,7 @@ const callGeminiImage = async (args: {
     }),
   };
   const imgDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
-  const data = await withRetries(
+  const raw = await withRetries(
     async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 90_000);
@@ -1253,14 +1282,15 @@ const callGeminiImage = async (args: {
     },
     { label: `gemini.image:${args.model}`, maxAttempts },
   );
+  const usage = extractGeminiUsage(raw);
 
-  const parts = (data?.candidates?.[0]?.content?.parts || []) as any[];
+  const parts = (raw?.candidates?.[0]?.content?.parts || []) as any[];
   const inline = parts.find((p) => p?.inlineData?.data || p?.inline_data?.data);
   const inlineData = inline?.inlineData || inline?.inline_data;
   const mimeType = String(inlineData?.mimeType || inlineData?.mime_type || 'image/png');
   const b64 = inlineData?.data;
   if (typeof b64 !== 'string' || !b64) throw new Error('Gemini Image: missing inlineData');
-  return { mimeType, bytes: Buffer.from(b64, 'base64') };
+  return { mimeType, bytes: Buffer.from(b64, 'base64'), raw, usage };
 };
 
 const agentApiPlugin = (env: Record<string, string>): Plugin => {
@@ -1874,31 +1904,39 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           );
           throw new Error(`Gemini Video: operation completed but no downloadable video URI (shape=${responseShape})`);
         }
-        return sendJson(res, 200, {
-          videoUrl: resolvedVideoUri,
+
+        // IMPORTANT: never return a remote Gemini URL to the browser.
+        // Browsers can't attach the required API key headers; persisting that URL breaks preview/playback.
+        // If we can't download bytes here, treat it as a transient server-side failure so the user can retry.
+        const err: any = new Error('Gemini Video: operation completed but video download failed');
+        err.status = 502;
+        err.retryable = true;
+        (err as any).debug = {
+          provider: 'gemini',
+          model,
           operationName,
-	          debug: {
-	            transport: 'http',
-	            provider: 'gemini',
-	            model,
-	            baseUrl: geminiDirectBaseUrl,
-              gateway: 'direct',
-	            durationSeconds,
-	            resolution,
-	            aspectRatio,
-	            remote: true,
-            promptUsedPreview: promptUsed.slice(0, 320),
-            requestParameters: predictParamsUsed,
-            uriCandidates: Array.from(uriCandidates).slice(0, 16),
-          },
-        });
+          gateway: 'direct',
+          durationSeconds,
+          resolution,
+          aspectRatio,
+          resolvedVideoUri,
+          uriCandidates: Array.from(uriCandidates).slice(0, 16),
+        };
+        throw err;
       } catch (e: any) {
         const status = Number(e?.status || 0);
         const code = Number.isFinite(status) && status >= 400 && status <= 599 ? status : 500;
         return sendJson(res, code, {
           ok: false,
           error: formatFetchError(e),
-          debug: { provider: 'gemini', modelCandidates, imageUrlPreview: imageUrl.slice(0, 200), promptPreview: prompt.slice(0, 200), promptUsedPreview: promptUsed.slice(0, 320) },
+          debug: {
+            ...(e?.debug && typeof e.debug === 'object' ? e.debug : {}),
+            provider: 'gemini',
+            modelCandidates,
+            imageUrlPreview: imageUrl.slice(0, 200),
+            promptPreview: prompt.slice(0, 200),
+            promptUsedPreview: promptUsed.slice(0, 320),
+          },
         });
       }
     });
@@ -1921,9 +1959,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
 
-	        let promptUsed = prompt;
-	        let composed: any = null;
-	        const promptPreview = prompt.slice(0, 120);
+		        let promptUsed = prompt;
+		        let composed: any = null;
+            let composeUsage: TokenUsage | undefined;
+		        const promptPreview = prompt.slice(0, 120);
 
 		        try {
 		          if (provider === 'gemini') {
@@ -1954,19 +1993,20 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   const composerBaseUrl = compassBaseUrl || (geminiDirectApiKey ? geminiDirectBaseUrl : '');
                   if (!composerApiKey) throw new Error('Missing COMPASS_API_KEY or GEMINI_API_KEY for prompt composition');
 
-		                const composedRes = await callGeminiJson({
-		                  apiKey: composerApiKey,
-		                  baseUrl: composerBaseUrl || undefined,
-		                  model: composerModel,
-		                  temperature: composerTemp,
-		                  maxOutputTokens: composerMaxTokens,
-		                  prompt: composePromptText,
-		                  env,
-		                  responseSchema: GEMINI_SCHEMA.promptCompose,
-		                });
-                    composed = composedRes.value;
-		                const p = String(composed?.prompt || '').trim();
-		                const n = String(composed?.negativePrompt || '').trim();
+			                const composedRes = await callGeminiJson({
+			                  apiKey: composerApiKey,
+			                  baseUrl: composerBaseUrl || undefined,
+			                  model: composerModel,
+			                  temperature: composerTemp,
+			                  maxOutputTokens: composerMaxTokens,
+			                  prompt: composePromptText,
+			                  env,
+			                  responseSchema: GEMINI_SCHEMA.promptCompose,
+			                });
+                      composeUsage = composedRes.usage;
+	                    composed = composedRes.value;
+			                const p = String(composed?.prompt || '').trim();
+			                const n = String(composed?.negativePrompt || '').trim();
 		                if (p) {
 		                  promptUsed = n ? `${p}\n\nNegative: ${n}` : p;
 		                }
@@ -2093,10 +2133,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 if (compassApiKey && compassBaseUrl) transports.push({ id: 'compass', apiKey: compassApiKey, baseUrl: compassBaseUrl });
                 if (!transports.length) throw new Error('Missing GEMINI_API_KEY and COMPASS_API_KEY');
 
-                // Run both keys in parallel; first success wins. This improves reliability when one path is flaky.
-                let outAny: { transport: (typeof transports)[number]; out: { mimeType: string; bytes: Buffer } };
-                try {
-                  outAny = await Promise.any(
+	                // Run both keys in parallel; first success wins. This improves reliability when one path is flaky.
+	                let outAny: {
+                    transport: (typeof transports)[number];
+                    out: { mimeType: string; bytes: Buffer; raw?: any; usage?: TokenUsage };
+                  };
+	                try {
+	                  outAny = await Promise.any(
                     transports.map((t) =>
                       callGeminiImage({
                         apiKey: t.apiKey,
@@ -2118,10 +2161,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   const inner = Array.isArray(e?.errors) ? e.errors : null;
                   const reasons = inner ? inner.map((x: any) => formatFetchError(x)).slice(0, 4) : [formatFetchError(e)];
                   throw new Error(`All Gemini image transports failed: ${reasons.join(' | ')}`);
-                }
-                const out = outAny.out;
-                const gateway = outAny.transport.id;
-                const baseUrlUsed = outAny.transport.baseUrl;
+	                }
+	                const out = outAny.out;
+	                const gateway = outAny.transport.id;
+	                const baseUrlUsed = outAny.transport.baseUrl;
+                  const usage = mergeTokenUsage(out?.usage, composeUsage);
 
             const ext =
               out.mimeType === 'image/png'
@@ -2137,29 +2181,30 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              .digest('hex')
 	              .slice(0, 16);
             const filename = `${Date.now()}-${hash}.${ext}`;
-            fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
-		            return sendJson(res, 200, {
-		              imageUrl: `/__generated__/${filename}`,
+			            fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
+			            return sendJson(res, 200, {
+			              imageUrl: `/__generated__/${filename}`,
 				              debug: {
 				                transport: 'http',
 				                provider,
 				                model: usedModel,
-			                    baseUrl: baseUrlUsed || geminiBaseUrl,
+				                    baseUrl: baseUrlUsed || geminiBaseUrl,
                         gateway,
                         attemptedTransports: transports.map((t) => t.id),
+                        usage,
 				                mimeType: out.mimeType,
 				                bytes: out.bytes.length,
 				                promptPreview,
 				                promptUsedPreview: String(promptUsed || '').slice(0, 240),
 				                promptUsed: String(promptUsed || '').slice(0, 4000),
 				                composed,
-			                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
-			                requireAllReferences,
-			                missingReferences: missingRefs,
-			              },
-		            });
-			          }
-			        } catch (e: any) {
+				                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
+				                requireAllReferences,
+				                missingReferences: missingRefs,
+				              },
+			            });
+				          }
+				        } catch (e: any) {
 	          return sendJson(res, 200, {
 	            imageUrl:
 	              `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
