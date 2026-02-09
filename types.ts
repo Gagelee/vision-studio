@@ -139,6 +139,7 @@ export interface ShotVersion {
       sourceType?: 'single' | 'grid_panel_group' | 'grid_panel' | 'manual_group' | 'unknown';
       sourceGridId?: string;
       sourcePanelGroupId?: string;
+      mergedFromVersionIds?: string[];
       panelIndex?: number;
       panelBBox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
     };

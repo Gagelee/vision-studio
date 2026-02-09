@@ -585,21 +585,25 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       return;
     }
 
+    // Merge semantics: remove selected versions from the timeline once grouped.
+    const removeIds = new Set(usable.map((v) => String(v?.id || '')).filter(Boolean));
+    const baseListWithoutSelected = baseList.filter((v) => !removeIds.has(String(v?.id || '')));
+
     const groupVersion: ShotVersion = {
-      id: `v${baseList.length + 1}-${now}`,
+      id: `v${baseListWithoutSelected.length + 1}-${now}`,
       imageUrl: panels[0].imageUrl,
       createdAt: now,
       type: 'panel_group',
       metadata: {
         keyframe: { mode: 'single_frame' },
-        source: { sourceType: 'manual_group' },
+        source: { sourceType: 'manual_group', mergedFromVersionIds: Array.from(removeIds) },
         panelGroup: { kind: 'stack', activeIndex: 0, panels },
       } as any,
     };
 
     onUpdateShot({
       ...shot,
-      versions: [...baseList, groupVersion],
+      versions: [...baseListWithoutSelected, groupVersion],
       activeVersionId: groupVersion.id,
       thumbnailUrl: groupVersion.imageUrl,
     });
