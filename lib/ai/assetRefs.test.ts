@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getShotPreviewImageUrl } from './assetRefs';
+import { getShotPreviewImageUrl, resolveShotActiveVideo } from './assetRefs';
 
 const UNSPLASH_PLACEHOLDER =
   'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=123';
@@ -39,3 +39,22 @@ describe('assetRefs.getShotPreviewImageUrl', () => {
   });
 });
 
+describe('assetRefs.resolveShotActiveVideo', () => {
+  it('prefers local generated variant over remote legacy activeVariantId', () => {
+    const shot: any = {
+      id: 'shot-1',
+      activeVersionId: 'v1',
+      versions: [{ id: 'v1', imageUrl: '/__generated__/kf.png', createdAt: 1, type: 'base' }],
+      production: {
+        activeVariantId: 'pv-remote',
+        variants: [
+          { id: 'pv-remote', videoUrl: 'https://example.com/remote.mp4', createdAt: 1, metadata: { sourceShotVersionId: 'v1' } },
+          { id: 'pv-local', videoUrl: '/__generated__/local.mp4', createdAt: 2, metadata: { sourceShotVersionId: 'v1' } },
+        ],
+      },
+    };
+    const resolved = resolveShotActiveVideo(shot, { allowLegacyUnboundFallback: true });
+    expect(resolved.videoUrl).toBe('/__generated__/local.mp4');
+    expect(resolved.activeVariant?.id).toBe('pv-local');
+  });
+});

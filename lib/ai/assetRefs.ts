@@ -16,6 +16,12 @@ export const isLikelyPlaceholderImageUrl = (url: string) => {
   return false;
 };
 
+const isLocalGeneratedAssetUrl = (url: string) => {
+  const s = String(url || '').trim();
+  // Our dev server exposes local asset bytes under `/__generated__/...`.
+  return s.startsWith('/__generated__/');
+};
+
 export const pickActiveImageUrl = (args: {
   entity: any;
   versionsKey: string;
@@ -195,7 +201,16 @@ export const resolveShotActiveVideo = (
   const activeVersion = getShotActiveVersion(shot);
   const variants = getShotVideoVariantsForVersion(shot, activeVersion, opts);
   const activeVariantId = String((shot as any)?.production?.activeVariantId || '').trim();
-  const activeVariant = variants.find((v) => String(v?.id || '') === activeVariantId) || variants[variants.length - 1] || null;
+  const explicit = variants.find((v) => String(v?.id || '') === activeVariantId) || null;
+  const fallback = variants[variants.length - 1] || null;
+  let activeVariant = explicit || fallback;
+
+  // Legacy shots may have `activeVariantId` pointing to a remote Gemini URL (unplayable in browser).
+  // If we have any locally-served `/__generated__/...` variant, prefer it for preview/playback.
+  if (activeVariant && !isLocalGeneratedAssetUrl(activeVariant.videoUrl)) {
+    const local = variants.filter((v) => isLocalGeneratedAssetUrl(v.videoUrl)).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    if (local.length) activeVariant = local[local.length - 1];
+  }
   return {
     activeVersion,
     variants,
