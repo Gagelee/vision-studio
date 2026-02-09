@@ -184,19 +184,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     return String(hit?.imageUrl || activeVersion.imageUrl || '').trim();
   };
 
-  const handleSplitGrid = async () => {
+  const handleSplitGrid = async (panelCount: 4 | 9) => {
     if (isSplittingGrid || !activeVersion) return;
     if (String((activeVersion as any)?.type || '') === 'panel_group') return;
     if (!String(activeVersion.imageUrl || '').trim()) return;
     setSplitError(null);
     setIsSplittingGrid(true);
     const gridVersion = activeVersion;
-    let panelCount = getPanelCount();
-    const pcMeta = Number((gridVersion as any)?.metadata?.keyframe?.panelCount);
-    if (!(pcMeta === 4 || pcMeta === 9)) {
-      const wants9 = window.confirm('Split as 3x3 (9 panels)? Click Cancel for 2x2 (4 panels).');
-      panelCount = wants9 ? 9 : 4;
-    }
     const gridLabel = panelCount === 9 ? '3x3' : '2x2';
     const startedAt = Date.now();
     try {
@@ -413,6 +407,87 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const extractActivePanelAsVersion = () => {
+    if (!activeVersion) return;
+    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+    const panels = Array.isArray(group?.panels) ? group.panels : [];
+    if (!panels.length) return;
+    const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
+    const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
+    const panelUrl = String(hit?.imageUrl || '').trim();
+    if (!panelUrl) return;
+
+    const now = Date.now();
+    const existing = Array.isArray(shot.versions) ? shot.versions : [];
+    const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+    const baseList = cleaned.length ? cleaned : existing;
+    const newVersion: ShotVersion = {
+      id: `v${baseList.length + 1}-${now}`,
+      imageUrl: panelUrl,
+      createdAt: now,
+      type: 'grid_panel',
+      metadata: {
+        ...(activeVersion.metadata || {}),
+        keyframe: (activeVersion as any)?.metadata?.keyframe || { mode: 'single_frame' },
+        source: {
+          sourceType: 'grid_panel',
+          sourcePanelGroupId: activeVersion.id,
+          sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+          panelIndex: idx,
+          panelBBox: (hit as any)?.bbox,
+        },
+      } as any,
+    };
+    onUpdateShot({
+      ...shot,
+      versions: [...baseList, newVersion],
+      activeVersionId: newVersion.id,
+      thumbnailUrl: newVersion.imageUrl,
+    });
+  };
+
+  const ungroupPanelsToVersions = () => {
+    if (!activeVersion) return;
+    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+    const panels = Array.isArray(group?.panels) ? group.panels : [];
+    if (!panels.length) return;
+    if (!window.confirm(`Ungroup into ${panels.length} separate versions?`)) return;
+
+    const existing = Array.isArray(shot.versions) ? shot.versions : [];
+    const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+    const baseList = cleaned.length ? cleaned : existing;
+    const baseIndex = baseList.length;
+    const now = Date.now();
+    const created = panels.map((p: any, i: number): ShotVersion => {
+      const panelUrl = String(p?.imageUrl || '').trim();
+      return {
+        id: `v${baseIndex + i + 1}-${now + i}`,
+        imageUrl: panelUrl || String(activeVersion.imageUrl || '').trim(),
+        createdAt: now + i,
+        type: 'grid_panel',
+        metadata: {
+          ...(activeVersion.metadata || {}),
+          keyframe: (activeVersion as any)?.metadata?.keyframe || { mode: 'single_frame' },
+          source: {
+            sourceType: 'grid_panel',
+            sourcePanelGroupId: activeVersion.id,
+            sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+            panelIndex: Number(p?.index) || i,
+            panelBBox: p?.bbox,
+          },
+        } as any,
+      };
+    });
+    const nextActive = created[0] || null;
+    if (!nextActive) return;
+    onUpdateShot({
+      ...shot,
+      versions: [...baseList, ...created],
+      activeVersionId: nextActive.id,
+      thumbnailUrl: nextActive.imageUrl,
+    });
   };
 
   const selectVideoVariant = (variantId: string) => {
@@ -736,20 +811,36 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                Export Frame
 	            </button>
 	            {activeVersion && !isPlaceholderActive && isContactSheetGrid && String((activeVersion as any)?.type || '') !== 'panel_group' && (
-	              <button
-	                type="button"
-	                onClick={() => void handleSplitGrid()}
-	                disabled={isSplittingGrid}
-	                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg ${
-	                  isSplittingGrid
-	                    ? 'bg-white/10 text-white/50 cursor-not-allowed shadow-white/5'
-	                    : 'bg-indigo-500 text-white hover:bg-indigo-400 shadow-indigo-500/20'
-	                }`}
-	                title="Split contact-sheet grid into panels (creates a stack group)"
-	              >
-	                <Layers className={`w-3.5 h-3.5 ${isSplittingGrid ? 'animate-spin' : ''}`} />
-	                Split Grid
-	              </button>
+	              <>
+	                <button
+	                  type="button"
+	                  onClick={() => void handleSplitGrid(4)}
+	                  disabled={isSplittingGrid}
+	                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg ${
+	                    isSplittingGrid
+	                      ? 'bg-white/10 text-white/50 cursor-not-allowed shadow-white/5'
+	                      : 'bg-indigo-500 text-white hover:bg-indigo-400 shadow-indigo-500/20'
+	                  }`}
+	                  title="Split as 2x2 (4 panels)"
+	                >
+	                  <Layers className={`w-3.5 h-3.5 ${isSplittingGrid ? 'animate-spin' : ''}`} />
+	                  Split 4
+	                </button>
+	                <button
+	                  type="button"
+	                  onClick={() => void handleSplitGrid(9)}
+	                  disabled={isSplittingGrid}
+	                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg ${
+	                    isSplittingGrid
+	                      ? 'bg-white/10 text-white/50 cursor-not-allowed shadow-white/5'
+	                      : 'bg-indigo-500 text-white hover:bg-indigo-400 shadow-indigo-500/20'
+	                  }`}
+	                  title="Split as 3x3 (9 panels)"
+	                >
+	                  <Layers className={`w-3.5 h-3.5 ${isSplittingGrid ? 'animate-spin' : ''}`} />
+	                  Split 9
+	                </button>
+	              </>
 	            )}
 	        </div>
 	      </div>
@@ -871,6 +962,28 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                              title="Regenerate a single-frame image from this panel"
 	                            >
 	                              Refine
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                extractActivePanelAsVersion();
+	                              }}
+	                              className="px-3 py-2 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-black uppercase tracking-widest hover:bg-black/75"
+	                              title="Create a normal version from the current panel image"
+	                            >
+	                              Extract
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                ungroupPanelsToVersions();
+	                              }}
+	                              className="px-3 py-2 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-black uppercase tracking-widest hover:bg-black/75"
+	                              title="Create separate versions for all panels"
+	                            >
+	                              Ungroup
 	                            </button>
 	                          </div>
 	                        )}
