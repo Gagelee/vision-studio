@@ -56,10 +56,12 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const activeVideoState = resolveShotActiveVideo(shot, { allowLegacyUnboundFallback: true });
   const scopedVideoVariants = activeVideoState.variants;
   const activeVideoVariant = activeVideoState.activeVariant;
-  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
-  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
-  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
-  const probedVideoUrlsRef = useRef<Set<string>>(new Set());
+	  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
+	  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
+	  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
+	  const probedVideoUrlsRef = useRef<Set<string>>(new Set());
+	  const [previewMode, setPreviewMode] = useState<'video' | 'frame'>('frame');
+	  const prevVideoUrlRef = useRef<string>('');
 
   const [isSplittingGrid, setIsSplittingGrid] = useState(false);
   const [splitError, setSplitError] = useState<string | null>(null);
@@ -67,9 +69,21 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string>('');
 
-  useEffect(() => {
-    setVideoLoadFailed(false);
-  }, [activeVideoUrl, activeVideoVariant?.id]);
+	  useEffect(() => {
+	    setVideoLoadFailed(false);
+	  }, [activeVideoUrl, activeVideoVariant?.id]);
+
+	  useEffect(() => {
+	    // Default: whenever a (new) video URL exists, prefer previewing video.
+	    const prev = prevVideoUrlRef.current;
+	    if (!activeVideoUrl) setPreviewMode('frame');
+	    if (activeVideoUrl && activeVideoUrl !== prev) setPreviewMode('video');
+	    prevVideoUrlRef.current = activeVideoUrl;
+	  }, [activeVideoUrl]);
+
+	  useEffect(() => {
+	    if (videoLoadFailed) setPreviewMode('frame');
+	  }, [videoLoadFailed]);
 
   useEffect(() => {
     setActivePanelIndex(0);
@@ -907,8 +921,8 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                <Download className="w-3.5 h-3.5" />
 	                Export Frame
 	            </button>
-	            {activeVersion && !isPlaceholderActive && isContactSheetGrid && String((activeVersion as any)?.type || '') !== 'panel_group' && (
-	              <>
+		            {activeVersion && !isPlaceholderActive && isContactSheetGrid && String((activeVersion as any)?.type || '') !== 'panel_group' && (
+		              <>
 	                <button
 	                  type="button"
 	                  onClick={() => void handleSplitGrid(4)}
@@ -937,20 +951,52 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                  <Layers className={`w-3.5 h-3.5 ${isSplittingGrid ? 'animate-spin' : ''}`} />
 	                  Split 9
 	                </button>
-	              </>
-	            )}
-	        </div>
-	      </div>
+		              </>
+		            )}
+		            {activeVideoUrl && (
+		              <div className="flex items-center rounded-lg border border-white/10 bg-white/5 overflow-hidden">
+		                <button
+		                  type="button"
+		                  onClick={() => {
+		                    setVideoLoadFailed(false);
+		                    setPreviewMode('video');
+		                  }}
+		                  disabled={videoLoadFailed}
+		                  className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+		                    previewMode === 'video'
+		                      ? 'bg-white text-black'
+		                      : videoLoadFailed
+		                        ? 'text-white/40 cursor-not-allowed'
+		                        : 'text-white/70 hover:text-white'
+		                  }`}
+		                  title={videoLoadFailed ? 'Video failed to load' : 'Preview video'}
+		                >
+		                  Video
+		                </button>
+		                <button
+		                  type="button"
+		                  onClick={() => setPreviewMode('frame')}
+		                  className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+		                    previewMode === 'frame' ? 'bg-white text-black' : 'text-white/70 hover:text-white'
+		                  }`}
+		                  title="Preview keyframe/frame"
+		                >
+		                  Frame
+		                </button>
+		              </div>
+		            )}
+		        </div>
+		      </div>
 
       {/* Main Preview Area */}
       <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
-	                {activeVideoUrl && !videoLoadFailed ? (
-	                    <>
-	                      <video
-	                          src={activeVideoUrl}
-	                          className="w-full h-full object-contain bg-black"
+		                {previewMode === 'video' && activeVideoUrl && !videoLoadFailed ? (
+		                    <>
+		                      <video
+		                          src={activeVideoUrl}
+		                          className="w-full h-full object-contain bg-black"
                           controls
                           loop
 	                          playsInline
@@ -1011,7 +1057,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                              if (url) openLightbox({ url, title: `Shot #${shot.sequence}` });
 	                            }}
 	                        />
-	                        {String((activeVersion as any)?.type || '') === 'panel_group' && (
+	                        {previewMode === 'frame' && String((activeVersion as any)?.type || '') === 'panel_group' && (
 	                          <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
 	                            <div className="px-2.5 py-1 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-bold uppercase tracking-wider">
 	                              Stack
@@ -1094,13 +1140,13 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 )}
 
                 {/* Hover play hint: only when an actual video is present, never block controls. */}
-                {activeVideoUrl && !videoLoadFailed && (
-                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all bg-black/10 backdrop-blur-[1px]">
-                      <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow-[0_0_40px_rgba(255,255,255,0.2)]">
-                          <Play className="w-8 h-8 fill-current ml-2" />
-                      </div>
-                  </div>
-                )}
+	                {previewMode === 'video' && activeVideoUrl && !videoLoadFailed && (
+	                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all bg-black/10 backdrop-blur-[1px]">
+	                      <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow-[0_0_40px_rgba(255,255,255,0.2)]">
+	                          <Play className="w-8 h-8 fill-current ml-2" />
+	                      </div>
+	                  </div>
+	                )}
                 {activeVideoUrl && videoLoadFailed && (
                   <div className="absolute bottom-3 left-3 right-3 z-20 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200 text-[11px] px-3 py-2">
                     Video failed to load. Showing keyframe instead — try regenerating or switching variant.
