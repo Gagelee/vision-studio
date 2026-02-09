@@ -200,6 +200,13 @@ export interface Sequence {
   // A sequence may contain multiple locations, and locations may intercut within it.
   title: string;
   context: string;
+  // Scaffold decision metadata: whether and why to split into multiple scenes.
+  sceneDecision?: {
+    split: boolean;
+    sceneCount: number;
+    rationale: string;
+    criteria?: string[];
+  };
   // Primary future structure.
   scenes: Scene[];
   // Flattened cache used by current UI modules; derived from scenes.

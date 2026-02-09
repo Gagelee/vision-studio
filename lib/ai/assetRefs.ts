@@ -93,6 +93,40 @@ export const getLookActivePreviewUrl = (lk: CharacterLook | null | undefined, op
   });
 };
 
+// UI helper: preview should reflect the active keyframe ASAP.
+// Downstream "reference selection" should still use the stricter `pickActiveImageUrl` rules above.
+export const getShotPreviewImageUrl = (shot: Shot | null | undefined): string => {
+  if (!shot) return '';
+  const versions = Array.isArray((shot as any).versions) ? ((shot as any).versions as ShotVersion[]) : [];
+  const thumbUrl = String((shot as any)?.thumbnailUrl || '').trim();
+  const active = getShotActiveVersion(shot);
+
+  const isUsable = (v: any) => {
+    const type = String(v?.type || '').trim();
+    if (type === 'placeholder') return false;
+    const url = String(v?.imageUrl || '').trim();
+    if (!url) return false;
+    return !isLikelyPlaceholderImageUrl(url);
+  };
+
+  // Prefer an active, non-placeholder keyframe.
+  if (active && isUsable(active)) return String(active.imageUrl).trim();
+
+  // If the active version is still a placeholder (e.g. job queued/running),
+  // keep showing the most recent real keyframe to avoid preview "reverting".
+  for (let i = versions.length - 1; i >= 0; i--) {
+    const v = versions[i];
+    if (isUsable(v)) return String(v.imageUrl).trim();
+  }
+
+  // Fall back to thumbnail if it's non-placeholder.
+  if (thumbUrl && !isLikelyPlaceholderImageUrl(thumbUrl)) return thumbUrl;
+
+  // Final fallback: show whatever we have, even if placeholder.
+  const activeUrl = String(active?.imageUrl || '').trim();
+  return activeUrl || thumbUrl;
+};
+
 const getShotLegacyFallbackVariants = (shot: Shot): ShotProductionVariant[] => {
   const production = (shot as any)?.production;
   const productionVariants = Array.isArray(production?.variants) ? (production.variants as ShotProductionVariant[]) : [];

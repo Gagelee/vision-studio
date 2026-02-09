@@ -21,7 +21,12 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `- styleGuide: string (DIRECTOR-created art core; assume user didn't specify style and you must decide it; include: rendering medium/style (e.g., ink wash / anime cel / watercolor / oil painting / documentary live-action), genre+tone, color palette, lighting mood, composition rules, camera language, negative constraints; 8-14 bullet-like sentences)\n` +
     `- locations: array of {name, description, visualStyle}\n` +
     `- characters: array of {name, description, looks:[{name, description}]}\n` +
-    `- sequences: array of {title, context, scenes:[...]} where each sequence is a narrative unit/story part (agent decides appropriate count)\n` +
+    `- sequences: array of {title, context, sceneDecision, scenes:[...]} where each sequence is a narrative unit/story part (agent decides appropriate count)\n` +
+    `- sceneDecision: { split: boolean, sceneCount: number, rationale: string, criteria?: string[] }\n` +
+    `  - split: whether to split this story part into multiple scenes\n` +
+    `  - sceneCount: how many scenes in this story part (use 1 if not splitting)\n` +
+    `  - rationale: concise reason for split/not-split\n` +
+    `  - criteria: optional keywords (e.g., "time jump", "location change", "beat boundary", "intercut")\n` +
     `- each scene: { title, summary?, shots:[...] }\n` +
     `- each shot: {\n` +
     `    description, timeOfDay, duration,\n` +
@@ -42,6 +47,9 @@ export const buildScaffoldPrompt = (args: { intent: string; aspectRatio: AspectR
     `- Choose sequence/scene/shot counts that best fit the target runtime and story rhythm.\n` +
     `- IMPORTANT: sequence boundaries are narrative/dramatic boundaries (goal/turn/reveal), NOT a simple grouping by location/environment.\n` +
     `- A sequence can include multiple locations, and locations can intercut inside one sequence when story logic requires it.\n` +
+    `- Scene split is OPTIONAL, but you MUST make a decision for each sequence via sceneDecision.\n` +
+    `  - If split=false, you must still output exactly 1 scene, and sceneDecision.sceneCount must be 1.\n` +
+    `  - If split=true, choose 2-5 scenes; ensure each scene has at least 1 shot.\n` +
     `- Keep JSON VALID. If too long, reduce counts/verbosity.\n` +
     `- If the Intent includes a "Reference Assignments" section, treat it as hard constraints and preserve those mappings through Director -> Casting/Environment decisions.\n` +
     `- For character-assigned references, ensure corresponding character entries/looks are created or updated to match those references.\n` +

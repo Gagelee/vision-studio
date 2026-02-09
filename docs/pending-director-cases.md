@@ -41,6 +41,7 @@ This file tracks unresolved/fragile director-command behaviors for later revise.
 2. Conditional directives (`only if`, `if needed`) may become unconditional generation.
 3. Multi-step directives may produce action-order drift (generation before mutation).
 4. Unsupported destructive operations should never silently no-op.
+5. Stage preview should not revert to placeholder while shot keyframes are still generating (mitigated by preferring latest real keyframe in preview selection).
 
 ## Dummy Validation Flow (No Real Asset Production)
 

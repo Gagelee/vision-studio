@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ElementType, Sequence, Shot, Location, AspectRatio } from '../../types';
 import { ShotCard } from './ShotCard';
 import { Clock, Plus, Maximize2, Minimize2, Play, LayoutGrid, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2, List, ScrollText, Copy, Check, Pencil } from 'lucide-react';
+import { getShotPreviewImageUrl } from '../../lib/ai/assetRefs';
 
 interface StageViewProps {
   sequence: Sequence;
@@ -385,7 +386,7 @@ export const StageView: React.FC<StageViewProps> = ({
                         className="relative w-24 aspect-video rounded-lg overflow-hidden border-2 border-zinc-200 dark:border-zinc-800 cursor-pointer hover:border-zinc-500 dark:hover:border-zinc-500 group shrink-0 transition-all"
                       >
                       <img
-                        src={shot.thumbnailUrl}
+                        src={getShotPreviewImageUrl(shot)}
                         className="w-full h-full object-cover grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100 transition-all cursor-pointer"
                         onClick={(e) => {
                           e.stopPropagation();

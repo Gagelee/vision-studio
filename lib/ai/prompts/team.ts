@@ -141,6 +141,7 @@ export const buildTeamScaffoldEditorPrompt = (args: {
     `  "sequences": Array<{\n` +
     `    "title": string,\n` +
     `    "context": string,\n` +
+    `    "sceneDecision": { "split": boolean, "sceneCount": number, "rationale": string, "criteria"?: string[] },\n` +
     `    "scenes": Array<{\n` +
     `      "title": string,\n` +
     `      "summary"?: string,\n` +
@@ -159,6 +160,9 @@ export const buildTeamScaffoldEditorPrompt = (args: {
     `- Keep continuity strong. Keep shot descriptions visual.\n` +
     `- Sequence boundaries should follow narrative turns and dramatic purpose, not simple location switches.\n` +
     `- A sequence may include multiple locations, and locations may intercut within one sequence.\n` +
+    `- Scene split is OPTIONAL, but you MUST decide for each sequence via sceneDecision.\n` +
+    `  - If split=false: output exactly 1 scene and set sceneCount=1.\n` +
+    `  - If split=true: output 2-5 scenes; each scene must have >= 1 shot.\n` +
     `- Use location names that exist in environment list.\n` +
     `- Ensure every declared location appears in at least one shot unless explicitly marked unused.\n` +
     `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
@@ -234,7 +238,7 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `  "styleGuide": string,\n` +
     `  "locations": Array<{ "name": string, "description": string, "visualStyle": string }>,\n` +
     `  "characters": Array<{ "name": string, "description": string, "looks": Array<{ "name": string, "description": string }> }>,\n` +
-    `  "sequences": Array<{ "title": string, "context": string, "scenes": Array<{\n` +
+    `  "sequences": Array<{ "title": string, "context": string, "sceneDecision": { "split": boolean, "sceneCount": number, "rationale": string, "criteria"?: string[] }, "scenes": Array<{\n` +
     `     "title": string, "summary"?: string, "shots": Array<{\n` +
     `       "description": string, "timeOfDay": string, "duration": number,\n` +
     `       "camera": string, "lighting": string, "audio": string,\n` +
@@ -247,6 +251,7 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `Rules:\n` +
     `- Ensure sequences/shots align across editor + camera&art (same counts and order).\n` +
     `- Treat sequences as narrative units/story parts, not environment groupings.\n` +
+    `- Preserve editor.sceneDecision for each sequence; if missing, infer and fill it (split optional but decision is required).\n` +
     `- Ensure characters/locations match names used in shots.\n` +
     `- Keep rendering medium/style consistent with DirectorBrief. If user intent specified medium explicitly, preserve it as hard lock.\n` +
     `- Ensure final styleGuide and shot-level camera/lighting/videoPrompt contain concrete, generation-ready style terms (not only abstract adjectives).\n` +

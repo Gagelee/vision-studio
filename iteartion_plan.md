@@ -9,12 +9,13 @@
 - 已实现：严格的资产生产顺序（KV → env → character → look → shot），失败会阻断下游；Environment/Casting/KV 均支持 variants + active 选定。
 - Multi-agent 不再“静默降级到 single-call”：multi-agent 失败会返回 `HTTP 502` + `errorCode=MULTI_AGENT_FAILED`；前端提供 Retry / 显式 single-call fallback 的二次确认。
 - 图片资产支持点击放大（Lightbox）。
-- 可观测性增强：已加入 Agent registry + prompt version 标记 + LLM trace 基础（在 Debug 面板可视化）。
+- 可观测性增强：已加入 Agent registry + prompt version 标记 + LLM trace（含 usage）+ session token 统计（在 Debug 面板可视化）。
+- 模型/网关策略（dev proxy）：文字 Agent（scaffold/direct）强制走 Compass；图片生成并发直连 Gemini + Compass 网关首个成功返回；Veo 视频生成强制直连 Gemini（不走 Compass）。
 - Prompt 仍统一存放在 `lib/ai/prompts/*`，当前 registry/版本信息维护在 `lib/ai/promptMeta.ts`。
 - 已发现稳定性问题（待治理）：
   - Scaffold 偶发返回截断 JSON（`response was not valid JSON`），需要后端增加结构化 repair/retry 与输出长度治理（token budget + schema slimming）。
   - 当前阶段流式事件（`trace`）只有状态元信息，缺少“每步可读摘要”；需要在每个 agent 完成时返回 `human_summary`，避免前端只能展示 JSON preview。
-  - 提前进入项目后，资产仍在后台生成但前端偶发回落到占位预览；需要在状态同步链路中加入“真实资产优先、占位不覆盖”的防回退策略，并补端到端回归用例。
+  - 提前进入项目后，若 shot keyframe 仍在生产，Stage 预览可能回落到 placeholder（已在 UI 侧通过“真实 keyframe 优先”策略缓解；仍建议补端到端回归用例）。
   - 3x3/2x2 contact-sheet 的细粒度 panel 信息未充分传递到 image2video：当前视频生成主要使用 shot-level prompt + source image，`panelBeats` 等分镜级结构未进入视频提示词编排，导致分镜丰富度利用不足。
 
 ## 0.1 可选迭代：Grid 拆分为独立 Keyframe（Shot Source 扩展）

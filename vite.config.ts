@@ -28,6 +28,7 @@ const GENERATED_ASSETS_DIR = path.resolve(process.cwd(), '.vision-assets');
 type GeminiResponseSchema = any;
 const schemaString = (): GeminiResponseSchema => ({ type: 'STRING' });
 const schemaInt = (): GeminiResponseSchema => ({ type: 'INTEGER' });
+const schemaBool = (): GeminiResponseSchema => ({ type: 'BOOLEAN' });
 const schemaArray = (items: GeminiResponseSchema): GeminiResponseSchema => ({ type: 'ARRAY', items });
 const schemaFreeformObject = (): GeminiResponseSchema => ({
   type: 'OBJECT',
@@ -159,11 +160,21 @@ const GEMINI_SCHEMA = {
     properties: {
       sequences: schemaArray(
         schemaObject({
-          required: ['title', 'context', 'scenes'],
-          propertyOrdering: ['title', 'context', 'scenes'],
+          required: ['title', 'context', 'sceneDecision', 'scenes'],
+          propertyOrdering: ['title', 'context', 'sceneDecision', 'scenes'],
           properties: {
             title: schemaString(),
             context: schemaString(),
+            sceneDecision: schemaObject({
+              required: ['split', 'sceneCount', 'rationale'],
+              propertyOrdering: ['split', 'sceneCount', 'rationale', 'criteria'],
+              properties: {
+                split: schemaBool(),
+                sceneCount: schemaInt(),
+                rationale: schemaString(),
+                criteria: schemaArray(schemaString()),
+              },
+            }),
             scenes: schemaArray(
               schemaObject({
                 required: ['title', 'shots'],
@@ -262,11 +273,21 @@ const GEMINI_SCHEMA = {
       ),
       sequences: schemaArray(
         schemaObject({
-          required: ['title', 'context', 'scenes'],
-          propertyOrdering: ['title', 'context', 'scenes'],
+          required: ['title', 'context', 'sceneDecision', 'scenes'],
+          propertyOrdering: ['title', 'context', 'sceneDecision', 'scenes'],
           properties: {
             title: schemaString(),
             context: schemaString(),
+            sceneDecision: schemaObject({
+              required: ['split', 'sceneCount', 'rationale'],
+              propertyOrdering: ['split', 'sceneCount', 'rationale', 'criteria'],
+              properties: {
+                split: schemaBool(),
+                sceneCount: schemaInt(),
+                rationale: schemaString(),
+                criteria: schemaArray(schemaString()),
+              },
+            }),
             scenes: schemaArray(
               schemaObject({
                 required: [
@@ -568,23 +589,33 @@ const resolveGeminiBaseUrl = (env?: Record<string, string>) => {
   return 'https://generativelanguage.googleapis.com/v1beta';
 };
 
-const buildGeminiGenerateContentUrl = (args: { env?: Record<string, string>; model: string }) => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
+const resolveCompassBaseUrl = (env?: Record<string, string>) => {
+  const raw = String(env?.COMPASS_GATEWAY_URL || env?.GATEWAY_URL || '').trim();
+  return raw ? raw.replace(/\/$/, '') : '';
+};
+
+const resolveGeminiDirectBaseUrl = (env?: Record<string, string>) => {
+  const raw = String(env?.GEMINI_BASE_URL || '').trim();
+  return (raw ? raw : 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
+};
+
+const buildGeminiGenerateContentUrl = (args: { env?: Record<string, string>; model: string; baseUrl?: string }) => {
+  const baseUrl = String(args.baseUrl || '').trim() || resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:generateContent`;
 };
 
-const buildGeminiStreamContentUrl = (args: { env?: Record<string, string>; model: string }) => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
+const buildGeminiStreamContentUrl = (args: { env?: Record<string, string>; model: string; baseUrl?: string }) => {
+  const baseUrl = String(args.baseUrl || '').trim() || resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:streamGenerateContent?alt=sse`;
 };
 
-const buildGeminiPredictLongRunningUrl = (args: { env?: Record<string, string>; model: string }) => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
+const buildGeminiPredictLongRunningUrl = (args: { env?: Record<string, string>; model: string; baseUrl?: string }) => {
+  const baseUrl = String(args.baseUrl || '').trim() || resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:predictLongRunning`;
 };
 
-const buildGeminiOperationUrl = (args: { env?: Record<string, string>; operationName: string }) => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
+const buildGeminiOperationUrl = (args: { env?: Record<string, string>; operationName: string; baseUrl?: string }) => {
+  const baseUrl = String(args.baseUrl || '').trim() || resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/${String(args.operationName || '').replace(/^\/+/, '')}`;
 };
 
@@ -609,6 +640,21 @@ const adjustRequestedAgents = (requested: string[], selection: any, directive: s
   return Array.from(set);
 };
 
+type TokenUsage = { promptTokens?: number; outputTokens?: number; totalTokens?: number };
+
+const extractGeminiUsage = (raw: any): TokenUsage | undefined => {
+  const u = raw?.usageMetadata || raw?.usage_metadata;
+  if (!u || typeof u !== 'object') return undefined;
+  const promptTokens = Number(u.promptTokenCount ?? u.prompt_token_count);
+  const outputTokens = Number(u.candidatesTokenCount ?? u.candidates_token_count);
+  const totalTokens = Number(u.totalTokenCount ?? u.total_token_count);
+  const out: TokenUsage = {};
+  if (Number.isFinite(promptTokens)) out.promptTokens = promptTokens;
+  if (Number.isFinite(outputTokens)) out.outputTokens = outputTokens;
+  if (Number.isFinite(totalTokens)) out.totalTokens = totalTokens;
+  return Object.keys(out).length ? out : undefined;
+};
+
 const callGeminiJson = async (args: {
   apiKey: string;
   model: string;
@@ -617,8 +663,9 @@ const callGeminiJson = async (args: {
   prompt: string;
   env?: Record<string, string>;
   responseSchema?: any;
-}): Promise<any> => {
-  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
+  baseUrl?: string;
+}): Promise<{ value: any; usage?: TokenUsage; raw?: any }> => {
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
   const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
 
   const parseJsonLenient = (raw: string) => {
@@ -748,15 +795,16 @@ const callGeminiJson = async (args: {
           err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
           throw err;
         }
-        const data = (await res.json()) as any;
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        const raw = (await res.json()) as any;
+        const usage = extractGeminiUsage(raw);
+        const text = raw?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (typeof text !== 'string') {
           const err: any = new Error('Gemini: missing text response');
           err.retryable = true;
           throw err;
         }
         try {
-          return parseJsonLenient(text);
+          return { value: parseJsonLenient(text), usage, raw };
         } catch (e) {
           const err: any = e instanceof Error ? e : new Error(String(e));
           // Gemini occasionally returns truncated/non-JSON text; retry often fixes it.
@@ -780,8 +828,9 @@ const callGeminiToolCall = async (args: {
   env?: Record<string, string>;
   functionDeclarations: any[];
   allowedFunctionNames?: string[];
-}): Promise<{ name: string; args: any; raw: any }> => {
-  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
+  baseUrl?: string;
+}): Promise<{ name: string; args: any; raw: any; usage?: TokenUsage }> => {
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
   const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
   const geminiDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
 
@@ -823,16 +872,17 @@ const callGeminiToolCall = async (args: {
     { label: `gemini.tool:${args.model}`, maxAttempts },
   );
 
-  const data = (await res.json()) as any;
-  const parts = data?.candidates?.[0]?.content?.parts;
+  const raw = (await res.json()) as any;
+  const usage = extractGeminiUsage(raw);
+  const parts = raw?.candidates?.[0]?.content?.parts;
   const list = Array.isArray(parts) ? parts : [];
   const fc = list.find((p: any) => p && typeof p === 'object' && (p.functionCall || p.function_call));
   const call = (fc?.functionCall || fc?.function_call) as any;
   if (!call?.name) {
-    const preview = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    throw new Error(`Gemini: missing functionCall. Preview: ${String(preview || JSON.stringify(data)).slice(0, 240)}`);
+    const preview = raw?.candidates?.[0]?.content?.parts?.[0]?.text;
+    throw new Error(`Gemini: missing functionCall. Preview: ${String(preview || JSON.stringify(raw)).slice(0, 240)}`);
   }
-  return { name: String(call.name), args: call.args ?? {}, raw: data };
+  return { name: String(call.name), args: call.args ?? {}, raw, usage };
 };
 
 const callGeminiStreamText = async (args: {
@@ -920,7 +970,7 @@ const callOpenAICompatibleJson = async (args: {
   temperature: number;
   prompt: string;
   env?: Record<string, string>;
-}): Promise<any> => {
+}): Promise<{ value: any; usage?: TokenUsage; raw?: any }> => {
   const url = `${args.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
   const llmDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
   const data = await withRetries(
@@ -964,7 +1014,19 @@ const callOpenAICompatibleJson = async (args: {
 
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== 'string') throw new Error('LLM: missing content');
-  return JSON.parse(content);
+  const usageRaw = data?.usage;
+  let usage: TokenUsage | undefined;
+  if (usageRaw && typeof usageRaw === 'object') {
+    const promptTokens = Number((usageRaw as any).prompt_tokens);
+    const outputTokens = Number((usageRaw as any).completion_tokens);
+    const totalTokens = Number((usageRaw as any).total_tokens);
+    const out: TokenUsage = {};
+    if (Number.isFinite(promptTokens)) out.promptTokens = promptTokens;
+    if (Number.isFinite(outputTokens)) out.outputTokens = outputTokens;
+    if (Number.isFinite(totalTokens)) out.totalTokens = totalTokens;
+    if (Object.keys(out).length) usage = out;
+  }
+  return { value: JSON.parse(content), usage, raw: data };
 };
 
 type ModelProvider = 'gemini' | 'openai' | 'deepseek';
@@ -975,7 +1037,8 @@ const getProviderCandidates = (preferred: string, env: Record<string, string>): 
   const unique = [pref, ...all].filter(Boolean) as ModelProvider[];
 
   const hasKey = (p: ModelProvider) => {
-    if (p === 'gemini') return Boolean(env.COMPASS_API_KEY || env.GEMINI_API_KEY);
+    // Text agents must route Gemini through Compass gateway.
+    if (p === 'gemini') return Boolean(env.COMPASS_API_KEY && (env.COMPASS_GATEWAY_URL || env.GATEWAY_URL));
     if (p === 'openai') return Boolean(env.OPENAI_API_KEY);
     if (p === 'deepseek') return Boolean(env.DEEPSEEK_API_KEY);
     return false;
@@ -1131,8 +1194,9 @@ const callGeminiImage = async (args: {
   aspectRatio?: string;
   references?: Array<{ mimeType: string; bytes: Buffer; label?: string }>;
   env?: Record<string, string>;
+  baseUrl?: string;
 }): Promise<{ mimeType: string; bytes: Buffer }> => {
-  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
   const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
 
   const generationConfig: any = {
@@ -1200,10 +1264,15 @@ const callGeminiImage = async (args: {
 };
 
 const agentApiPlugin = (env: Record<string, string>): Plugin => {
-  // Support calling Gemini through internal gateways (e.g. Compass) by setting:
-  // - COMPASS_API_KEY / COMPASS_GATEWAY_URL (or GATEWAY_URL)
-  // Falls back to direct Google Gemini via GEMINI_API_KEY.
-  const geminiApiKey = String(env.COMPASS_API_KEY || env.GEMINI_API_KEY || '').trim();
+  // Text agents: always use Compass gateway when Gemini provider is selected.
+  const compassApiKey = String(env.COMPASS_API_KEY || '').trim();
+  const compassBaseUrl = resolveCompassBaseUrl(env);
+
+  // Assets may still call direct Gemini (e.g., Veo); keep separate.
+  const geminiDirectApiKey = String(env.GEMINI_API_KEY || '').trim();
+  const geminiDirectBaseUrl = resolveGeminiDirectBaseUrl(env);
+
+  // Back-compat helper (some asset debug payloads display this).
   const geminiBaseUrl = resolveGeminiBaseUrl(env);
 
   const applyRoutes = (middlewares: any) => {
@@ -1252,7 +1321,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
       if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
       if (resolution !== '720p') return sendJson(res, 400, { ok: false, error: 'Only 720p is supported' });
-      if (!geminiApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+      // Veo must call direct Gemini. Do NOT route through Compass gateway.
+      if (!geminiDirectApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
 
       const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any): string => {
         const core = String(basePrompt || '').trim();
@@ -1342,7 +1412,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const queue = Array.from(candidates);
         for (let i = 0; i < queue.length; i++) {
           const c = queue[i];
-          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiApiKey)}`;
+          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiDirectApiKey)}`;
           for (const u of [c, withKey]) {
             try {
               const resp = await withRetries(
@@ -1350,7 +1420,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   const controller = new AbortController();
                   const timeout = setTimeout(() => controller.abort(), 90_000);
                   try {
-                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiApiKey } };
+                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiDirectApiKey } };
                     const dispatcher = getProxyDispatcher(u, env);
                     const runVideoFetch = async (useDispatcher: boolean) => {
                       const reqInit: any = { ...init };
@@ -1545,7 +1615,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         };
         for (const candidate of modelCandidates) {
           model = candidate;
-          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate, baseUrl: geminiDirectBaseUrl })}?key=${encodeURIComponent(geminiDirectApiKey)}`;
           const predictDispatcher = getProxyDispatcher(predictUrl, env);
           const baseParams: Record<string, any> = {
             aspectRatio,
@@ -1645,7 +1715,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             throw new Error(`Gemini Video timeout after ${Math.round((Date.now() - pollStart) / 1000)}s`);
           }
           await sleep(pollIntervalMs);
-          const opUrl = `${buildGeminiOperationUrl({ env, operationName })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const opUrl = `${buildGeminiOperationUrl({ env, operationName, baseUrl: geminiDirectBaseUrl })}?key=${encodeURIComponent(geminiDirectApiKey)}`;
           const opDispatcher = getProxyDispatcher(opUrl, env);
           opData = await withRetries(
             async () => {
@@ -1807,15 +1877,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         return sendJson(res, 200, {
           videoUrl: resolvedVideoUri,
           operationName,
-          debug: {
-            transport: 'http',
-            provider: 'gemini',
-            model,
-            baseUrl: geminiBaseUrl,
-            durationSeconds,
-            resolution,
-            aspectRatio,
-            remote: true,
+	          debug: {
+	            transport: 'http',
+	            provider: 'gemini',
+	            model,
+	            baseUrl: geminiDirectBaseUrl,
+              gateway: 'direct',
+	            durationSeconds,
+	            resolution,
+	            aspectRatio,
+	            remote: true,
             promptUsedPreview: promptUsed.slice(0, 320),
             requestParameters: predictParamsUsed,
             uriCandidates: Array.from(uriCandidates).slice(0, 16),
@@ -1854,47 +1925,55 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	        let composed: any = null;
 	        const promptPreview = prompt.slice(0, 120);
 
-	        try {
-	          if (provider === 'gemini' && geminiApiKey) {
-	            const usedModel = normalizeGeminiImageModel(model);
-	            ensureGeneratedDir();
-	
-	            if (composePrompt && promptSpec && typeof promptSpec === 'object') {
-	              try {
-	                const composerModel = String(composeSettings?.model || env?.VISION_PROMPT_COMPOSER_MODEL || 'gemini-3-pro-preview');
-	                const composerTemp = Number.isFinite(Number(composeSettings?.temperature)) ? Number(composeSettings.temperature) : 0.2;
-	                const composerMaxTokens = Number.isFinite(Number(composeSettings?.maxOutputTokens)) ? Number(composeSettings.maxOutputTokens) : 512;
-	                const trimmedSpec = JSON.parse(JSON.stringify(promptSpec));
-	                if (typeof trimmedSpec?.styleGuide === 'string' && trimmedSpec.styleGuide.length > 2000) {
-	                  trimmedSpec.styleGuide = trimmedSpec.styleGuide.slice(0, 2000);
-	                }
-	                const composePromptText =
-	                  `You are a senior visual direction prompt engineer.\n` +
-	                  `Compose the BEST single prompt for Gemini image generation (model: ${usedModel}).\n` +
-	                  `Goal: produce a narrative keyframe (mid-action), not a poster, not concept art, not posed.\n` +
-	                  `Write a cohesive prompt (1-3 short paragraphs). No headings like TASK/SCENE. No bullet lists. No JSON inside the prompt.\n` +
-	                  `Preserve the medium/style in the input spec. Do not drift into generic photoreal/CGI wording unless explicitly requested.\n` +
-	                  `Include: concrete frame description, composition, lighting mood, and style constraints. Add lens/DoF jargon only when it helps the requested medium.\n` +
-	                  `Return ONLY JSON: {"prompt": string, "negativePrompt": string}.\n` +
-	                  `Input spec JSON:\n${JSON.stringify(trimmedSpec)}\n`;
-	                composed = await callGeminiJson({
-	                  apiKey: geminiApiKey,
-	                  model: composerModel,
-	                  temperature: composerTemp,
-	                  maxOutputTokens: composerMaxTokens,
-	                  prompt: composePromptText,
-	                  env,
-	                  responseSchema: GEMINI_SCHEMA.promptCompose,
-	                });
-	                const p = String(composed?.prompt || '').trim();
-	                const n = String(composed?.negativePrompt || '').trim();
-	                if (p) {
-	                  promptUsed = n ? `${p}\n\nNegative: ${n}` : p;
-	                }
-	              } catch (e: any) {
-	                composed = { error: formatFetchError(e) };
-	              }
-	            }
+		        try {
+		          if (provider === 'gemini') {
+		            const usedModel = normalizeGeminiImageModel(model);
+		            ensureGeneratedDir();
+
+                // Prompt composer is a text LLM call: prefer Compass gateway when configured.
+		            if (composePrompt && promptSpec && typeof promptSpec === 'object') {
+		              try {
+		                const composerModel = String(composeSettings?.model || env?.VISION_PROMPT_COMPOSER_MODEL || 'gemini-3-pro-preview');
+		                const composerTemp = Number.isFinite(Number(composeSettings?.temperature)) ? Number(composeSettings.temperature) : 0.2;
+		                const composerMaxTokens = Number.isFinite(Number(composeSettings?.maxOutputTokens)) ? Number(composeSettings.maxOutputTokens) : 512;
+		                const trimmedSpec = JSON.parse(JSON.stringify(promptSpec));
+		                if (typeof trimmedSpec?.styleGuide === 'string' && trimmedSpec.styleGuide.length > 2000) {
+		                  trimmedSpec.styleGuide = trimmedSpec.styleGuide.slice(0, 2000);
+		                }
+		                const composePromptText =
+		                  `You are a senior visual direction prompt engineer.\n` +
+		                  `Compose the BEST single prompt for Gemini image generation (model: ${usedModel}).\n` +
+		                  `Goal: produce a narrative keyframe (mid-action), not a poster, not concept art, not posed.\n` +
+		                  `Write a cohesive prompt (1-3 short paragraphs). No headings like TASK/SCENE. No bullet lists. No JSON inside the prompt.\n` +
+		                  `Preserve the medium/style in the input spec. Do not drift into generic photoreal/CGI wording unless explicitly requested.\n` +
+		                  `Include: concrete frame description, composition, lighting mood, and style constraints. Add lens/DoF jargon only when it helps the requested medium.\n` +
+		                  `Return ONLY JSON: {"prompt": string, "negativePrompt": string}.\n` +
+		                  `Input spec JSON:\n${JSON.stringify(trimmedSpec)}\n`;
+
+                  const composerApiKey = compassApiKey || geminiDirectApiKey;
+                  const composerBaseUrl = compassBaseUrl || (geminiDirectApiKey ? geminiDirectBaseUrl : '');
+                  if (!composerApiKey) throw new Error('Missing COMPASS_API_KEY or GEMINI_API_KEY for prompt composition');
+
+		                const composedRes = await callGeminiJson({
+		                  apiKey: composerApiKey,
+		                  baseUrl: composerBaseUrl || undefined,
+		                  model: composerModel,
+		                  temperature: composerTemp,
+		                  maxOutputTokens: composerMaxTokens,
+		                  prompt: composePromptText,
+		                  env,
+		                  responseSchema: GEMINI_SCHEMA.promptCompose,
+		                });
+                    composed = composedRes.value;
+		                const p = String(composed?.prompt || '').trim();
+		                const n = String(composed?.negativePrompt || '').trim();
+		                if (p) {
+		                  promptUsed = n ? `${p}\n\nNegative: ${n}` : p;
+		                }
+		              } catch (e: any) {
+		                composed = { error: formatFetchError(e) };
+		              }
+		            }
 
 		            const loadReference = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
 	              const u = String(url || '').trim();
@@ -2009,15 +2088,40 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              throw new Error(`Missing required reference image(s): ${list || 'unknown'}`);
 	            }
 
-			            const out = await callGeminiImage({
-			              apiKey: geminiApiKey,
-			              model: usedModel,
-			              temperature,
-			              prompt: promptUsed,
-			              aspectRatio,
-			              references: loadedRefs,
-			              env,
-			            });
+                const transports: Array<{ id: 'gemini-direct' | 'compass'; apiKey: string; baseUrl: string }> = [];
+                if (geminiDirectApiKey) transports.push({ id: 'gemini-direct', apiKey: geminiDirectApiKey, baseUrl: geminiDirectBaseUrl });
+                if (compassApiKey && compassBaseUrl) transports.push({ id: 'compass', apiKey: compassApiKey, baseUrl: compassBaseUrl });
+                if (!transports.length) throw new Error('Missing GEMINI_API_KEY and COMPASS_API_KEY');
+
+                // Run both keys in parallel; first success wins. This improves reliability when one path is flaky.
+                let outAny: { transport: (typeof transports)[number]; out: { mimeType: string; bytes: Buffer } };
+                try {
+                  outAny = await Promise.any(
+                    transports.map((t) =>
+                      callGeminiImage({
+                        apiKey: t.apiKey,
+                        baseUrl: t.baseUrl,
+                        model: usedModel,
+                        temperature,
+                        prompt: promptUsed,
+                        aspectRatio,
+                        references: loadedRefs,
+                        env,
+                      })
+                        .then((out) => ({ transport: t, out }))
+                        .catch((err) => {
+                          throw new Error(`[${t.id}] ${formatFetchError(err)}`);
+                        }),
+                    ),
+                  );
+                } catch (e: any) {
+                  const inner = Array.isArray(e?.errors) ? e.errors : null;
+                  const reasons = inner ? inner.map((x: any) => formatFetchError(x)).slice(0, 4) : [formatFetchError(e)];
+                  throw new Error(`All Gemini image transports failed: ${reasons.join(' | ')}`);
+                }
+                const out = outAny.out;
+                const gateway = outAny.transport.id;
+                const baseUrlUsed = outAny.transport.baseUrl;
 
             const ext =
               out.mimeType === 'image/png'
@@ -2034,39 +2138,41 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              .slice(0, 16);
             const filename = `${Date.now()}-${hash}.${ext}`;
             fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
-	            return sendJson(res, 200, {
-	              imageUrl: `/__generated__/${filename}`,
-			              debug: {
-			                transport: 'http',
-			                provider,
-			                model: usedModel,
-	                    baseUrl: geminiBaseUrl,
-			                mimeType: out.mimeType,
-			                bytes: out.bytes.length,
-			                promptPreview,
-			                promptUsedPreview: String(promptUsed || '').slice(0, 240),
-			                promptUsed: String(promptUsed || '').slice(0, 4000),
-			                composed,
+		            return sendJson(res, 200, {
+		              imageUrl: `/__generated__/${filename}`,
+				              debug: {
+				                transport: 'http',
+				                provider,
+				                model: usedModel,
+			                    baseUrl: baseUrlUsed || geminiBaseUrl,
+                        gateway,
+                        attemptedTransports: transports.map((t) => t.id),
+				                mimeType: out.mimeType,
+				                bytes: out.bytes.length,
+				                promptPreview,
+				                promptUsedPreview: String(promptUsed || '').slice(0, 240),
+				                promptUsed: String(promptUsed || '').slice(0, 4000),
+				                composed,
 			                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
 			                requireAllReferences,
 			                missingReferences: missingRefs,
 			              },
 		            });
-		          }
-		        } catch (e: any) {
-          return sendJson(res, 200, {
-            imageUrl:
-              `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
-              `${Math.floor(Math.random() * 100000)}`,
-            debug: {
-              transport: 'mock',
-              provider,
-              model,
-              promptPreview,
-              error: formatFetchError(e),
-            },
-          });
-        }
+			          }
+			        } catch (e: any) {
+	          return sendJson(res, 200, {
+	            imageUrl:
+	              `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
+	              `${Math.floor(Math.random() * 100000)}`,
+	            debug: {
+	              transport: 'mock',
+	              provider,
+	              model,
+	              promptPreview,
+	              error: formatFetchError(e),
+	            },
+	          });
+	        }
 
         const url =
           `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
@@ -2416,34 +2522,65 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	            return `Scene ${idx + 1}`;
 	          };
 
-	          const mappedSequences = sequences.map((s: any) => {
-	            const seqId = mkId('seq');
-	            const rawScenes = Array.isArray(s?.scenes)
-	              ? s.scenes
-	              : [{ title: '', summary: '', shots: Array.isArray(s?.shots) ? s.shots : [] }];
-	            let seqCounter = 0;
-	            const mappedScenes = rawScenes.map((sc: any, scIdx: number) => {
-	              const rawShots = Array.isArray(sc?.shots) ? sc.shots : [];
-	              const mappedShots = rawShots.map((sh: any) => {
-	                seqCounter += 1;
-	                return mapShot(sh, seqCounter);
-	              });
-	              return {
-	                id: mkId('scene'),
-	                title: inferSceneTitle(sc?.title, rawShots, scIdx),
-	                summary: String(sc?.summary || '').trim() || undefined,
-	                shots: mappedShots,
-	              };
-	            });
-	            const flatShots = mappedScenes.flatMap((sc: any) => sc.shots || []);
-	            return {
-	              id: seqId,
-	              title: String(s?.title || 'Sequence'),
-	              context: String(s?.context || ''),
-	              scenes: mappedScenes,
-	              shots: flatShots,
-	            };
-	          });
+		          const mappedSequences = sequences.map((s: any) => {
+		            const seqId = mkId('seq');
+                const rawDecision = (s && typeof s === 'object' ? (s.sceneDecision || s.scenePlan || s.scene_strategy) : null) as any;
+		            const rawScenes = Array.isArray(s?.scenes)
+		              ? s.scenes
+		              : [{ title: '', summary: '', shots: Array.isArray(s?.shots) ? s.shots : [] }];
+		            let seqCounter = 0;
+		            const mappedScenes = rawScenes.map((sc: any, scIdx: number) => {
+		              const rawShots = Array.isArray(sc?.shots) ? sc.shots : [];
+		              const mappedShots = rawShots.map((sh: any) => {
+		                seqCounter += 1;
+		                return mapShot(sh, seqCounter);
+		              });
+		              return {
+		                id: mkId('scene'),
+		                title: inferSceneTitle(sc?.title, rawShots, scIdx),
+		                summary: String(sc?.summary || '').trim() || undefined,
+		                shots: mappedShots,
+		              };
+		            });
+		            const flatShots = mappedScenes.flatMap((sc: any) => sc.shots || []);
+                const inferredSplit = mappedScenes.length > 1;
+                const decisionSplit =
+                  typeof rawDecision?.split === 'boolean'
+                    ? rawDecision.split
+                    : typeof rawDecision?.splitScenes === 'boolean'
+                      ? rawDecision.splitScenes
+                      : inferredSplit;
+                const decisionSceneCountRaw =
+                  typeof rawDecision?.sceneCount === 'number'
+                    ? rawDecision.sceneCount
+                    : typeof rawDecision?.count === 'number'
+                      ? rawDecision.count
+                      : mappedScenes.length || 1;
+                const decisionSceneCount = Math.max(1, Math.min(8, Math.floor(decisionSceneCountRaw)));
+                const decisionRationale =
+                  String(rawDecision?.rationale || rawDecision?.reason || '').trim() ||
+                  (Array.isArray(s?.scenes) && s.scenes.length
+                    ? decisionSplit
+                      ? `Split into ${decisionSceneCount} scenes based on narrative beats.`
+                      : 'Kept as one scene for tighter continuity and flow.'
+                    : 'No scene breakdown provided by scaffold; defaulted to 1 scene.');
+                const decisionCriteria = Array.isArray(rawDecision?.criteria)
+                  ? rawDecision.criteria.map((x: any) => String(x || '').trim()).filter(Boolean).slice(0, 8)
+                  : undefined;
+		            return {
+		              id: seqId,
+		              title: String(s?.title || 'Sequence'),
+		              context: String(s?.context || ''),
+                  sceneDecision: {
+                    split: Boolean(decisionSplit),
+                    sceneCount: decisionSplit ? Math.max(2, decisionSceneCount) : 1,
+                    rationale: decisionRationale,
+                    ...(decisionCriteria?.length ? { criteria: decisionCriteria } : {}),
+                  },
+		              scenes: mappedScenes,
+		              shots: flatShots,
+		            };
+		          });
 
 	          // Ensure each mapped location appears in at least one shot to avoid orphan environment assets.
 	          const usedLocationIds = new Set(
@@ -2526,7 +2663,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              ],
 	              actions: [{ type: 'SCAFFOLD_PROJECT' }],
 	            },
-	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source, ...(debugExtra || {}) },
+	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source, ...(usedProvider === 'gemini' ? { gateway: 'compass' } : {}), ...(debugExtra || {}) },
 	            bindingAudit,
 	          };
 	        };
@@ -2559,28 +2696,32 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			              ) => {
 			                const started = Date.now();
 			                const meta = getPromptMetaForAgent('scaffold', agent);
-			                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
-			                try {
-			                  const out = await callGeminiJson({
-	                    apiKey: geminiApiKey,
-	                    model: String(opts?.model || chosenModel),
-                    temperature: Number(opts?.temperature ?? chosenTemperature),
-                    maxOutputTokens: Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192),
-                    prompt,
-                    env,
-                    responseSchema: opts?.responseSchema,
-                  });
-			                  const trace = {
-			                    agent,
-			                    provider: p,
-			                    model: String(opts?.model || chosenModel),
-			                    ms: Date.now() - started,
-			                    ok: true,
-			                    promptId: meta?.id,
-			                    promptVersion: meta?.version,
-			                  };
-			                  teamTrace.push(trace);
-			                  teamMessages.push({
+				                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+				                try {
+				                  const outRes = await callGeminiJson({
+		                    apiKey: compassApiKey,
+                        baseUrl: compassBaseUrl || undefined,
+		                    model: String(opts?.model || chosenModel),
+	                    temperature: Number(opts?.temperature ?? chosenTemperature),
+	                    maxOutputTokens: Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192),
+	                    prompt,
+	                    env,
+	                    responseSchema: opts?.responseSchema,
+	                  });
+                          const out = outRes.value;
+				                  const trace = {
+				                    agent,
+				                    provider: p,
+				                    model: String(opts?.model || chosenModel),
+				                    ms: Date.now() - started,
+				                    ok: true,
+                            gateway: 'compass',
+                            usage: outRes.usage,
+				                    promptId: meta?.id,
+				                    promptVersion: meta?.version,
+				                  };
+				                  teamTrace.push(trace);
+				                  teamMessages.push({
 			                    agent,
 			                    ok: true,
 			                    ms: trace.ms,
@@ -2592,16 +2733,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			                  emit('trace', trace);
 			                  return out;
 			                } catch (e: any) {
-			                  const trace = {
-			                    agent,
-			                    provider: p,
-			                    model: String(opts?.model || chosenModel),
-			                    ms: Date.now() - started,
-			                    ok: false,
-			                    error: formatFetchError(e),
-			                    promptId: meta?.id,
-			                    promptVersion: meta?.version,
-			                  };
+				                  const trace = {
+				                    agent,
+				                    provider: p,
+				                    model: String(opts?.model || chosenModel),
+				                    ms: Date.now() - started,
+				                    ok: false,
+				                    error: formatFetchError(e),
+                            gateway: 'compass',
+				                    promptId: meta?.id,
+				                    promptVersion: meta?.version,
+				                  };
 			                  teamTrace.push(trace);
 			                  teamMessages.push({
 			                    agent,
@@ -2699,24 +2841,28 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                const started = Date.now();
 		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
 		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
-		                const spec = await callGeminiJson({
-		                  apiKey: geminiApiKey,
-		                  model: chosenModel,
-		                  temperature: chosenTemperature,
-                  maxOutputTokens: resolvedMergeTokens,
-                  prompt: scaffoldPrompt,
-		                  env,
-		                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
-		                });
-			                const trace = {
-			                  agent: 'scaffold.single',
-			                  provider: p,
+			                const specRes = await callGeminiJson({
+			                  apiKey: compassApiKey,
+                        baseUrl: compassBaseUrl || undefined,
 			                  model: chosenModel,
-			                  ms: Date.now() - started,
-			                  ok: true,
-			                  promptId: meta?.id,
-			                  promptVersion: meta?.version,
-			                };
+			                  temperature: chosenTemperature,
+	                  maxOutputTokens: resolvedMergeTokens,
+	                  prompt: scaffoldPrompt,
+			                  env,
+			                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
+			                });
+                      const spec = specRes.value;
+				                const trace = {
+				                  agent: 'scaffold.single',
+				                  provider: p,
+				                  model: chosenModel,
+				                  ms: Date.now() - started,
+				                  ok: true,
+                          gateway: 'compass',
+                          usage: specRes.usage,
+				                  promptId: meta?.id,
+				                  promptVersion: meta?.version,
+				                };
 			                teamTrace.push(trace);
 			                teamMessages.push({
 			                  agent: 'scaffold.single',
@@ -2747,30 +2893,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		              const traceId = crypto.randomUUID();
 		              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
 		                const started = Date.now();
-		                const meta = getPromptMetaForAgent('scaffold', agent);
-		                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
-		                try {
-		                  const out = await callOpenAICompatibleJson({
-	                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-	                    apiKey: env.OPENAI_API_KEY,
-	                    model: String(opts?.model || chosenModel),
-                    temperature: Number(opts?.temperature ?? chosenTemperature),
-		                    prompt,
-		                    env,
-		                  });
-		                  const trace = {
-		                    agent,
-		                    provider: p,
+			                const meta = getPromptMetaForAgent('scaffold', agent);
+			                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+			                try {
+			                  const outRes = await callOpenAICompatibleJson({
+		                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+		                    apiKey: env.OPENAI_API_KEY,
 		                    model: String(opts?.model || chosenModel),
-		                    ms: Date.now() - started,
-		                    ok: true,
-		                    promptId: meta?.id,
-		                    promptVersion: meta?.version,
-		                  };
-		                  teamTrace.push(trace);
-		                  emit('trace', trace);
-		                  return out;
-		                } catch (e: any) {
+	                    temperature: Number(opts?.temperature ?? chosenTemperature),
+			                    prompt,
+			                    env,
+			                  });
+			                  const trace = {
+			                    agent,
+			                    provider: p,
+			                    model: String(opts?.model || chosenModel),
+			                    ms: Date.now() - started,
+			                    ok: true,
+                          usage: outRes.usage,
+			                    promptId: meta?.id,
+			                    promptVersion: meta?.version,
+			                  };
+			                  teamTrace.push(trace);
+			                  emit('trace', trace);
+			                  return outRes.value;
+			                } catch (e: any) {
 		                  const trace = {
 		                    agent,
 		                    provider: p,
@@ -2853,26 +3000,28 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                    mode: 'multi-agent',
 		                  });
 		                }
-		                const started = Date.now();
-		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
-		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
-		                const spec = await callOpenAICompatibleJson({
-		                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-		                  apiKey: env.OPENAI_API_KEY,
-	                  model: chosenModel,
-                  temperature: chosenTemperature,
-		                  prompt: scaffoldPrompt,
-		                  env,
-		                });
-		                const trace = {
-		                  agent: 'scaffold.single',
-		                  provider: p,
+			                const started = Date.now();
+			                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+			                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
+			                const specRes = await callOpenAICompatibleJson({
+			                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+			                  apiKey: env.OPENAI_API_KEY,
 		                  model: chosenModel,
-		                  ms: Date.now() - started,
-		                  ok: true,
-		                  promptId: meta?.id,
-		                  promptVersion: meta?.version,
-		                };
+	                  temperature: chosenTemperature,
+			                  prompt: scaffoldPrompt,
+			                  env,
+			                });
+                      const spec = specRes.value;
+			                const trace = {
+			                  agent: 'scaffold.single',
+			                  provider: p,
+			                  model: chosenModel,
+			                  ms: Date.now() - started,
+			                  ok: true,
+                        usage: specRes.usage,
+			                  promptId: meta?.id,
+			                  promptVersion: meta?.version,
+			                };
 		                teamTrace.push(trace);
 		                emit('trace', trace);
 		                return finish(
@@ -2887,30 +3036,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		              const traceId = crypto.randomUUID();
 		              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
 		                const started = Date.now();
-		                const meta = getPromptMetaForAgent('scaffold', agent);
-		                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
-		                try {
-		                  const out = await callOpenAICompatibleJson({
-	                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-	                    apiKey: env.DEEPSEEK_API_KEY,
-	                    model: String(opts?.model || chosenModel),
-                    temperature: Number(opts?.temperature ?? chosenTemperature),
-		                    prompt,
-		                    env,
-		                  });
-		                  const trace = {
-		                    agent,
-		                    provider: p,
+			                const meta = getPromptMetaForAgent('scaffold', agent);
+			                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+			                try {
+			                  const outRes = await callOpenAICompatibleJson({
+		                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+		                    apiKey: env.DEEPSEEK_API_KEY,
 		                    model: String(opts?.model || chosenModel),
-		                    ms: Date.now() - started,
-		                    ok: true,
-		                    promptId: meta?.id,
-		                    promptVersion: meta?.version,
-		                  };
-		                  teamTrace.push(trace);
-		                  emit('trace', trace);
-		                  return out;
-		                } catch (e: any) {
+	                    temperature: Number(opts?.temperature ?? chosenTemperature),
+			                    prompt,
+			                    env,
+			                  });
+			                  const trace = {
+			                    agent,
+			                    provider: p,
+			                    model: String(opts?.model || chosenModel),
+			                    ms: Date.now() - started,
+			                    ok: true,
+                          usage: outRes.usage,
+			                    promptId: meta?.id,
+			                    promptVersion: meta?.version,
+			                  };
+			                  teamTrace.push(trace);
+			                  emit('trace', trace);
+			                  return outRes.value;
+			                } catch (e: any) {
 		                  const trace = {
 		                    agent,
 		                    provider: p,
@@ -2993,26 +3143,28 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                    mode: 'multi-agent',
 		                  });
 		                }
-		                const started = Date.now();
-		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
-		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
-		                const spec = await callOpenAICompatibleJson({
-		                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-		                  apiKey: env.DEEPSEEK_API_KEY,
-	                  model: chosenModel,
-                  temperature: chosenTemperature,
-		                  prompt: scaffoldPrompt,
-		                  env,
-		                });
-		                const trace = {
-		                  agent: 'scaffold.single',
-		                  provider: p,
+			                const started = Date.now();
+			                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+			                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
+			                const specRes = await callOpenAICompatibleJson({
+			                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+			                  apiKey: env.DEEPSEEK_API_KEY,
 		                  model: chosenModel,
-		                  ms: Date.now() - started,
-		                  ok: true,
-		                  promptId: meta?.id,
-		                  promptVersion: meta?.version,
-		                };
+	                  temperature: chosenTemperature,
+			                  prompt: scaffoldPrompt,
+			                  env,
+			                });
+                      const spec = specRes.value;
+			                const trace = {
+			                  agent: 'scaffold.single',
+			                  provider: p,
+			                  model: chosenModel,
+			                  ms: Date.now() - started,
+			                  ok: true,
+                        usage: specRes.usage,
+			                  promptId: meta?.id,
+			                  promptVersion: meta?.version,
+			                };
 		                teamTrace.push(trace);
 		                emit('trace', trace);
 		                return finish(
@@ -3899,27 +4051,39 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
-		          if (p === 'gemini' && geminiApiKey) {
+			          if (p === 'gemini' && compassApiKey && compassBaseUrl) {
 		              const teamTrace: any[] = [];
 		              const teamMessages: any[] = [];
 		              const traceId = crypto.randomUUID();
-              const call = async (agent: string, prompt: string, responseSchema?: any) => {
-                const started = Date.now();
-                const meta = getPromptMetaForAgent('direct', agent);
-                emit?.('agent_start', { agent });
-                try {
-                  const out = await callGeminiJson({ apiKey: geminiApiKey, model, temperature, maxOutputTokens: resolvedTokens, prompt, env, responseSchema });
-                  teamTrace.push({
-                    agent,
-                    provider: p,
-                    model,
-                    ms: Date.now() - started,
-                    ok: true,
-                    promptId: meta?.id,
-                    promptVersion: meta?.version,
-                  });
-                  emit?.('agent_done', { agent, ok: true, ms: Date.now() - started });
-                  teamMessages.push({
+	              const call = async (agent: string, prompt: string, responseSchema?: any) => {
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('direct', agent);
+	                emit?.('agent_start', { agent });
+	                try {
+	                  const outRes = await callGeminiJson({
+                      apiKey: compassApiKey,
+                      baseUrl: compassBaseUrl || undefined,
+                      model,
+                      temperature,
+                      maxOutputTokens: resolvedTokens,
+                      prompt,
+                      env,
+                      responseSchema,
+                    });
+                      const out = outRes.value;
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model,
+	                    ms: Date.now() - started,
+	                    ok: true,
+                      gateway: 'compass',
+                      usage: outRes.usage,
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  emit?.('agent_done', { agent, ok: true, ms: Date.now() - started });
+	                  teamMessages.push({
                     agent,
                     ok: true,
                     ms: Date.now() - started,
@@ -3960,13 +4124,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       const started = Date.now();
                       const meta = getPromptMetaForAgent('direct', 'director.plan');
                       emit?.('agent_start', { agent: 'director.plan' });
-                      let toolOut: any;
-                      try {
-                        toolOut = await callGeminiToolCall({
-                          apiKey: geminiApiKey,
-                          model,
-                          temperature,
-                          maxOutputTokens: resolvedTokens,
+	                      let toolOut: any;
+	                      try {
+	                        toolOut = await callGeminiToolCall({
+	                          apiKey: compassApiKey,
+                            baseUrl: compassBaseUrl || undefined,
+	                          model,
+	                          temperature,
+	                          maxOutputTokens: resolvedTokens,
                           prompt:
                             buildTeamDirectPlannerPrompt({
                               selectionJson,
@@ -3987,15 +4152,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                         emit?.('agent_done', { agent: 'director.plan', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
                         throw e;
                       }
-                      teamTrace.push({
-                        agent: 'director.plan',
-                        provider: p,
-                        model,
-                        ms: Date.now() - started,
-                        ok: true,
-                        promptId: meta?.id,
-                        promptVersion: meta?.version,
-                      });
+	                      teamTrace.push({
+	                        agent: 'director.plan',
+	                        provider: p,
+	                        model,
+	                        ms: Date.now() - started,
+	                        ok: true,
+                          gateway: 'compass',
+                          usage: toolOut?.usage,
+	                        promptId: meta?.id,
+	                        promptVersion: meta?.version,
+	                      });
                       emit?.('agent_done', { agent: 'director.plan', ok: true, ms: Date.now() - started });
                       teamMessages.push({
                         agent: 'director.plan',
@@ -4048,31 +4215,34 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                             const started = Date.now();
                             const meta = getPromptMetaForAgent('direct', a);
                             emit?.('agent_start', { agent: a });
-                            let toolOut: any;
-                            try {
-                              toolOut = await callGeminiToolCall({
-                                apiKey: geminiApiKey,
-                                model,
-                                temperature,
-                                maxOutputTokens: resolvedTokens,
-                                prompt: prompt + `\n\nIMPORTANT: You MUST call the function \"specialist_response\" exactly once. Do not output JSON text.`,
-                                env,
-                                functionDeclarations: [specialistResponseFunction],
-                                allowedFunctionNames: ['specialist_response'],
-                              });
+	                            let toolOut: any;
+	                            try {
+	                              toolOut = await callGeminiToolCall({
+	                                apiKey: compassApiKey,
+                                  baseUrl: compassBaseUrl || undefined,
+	                                model,
+	                                temperature,
+	                                maxOutputTokens: resolvedTokens,
+	                                prompt: prompt + `\n\nIMPORTANT: You MUST call the function \"specialist_response\" exactly once. Do not output JSON text.`,
+	                                env,
+	                                functionDeclarations: [specialistResponseFunction],
+	                                allowedFunctionNames: ['specialist_response'],
+	                              });
                             } catch (e: any) {
                               emit?.('agent_done', { agent: a, ok: false, ms: Date.now() - started, error: formatFetchError(e) });
                               throw e;
                             }
-                            teamTrace.push({
-                              agent: a,
-                              provider: p,
-                              model,
-                              ms: Date.now() - started,
-                              ok: true,
-                              promptId: meta?.id,
-                              promptVersion: meta?.version,
-                            });
+	                            teamTrace.push({
+	                              agent: a,
+	                              provider: p,
+	                              model,
+	                              ms: Date.now() - started,
+	                              ok: true,
+                                gateway: 'compass',
+                                usage: toolOut?.usage,
+	                              promptId: meta?.id,
+	                              promptVersion: meta?.version,
+	                            });
                             emit?.('agent_done', { agent: a, ok: true, ms: Date.now() - started });
                             teamMessages.push({
                               agent: a,
@@ -4114,34 +4284,37 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     ? await (async () => {
                         const started = Date.now();
                         const meta = getPromptMetaForAgent('direct', 'director.merge');
-                        emit?.('agent_start', { agent: 'director.merge' });
-                        let out: any;
-                        try {
-                          out = await callGeminiToolCall({
-                            apiKey: geminiApiKey,
-                            model,
-                            temperature,
-                            maxOutputTokens: resolvedMergeTokens,
-                            prompt:
-                              mergePrompt +
-                              `\n\nIMPORTANT: You MUST call the function \"director_actions\" exactly once. Do not output JSON text.`,
-                            env,
-                            functionDeclarations: [directorActionsFunction],
-                            allowedFunctionNames: ['director_actions'],
-                          });
+	                        emit?.('agent_start', { agent: 'director.merge' });
+	                        let out: any;
+	                        try {
+	                          out = await callGeminiToolCall({
+	                            apiKey: compassApiKey,
+                              baseUrl: compassBaseUrl || undefined,
+	                            model,
+	                            temperature,
+	                            maxOutputTokens: resolvedMergeTokens,
+	                            prompt:
+	                              mergePrompt +
+	                              `\n\nIMPORTANT: You MUST call the function \"director_actions\" exactly once. Do not output JSON text.`,
+	                            env,
+	                            functionDeclarations: [directorActionsFunction],
+	                            allowedFunctionNames: ['director_actions'],
+	                          });
                         } catch (e: any) {
                           emit?.('agent_done', { agent: 'director.merge', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
                           throw e;
                         }
-                        teamTrace.push({
-                          agent: 'director.merge',
-                          provider: p,
-                          model,
-                          ms: Date.now() - started,
-                          ok: true,
-                          promptId: meta?.id,
-                          promptVersion: meta?.version,
-                        });
+	                        teamTrace.push({
+	                          agent: 'director.merge',
+	                          provider: p,
+	                          model,
+	                          ms: Date.now() - started,
+	                          ok: true,
+                            gateway: 'compass',
+                            usage: out?.usage,
+	                          promptId: meta?.id,
+	                          promptVersion: meta?.version,
+	                        });
                         emit?.('agent_done', { agent: 'director.merge', ok: true, ms: Date.now() - started });
                         teamMessages.push({
                           agent: 'director.merge',
@@ -4180,17 +4353,18 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     actions,
 	                  },
 	                  actions,
-	                  debug: {
-                        transport: 'http',
-                        provider: p,
-                        model,
-                        teamTrace,
-                        teamMessages,
-                        traceId,
-                        mode: useFunctionCalling ? 'multi-agent-fc' : 'multi-agent',
-                        specialistErrors,
-                        taskCheck,
-                      },
+		                  debug: {
+	                        transport: 'http',
+	                        provider: p,
+	                        model,
+                          gateway: 'compass',
+	                        teamTrace,
+	                        teamMessages,
+	                        traceId,
+	                        mode: useFunctionCalling ? 'multi-agent-fc' : 'multi-agent',
+	                        specialistErrors,
+	                        taskCheck,
+	                      },
 	                };
 	                return sendResult(response, 200);
 				              } catch (e: any) {
@@ -4218,11 +4392,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    storyJson: story ? storyJson : undefined,
 	                    directive: message,
 		                  });
-                    let output: any;
-                    try {
-                      output = useFunctionCalling
-                        ? (await callGeminiToolCall({
-                            apiKey: geminiApiKey,
+	                    let output: any;
+                      let outputUsage: TokenUsage | undefined;
+	                    try {
+	                      if (useFunctionCalling) {
+                          const toolRes = await callGeminiToolCall({
+                            apiKey: compassApiKey,
+                            baseUrl: compassBaseUrl || undefined,
                             model,
                             temperature,
                             maxOutputTokens: resolvedMergeTokens,
@@ -4232,28 +4408,37 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                             env,
                             functionDeclarations: [directorActionsFunction],
                             allowedFunctionNames: ['director_actions'],
-                          })).args
-                        : await callGeminiJson({
-                            apiKey: geminiApiKey,
+                          });
+                          output = toolRes.args;
+                          outputUsage = toolRes.usage;
+                        } else {
+                          const outRes = await callGeminiJson({
+                            apiKey: compassApiKey,
+                            baseUrl: compassBaseUrl || undefined,
                             model,
                             temperature,
                             maxOutputTokens: resolvedMergeTokens,
                             prompt: singlePrompt,
                             env,
                           });
-                    } catch (e: any) {
-                      emit?.('agent_done', { agent: 'director.actions', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
-                      throw e;
-                    }
-                teamTrace.push({
-                  agent: 'director.actions',
-                  provider: p,
-                  model,
-                  ms: Date.now() - started,
-                  ok: true,
-                  promptId: meta?.id,
-                  promptVersion: meta?.version,
-                });
+                          output = outRes.value;
+                          outputUsage = outRes.usage;
+                        }
+	                    } catch (e: any) {
+	                      emit?.('agent_done', { agent: 'director.actions', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
+	                      throw e;
+	                    }
+	                teamTrace.push({
+	                  agent: 'director.actions',
+	                  provider: p,
+	                  model,
+	                  ms: Date.now() - started,
+	                  ok: true,
+                    gateway: 'compass',
+                    usage: outputUsage,
+	                  promptId: meta?.id,
+	                  promptVersion: meta?.version,
+	                });
                 emit?.('agent_done', { agent: 'director.actions', ok: true, ms: Date.now() - started });
 			                teamMessages.push({
 			                  agent: 'director.actions',
@@ -4284,16 +4469,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     actions,
                   },
                   actions,
-                  debug: {
-                    transport: 'http',
-                    provider: p,
-                    model,
-                    teamTrace,
-                    teamMessages,
-                    traceId,
-                    mode: useFunctionCalling ? 'single-call-fc' : 'single-call',
-                    multiAgentError: e?.message || String(e),
-                  },
+	                  debug: {
+	                    transport: 'http',
+	                    provider: p,
+	                    model,
+                      gateway: 'compass',
+	                    teamTrace,
+	                    teamMessages,
+	                    traceId,
+	                    mode: useFunctionCalling ? 'single-call-fc' : 'single-call',
+	                    multiAgentError: e?.message || String(e),
+	                  },
 			                };
 			                return sendResult(response, 200);
 			              }
@@ -4303,28 +4489,29 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              const teamTrace: any[] = [];
 	              const traceId = crypto.randomUUID();
 	              const call = async (agent: string, prompt: string) => {
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', agent);
-	                try {
-	                  const out = await callOpenAICompatibleJson({
-                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-                    apiKey: env.OPENAI_API_KEY,
-                    model,
-                    temperature,
-	                    prompt,
-	                    env,
-	                  });
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', agent);
+		                try {
+		                  const outRes = await callOpenAICompatibleJson({
+	                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+	                    apiKey: env.OPENAI_API_KEY,
 	                    model,
-	                    ms: Date.now() - started,
-	                    ok: true,
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  return out;
-	                } catch (e: any) {
+	                    temperature,
+		                    prompt,
+		                    env,
+		                  });
+		                  teamTrace.push({
+		                    agent,
+		                    provider: p,
+		                    model,
+		                    ms: Date.now() - started,
+		                    ok: true,
+                        usage: outRes.usage,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  });
+		                  return outRes.value;
+		                } catch (e: any) {
 	                  teamTrace.push({
 	                    agent,
 	                    provider: p,
@@ -4332,6 +4519,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    ms: Date.now() - started,
 	                    ok: false,
 	                    error: formatFetchError(e),
+                      gateway: 'compass',
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });
@@ -4432,29 +4620,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     mode: 'multi-agent',
                   }, 502);
                 }
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', 'director.actions');
-	                const output = await callOpenAICompatibleJson({
-	                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-	                  apiKey: env.OPENAI_API_KEY,
-                  model,
-                  temperature,
-                  prompt: buildDirectorActionsPrompt({
-                    selectionJson,
-                    storyJson: story ? storyJson : undefined,
-                    directive: message,
-	                  }),
-	                  env,
-	                });
-	                teamTrace.push({
-	                  agent: 'director.actions',
-	                  provider: p,
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', 'director.actions');
+		                const outputRes = await callOpenAICompatibleJson({
+		                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+		                  apiKey: env.OPENAI_API_KEY,
 	                  model,
-	                  ms: Date.now() - started,
-	                  ok: true,
-	                  promptId: meta?.id,
-	                  promptVersion: meta?.version,
-	                });
+	                  temperature,
+	                  prompt: buildDirectorActionsPrompt({
+	                    selectionJson,
+	                    storyJson: story ? storyJson : undefined,
+	                    directive: message,
+		                  }),
+		                  env,
+		                });
+                    const output = outputRes.value;
+		                teamTrace.push({
+		                  agent: 'director.actions',
+		                  provider: p,
+		                  model,
+		                  ms: Date.now() - started,
+		                  ok: true,
+                      usage: outputRes.usage,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                });
                 const actions = Array.isArray(output?.actions) ? output.actions : [];
                 const response = {
                   reply: String(output?.reply || 'OK'),
@@ -4478,28 +4668,29 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              const teamTrace: any[] = [];
 	              const traceId = crypto.randomUUID();
 	              const call = async (agent: string, prompt: string) => {
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', agent);
-	                try {
-	                  const out = await callOpenAICompatibleJson({
-                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-                    apiKey: env.DEEPSEEK_API_KEY,
-                    model,
-                    temperature,
-	                    prompt,
-	                    env,
-	                  });
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', agent);
+		                try {
+		                  const outRes = await callOpenAICompatibleJson({
+	                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+	                    apiKey: env.DEEPSEEK_API_KEY,
 	                    model,
-	                    ms: Date.now() - started,
-	                    ok: true,
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  return out;
-	                } catch (e: any) {
+	                    temperature,
+		                    prompt,
+		                    env,
+		                  });
+		                  teamTrace.push({
+		                    agent,
+		                    provider: p,
+		                    model,
+		                    ms: Date.now() - started,
+		                    ok: true,
+                        usage: outRes.usage,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  });
+		                  return outRes.value;
+		                } catch (e: any) {
 	                  teamTrace.push({
 	                    agent,
 	                    provider: p,
@@ -4605,29 +4796,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     mode: 'multi-agent',
                   }, 502);
                 }
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', 'director.actions');
-	                const output = await callOpenAICompatibleJson({
-	                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-	                  apiKey: env.DEEPSEEK_API_KEY,
-                  model,
-                  temperature,
-                  prompt: buildDirectorActionsPrompt({
-                    selectionJson,
-                    storyJson: story ? storyJson : undefined,
-                    directive: message,
-	                  }),
-	                  env,
-	                });
-	                teamTrace.push({
-	                  agent: 'director.actions',
-	                  provider: p,
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', 'director.actions');
+		                const outputRes = await callOpenAICompatibleJson({
+		                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+		                  apiKey: env.DEEPSEEK_API_KEY,
 	                  model,
-	                  ms: Date.now() - started,
-	                  ok: true,
-	                  promptId: meta?.id,
-	                  promptVersion: meta?.version,
-	                });
+	                  temperature,
+	                  prompt: buildDirectorActionsPrompt({
+	                    selectionJson,
+	                    storyJson: story ? storyJson : undefined,
+	                    directive: message,
+		                  }),
+		                  env,
+		                });
+                    const output = outputRes.value;
+		                teamTrace.push({
+		                  agent: 'director.actions',
+		                  provider: p,
+		                  model,
+		                  ms: Date.now() - started,
+		                  ok: true,
+                      usage: outputRes.usage,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                });
                 const actions = Array.isArray(output?.actions) ? output.actions : [];
                 const response = {
                   reply: String(output?.reply || 'OK'),
