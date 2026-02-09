@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
 import { buildShotKeyframePrompt } from '../../lib/ai/prompts';
@@ -10,8 +10,9 @@ import {
   getLocationActivePreviewUrl,
   getLookActivePreviewUrl,
   resolveShotActiveVideo,
-} from '../../lib/ai/assetRefs';
+	} from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
+import { addDebugEvent } from '../../lib/debug/eventLog';
 
 interface ShotEditorProps {
   shot: Shot;
@@ -53,14 +54,43 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const isProducingVideo = productionStatus === 'running' || productionStatus === 'queued';
   const activeVideoState = resolveShotActiveVideo(shot, { allowLegacyUnboundFallback: true });
   const scopedVideoVariants = activeVideoState.variants;
-  const activeVideoVariant = activeVideoState.activeVariant;
-  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
-  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
-  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
+	  const activeVideoVariant = activeVideoState.activeVariant;
+	  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
+	  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
+	  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
+	  const probedVideoUrlsRef = useRef<Set<string>>(new Set());
 
-  useEffect(() => {
-    setVideoLoadFailed(false);
-  }, [activeVideoUrl, activeVideoVariant?.id]);
+	  useEffect(() => {
+	    setVideoLoadFailed(false);
+	  }, [activeVideoUrl, activeVideoVariant?.id]);
+
+	  const probeVideoHead = async (url: string) => {
+	    const u = String(url || '').trim();
+	    if (!u) return;
+	    try {
+	      const resp = await fetch(u, { method: 'HEAD', cache: 'no-store' as any });
+	      addDebugEvent({
+	        level: resp.ok ? 'warn' : 'error',
+	        scope: 'asset.video',
+	        message: 'Video playback failed (HEAD probe)',
+	        data: {
+	          url: u,
+	          status: resp.status,
+	          contentType: resp.headers.get('content-type') || '',
+	          contentLength: resp.headers.get('content-length') || '',
+	          acceptRanges: resp.headers.get('accept-ranges') || '',
+	          cacheControl: resp.headers.get('cache-control') || '',
+	        },
+	      });
+	    } catch (e) {
+	      addDebugEvent({
+	        level: 'error',
+	        scope: 'asset.video',
+	        message: 'Video playback failed (HEAD probe error)',
+	        data: { url: u, error: e instanceof Error ? e.message : String(e) },
+	      });
+	    }
+	  };
 
   const selectVideoVariant = (variantId: string) => {
     const hit = scopedVideoVariants.find((v) => v.id === variantId);
@@ -388,21 +418,28 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
-                {activeVideoUrl && !videoLoadFailed ? (
-                    <>
-                      <video
-                          src={activeVideoUrl}
-                          className="w-full h-full object-contain bg-black"
+	                {activeVideoUrl && !videoLoadFailed ? (
+	                    <>
+	                      <video
+	                          src={activeVideoUrl}
+	                          className="w-full h-full object-contain bg-black"
                           controls
                           loop
-                          playsInline
-                          preload="metadata"
-                          onError={() => setVideoLoadFailed(true)}
-                      />
-                      {scopedVideoVariants.length > 1 && (
-                        <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
-                          <button
-                            type="button"
+	                          playsInline
+	                          preload="metadata"
+	                          onError={() => {
+	                            setVideoLoadFailed(true);
+	                            const u = String(activeVideoUrl || '').trim();
+	                            if (u && !probedVideoUrlsRef.current.has(u)) {
+	                              probedVideoUrlsRef.current.add(u);
+	                              void probeVideoHead(u);
+	                            }
+	                          }}
+	                      />
+	                      {scopedVideoVariants.length > 1 && (
+	                        <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
+	                          <button
+	                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               shiftVideoVariant('prev');

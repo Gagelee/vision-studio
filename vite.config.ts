@@ -1305,31 +1305,61 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   // Back-compat helper (some asset debug payloads display this).
   const geminiBaseUrl = resolveGeminiBaseUrl(env);
 
-  const applyRoutes = (middlewares: any) => {
-    middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
-      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
-      const pathname = String(req?.url || '').split('?')[0];
-      const filePath = safeGeneratedAssetPath(pathname);
-      if (!filePath) {
-        res.statusCode = 400;
-        return res.end('Bad path');
-      }
-      try {
-        const stat = fs.statSync(filePath);
-        if (!stat.isFile()) {
-          res.statusCode = 404;
-          return res.end('Not found');
-        }
-        res.statusCode = 200;
-        res.setHeader('content-type', mimeByExt(path.extname(filePath)));
-        res.setHeader('cache-control', 'public, max-age=31536000, immutable');
-        if (req.method === 'HEAD') return res.end();
-        fs.createReadStream(filePath).pipe(res);
-      } catch {
-        res.statusCode = 404;
-        return res.end('Not found');
-      }
-    });
+	  const applyRoutes = (middlewares: any) => {
+	    middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+	      const pathname = String(req?.url || '').split('?')[0];
+	      const filePath = safeGeneratedAssetPath(pathname);
+	      if (!filePath) {
+	        res.statusCode = 400;
+	        return res.end('Bad path');
+	      }
+	      try {
+	        const stat = fs.statSync(filePath);
+	        if (!stat.isFile()) {
+	          res.statusCode = 404;
+	          return res.end('Not found');
+	        }
+	        const size = Number(stat.size || 0);
+	        const contentType = mimeByExt(path.extname(filePath));
+	        res.setHeader('content-type', contentType);
+	        res.setHeader('cache-control', 'public, max-age=31536000, immutable');
+	        res.setHeader('accept-ranges', 'bytes');
+
+	        // HTML5 video commonly requests `Range` (even for metadata). If we ignore it,
+	        // some browsers will treat the response as a load failure.
+	        const range = String(req.headers?.range || '').trim();
+	        if (req.method === 'GET' && range.startsWith('bytes=')) {
+	          const m = /^bytes=(\d*)-(\d*)$/i.exec(range);
+	          if (!m) {
+	            res.statusCode = 416;
+	            res.setHeader('content-range', `bytes */${size}`);
+	            return res.end();
+	          }
+	          const startRaw = m[1] ? Number(m[1]) : 0;
+	          const endRaw = m[2] ? Number(m[2]) : size - 1;
+	          const start = Number.isFinite(startRaw) ? startRaw : 0;
+	          const end = Number.isFinite(endRaw) ? endRaw : size - 1;
+	          if (start < 0 || end < start || start >= size) {
+	            res.statusCode = 416;
+	            res.setHeader('content-range', `bytes */${size}`);
+	            return res.end();
+	          }
+	          res.statusCode = 206;
+	          res.setHeader('content-range', `bytes ${start}-${end}/${size}`);
+	          res.setHeader('content-length', String(end - start + 1));
+	          return fs.createReadStream(filePath, { start, end }).pipe(res);
+	        }
+
+	        res.statusCode = 200;
+	        res.setHeader('content-length', String(size));
+	        if (req.method === 'HEAD') return res.end();
+	        return fs.createReadStream(filePath).pipe(res);
+	      } catch {
+	        res.statusCode = 404;
+	        return res.end('Not found');
+	      }
+	    });
 
     middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
       if (req.method !== 'POST') return next();
