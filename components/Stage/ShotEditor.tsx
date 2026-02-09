@@ -307,14 +307,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     if (!panelUrl) return;
 
     const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
-    const kvUrl = getStoryActiveKvUrl(story, { activeOnly: true });
-    const references: ImageReference[] = mergeReferences(
-      [
-        { url: panelUrl, label: `frame: grid panel ${idx + 1}` },
-        ...(kvUrl ? [{ url: kvUrl, label: 'key visual' }] : []),
-      ],
-      parentRefs,
-    ).slice(0, 6);
+    const references: ImageReference[] = pickRefineReferences({ frameUrl: panelUrl, parentRefs, story });
 
     const settings =
       imageSettings || {
@@ -476,14 +469,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 
     const baseImageUrl = String((activeVersion as any)?.metadata?.source?.originalImageUrl || (activeVersion as any)?.imageUrl || '').trim();
     const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
-    const kvUrl = getStoryActiveKvUrl(story, { activeOnly: true });
-    const references: ImageReference[] = mergeReferences(
-      [
-        { url: baseImageUrl, label: 'frame: panel' },
-        ...(kvUrl ? [{ url: kvUrl, label: 'key visual' }] : []),
-      ],
-      parentRefs,
-    ).slice(0, 6);
+    const references: ImageReference[] = pickRefineReferences({ frameUrl: baseImageUrl, parentRefs, story });
 
     const prompt = buildShotSingleFramePrompt({
       shot,
@@ -793,6 +779,39 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       out.push({ url, label: r?.label });
     }
     return out;
+  };
+
+  const pickRefineReferences = (args: {
+    frameUrl: string;
+    parentRefs?: any[];
+    story?: Story;
+  }): ImageReference[] => {
+    const frameUrl = String(args.frameUrl || '').trim();
+    const rawParent = Array.isArray(args.parentRefs) ? args.parentRefs : [];
+    const parent: ImageReference[] = rawParent
+      .map((r: any) => ({ url: String(r?.url || '').trim(), label: r?.label ? String(r.label) : undefined }))
+      .filter((r) => r.url);
+
+    const isP1 = (r: ImageReference) => {
+      const label = String(r.label || '').toLowerCase();
+      // Matches how we label refs elsewhere in this file.
+      if (label.startsWith('environment:')) return true;
+      if (label.startsWith('character:')) return true;
+      return false;
+    };
+
+    const p1 = parent.filter(isP1);
+    const other = parent.filter((r) => !isP1(r));
+
+    const kvUrl = getStoryActiveKvUrl(args.story, { activeOnly: true });
+    const kvRef: ImageReference[] = kvUrl ? [{ url: kvUrl, label: 'key visual (style)' }] : [];
+
+    // Order within our hard cap (server also caps at 6):
+    // P0 frame -> P1 env/character -> KV style -> any remaining refs.
+    return mergeReferences(
+      [{ url: frameUrl, label: 'frame (refine target)' }, ...p1],
+      [...kvRef, ...other],
+    ).slice(0, 6);
   };
 
   const onVersionCardClick = (e: React.MouseEvent, versionId: string) => {

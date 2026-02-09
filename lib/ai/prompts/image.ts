@@ -195,6 +195,7 @@ export const buildShotSingleFramePrompt = (args: {
 	  `This is NOT a grid/contact-sheet. Output a single full-frame image only.\n` +
 	  `No text, subtitles, watermarks, logos, UI overlays, or panel borders.\n\n` +
 	  `CONTINUITY RULES (STRICT)\n` +
+	  `- The frame reference overrides text if they conflict. Do not change camera angle or composition.\n` +
 	  `- Do not introduce new key subjects.\n` +
 	  `- Keep wardrobe and identity consistent with references.\n` +
 	  `- Keep environment/time-of-day consistent.\n\n` +
