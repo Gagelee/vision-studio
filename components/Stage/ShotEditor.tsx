@@ -331,26 +331,26 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       })
       .filter(Boolean) as string[];
 
-    const inferredStyleTranslation = buildStylePromptTranslation({
-      texts: [String((story as any)?.intent || '').trim(), styleGuide, String(loc?.visualStyle || '').trim()],
-      maxItems: 6,
-    });
-    const describe = await describeImageForRefine({ imageUrl: panelUrl });
-    const prompt = buildRefineFromDescribePrompt({
-      describe,
-      styleGuide: styleGuide || String(loc?.visualStyle || '').trim(),
-      styleTranslation: inferredStyleTranslation,
-      extraConstraints: [
-        `Aspect ratio: ${aspectRatio}.`,
-        castNames.length ? `Key subjects must match references: ${castNames.join(', ')}.` : '',
-        `Panel context: ${idx + 1}/${panels.length}.`,
-      ].filter(Boolean),
-    });
-
     const startedAt = Date.now();
     setIsGenerating(true);
     setGenerationError(null);
     try {
+      const inferredStyleTranslation = buildStylePromptTranslation({
+        texts: [String((story as any)?.intent || '').trim(), styleGuide, String(loc?.visualStyle || '').trim()],
+        maxItems: 6,
+      });
+      const describe = await describeImageForRefine({ imageUrl: panelUrl });
+      const prompt = buildRefineFromDescribePrompt({
+        describe,
+        styleGuide: styleGuide || String(loc?.visualStyle || '').trim(),
+        styleTranslation: inferredStyleTranslation,
+        extraConstraints: [
+          `Aspect ratio: ${aspectRatio}.`,
+          castNames.length ? `Key subjects must match references: ${castNames.join(', ')}.` : '',
+          `Panel context: ${idx + 1}/${panels.length}.`,
+        ].filter(Boolean),
+      });
+
       const img = await generateImageFromPrompt({
         prompt,
         settings,
@@ -479,25 +479,25 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
     const references: ImageReference[] = pickRefineReferences({ frameUrl: baseImageUrl, parentRefs, story });
 
-    const inferredStyleTranslation = buildStylePromptTranslation({
-      texts: [String((story as any)?.intent || '').trim(), styleGuide, String(loc?.visualStyle || '').trim()],
-      maxItems: 6,
-    });
-    const describe = await describeImageForRefine({ imageUrl: baseImageUrl });
-    const prompt = buildRefineFromDescribePrompt({
-      describe,
-      styleGuide: styleGuide || String(loc?.visualStyle || '').trim(),
-      styleTranslation: inferredStyleTranslation,
-      extraConstraints: [
-        `Aspect ratio: ${aspectRatio}.`,
-        castNames.length ? `Key subjects must match references: ${castNames.join(', ')}.` : '',
-      ].filter(Boolean),
-    });
-
     const startedAt = Date.now();
     setIsGenerating(true);
     setGenerationError(null);
     try {
+      const inferredStyleTranslation = buildStylePromptTranslation({
+        texts: [String((story as any)?.intent || '').trim(), styleGuide, String(loc?.visualStyle || '').trim()],
+        maxItems: 6,
+      });
+      const describe = await describeImageForRefine({ imageUrl: baseImageUrl });
+      const prompt = buildRefineFromDescribePrompt({
+        describe,
+        styleGuide: styleGuide || String(loc?.visualStyle || '').trim(),
+        styleTranslation: inferredStyleTranslation,
+        extraConstraints: [
+          `Aspect ratio: ${aspectRatio}.`,
+          castNames.length ? `Key subjects must match references: ${castNames.join(', ')}.` : '',
+        ].filter(Boolean),
+      });
+
       const img = await generateImageFromPrompt({
         prompt,
         settings,

@@ -2126,7 +2126,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	      const body = await readJsonBody(req);
 	      const imageUrl = String(body?.imageUrl || '').trim();
 	      if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
-	      if (!geminiDirectApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+	      // Vision describe is a multimodal LLM call; prefer Compass gateway when configured.
+	      const describeApiKey = compassApiKey || geminiDirectApiKey;
+	      const describeBaseUrl = compassApiKey && compassBaseUrl ? compassBaseUrl : (geminiDirectBaseUrl || undefined);
+	      if (!describeApiKey) return sendJson(res, 400, { ok: false, error: 'Missing COMPASS_API_KEY or GEMINI_API_KEY' });
 
 	      const loadImageBytes = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
 	        const u = String(url || '').trim();
@@ -2183,7 +2186,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
 	      try {
 	        const out = await callGeminiVisionJson({
-	          apiKey: geminiDirectApiKey,
+	          apiKey: describeApiKey,
 	          model: describeModel,
 	          temperature: 0.2,
 	          maxOutputTokens: 768,
@@ -2191,7 +2194,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	          image: loaded,
 	          env,
 	          responseSchema: GEMINI_SCHEMA.imageDescribe,
-	          baseUrl: geminiDirectBaseUrl || undefined,
+	          baseUrl: describeBaseUrl,
 	        });
 	        return sendJson(res, 200, { ok: true, describe: out.value, usage: out.usage });
 	      } catch (e: any) {
