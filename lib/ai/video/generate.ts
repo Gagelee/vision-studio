@@ -79,6 +79,7 @@ export const generateVideoFromImage = async (
       const ct = String(res.headers.get('content-type') || '').toLowerCase();
       if (ct.includes('application/json')) {
         const data = (await res.json().catch(() => null)) as any;
+        addDebugEvent({ level: 'error', scope: 'asset.video', message: 'Response error', data });
         const code = String(data?.code || '').trim();
         if (code === 'RAI_MEDIA_FILTERED') {
           const reasons = Array.isArray(data?.debug?.raiReasons)
@@ -88,10 +89,15 @@ export const generateVideoFromImage = async (
           throw new Error(`Provider safety filter blocked this video${reasonText}. Try softer/non-sensitive action wording and regenerate.`);
         }
         const detail = String(data?.error || '').trim();
-        throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+        const err: any = new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+        err.status = res.status;
+        if (data?.debug && typeof data.debug === 'object') err.debug = data.debug;
+        throw err;
       }
       const text = await res.text();
-      throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ''}`);
+      const err: any = new Error(`HTTP ${res.status}${text ? `: ${text}` : ''}`);
+      err.status = res.status;
+      throw err;
     }
     const data = (await res.json()) as any;
     if (!data?.videoUrl) throw new Error('Missing videoUrl in response');
@@ -102,7 +108,7 @@ export const generateVideoFromImage = async (
       level: 'error',
       scope: 'asset.video',
       message: 'Generate failed',
-      data: { error: e instanceof Error ? e.message : String(e) },
+      data: { error: e instanceof Error ? e.message : String(e), debug: (e as any)?.debug },
     });
     throw e;
   } finally {

@@ -1479,7 +1479,7 @@ export default function App() {
         level: 'error',
         scope: 'asset.video',
         message: 'Start production failed',
-        data: { error: err, sequenceId: args.sequenceId, shotId: args.shotId },
+        data: { error: err, sequenceId: args.sequenceId, shotId: args.shotId, debug: (e as any)?.debug },
       });
       updateActiveStory((prev) => ({
         ...prev,
