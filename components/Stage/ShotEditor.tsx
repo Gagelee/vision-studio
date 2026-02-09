@@ -803,14 +803,11 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     const p1 = parent.filter(isP1);
     const other = parent.filter((r) => !isP1(r));
 
-    const kvUrl = getStoryActiveKvUrl(args.story, { activeOnly: true });
-    const kvRef: ImageReference[] = kvUrl ? [{ url: kvUrl, label: 'key visual (style)' }] : [];
-
     // Order within our hard cap (server also caps at 6):
-    // P0 frame -> P1 env/character -> KV style -> any remaining refs.
+    // P0 frame -> P1 env/character -> any remaining refs.
     return mergeReferences(
       [{ url: frameUrl, label: 'frame (refine target)' }, ...p1],
-      [...kvRef, ...other],
+      [...other],
     ).slice(0, 6);
   };
 

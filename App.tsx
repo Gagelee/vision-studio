@@ -1308,7 +1308,106 @@ export default function App() {
     const activeVersion =
       (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
       (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
-    const imageUrl = String(activeVersion?.imageUrl || '').trim();
+
+    const storeImageDataUrl = async (dataUrl: string, filenameHint: string) => {
+      const resp = await fetch('/api/asset/image/store', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dataUrl, filenameHint }),
+      });
+      if (!resp.ok) throw new Error(`Store image failed (HTTP ${resp.status})`);
+      const json = (await resp.json().catch(() => null)) as any;
+      const url = String(json?.imageUrl || '').trim();
+      if (!url) throw new Error('Store image failed: missing imageUrl');
+      return url;
+    };
+
+    const loadImage = async (url: string): Promise<HTMLImageElement> => {
+      const u = String(url || '').trim();
+      if (!u) throw new Error('Missing image URL');
+      const img = new Image();
+      img.decoding = 'async';
+      img.crossOrigin = 'anonymous';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = u;
+      });
+      return img;
+    };
+
+    const drawCover = (ctx: CanvasRenderingContext2D, img: HTMLImageElement, x: number, y: number, w: number, h: number) => {
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      if (!iw || !ih) return;
+      const scale = Math.max(w / iw, h / ih);
+      const sw = w / scale;
+      const sh = h / scale;
+      const sx = (iw - sw) / 2;
+      const sy = (ih - sh) / 2;
+      ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+    };
+
+    const buildStackContactSheetDataUrl = async (panelUrls: string[], args2: { cols: number; rows: number }) => {
+      const urls = panelUrls.map((u) => String(u || '').trim()).filter(Boolean).slice(0, args2.cols * args2.rows);
+      if (!urls.length) throw new Error('No panel images found for stack');
+      const imgs = await Promise.all(urls.map(loadImage));
+      // Keep output 16:9 for Veo input; render a clean contact-sheet with gutters.
+      const W = 1280;
+      const H = 720;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas not supported');
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, W, H);
+      const gutter = Math.round(W * 0.012);
+      const pad = Math.round(W * 0.02);
+      const innerX = pad;
+      const innerY = pad;
+      const innerW = W - pad * 2;
+      const innerH = H - pad * 2;
+      const cellW = Math.floor((innerW - gutter * (args2.cols - 1)) / args2.cols);
+      const cellH = Math.floor((innerH - gutter * (args2.rows - 1)) / args2.rows);
+      ctx.fillStyle = '#101010';
+      ctx.fillRect(innerX, innerY, innerW, innerH);
+      for (let i = 0; i < imgs.length; i++) {
+        const r = Math.floor(i / args2.cols);
+        const c = i % args2.cols;
+        const x = innerX + c * (cellW + gutter);
+        const y = innerY + r * (cellH + gutter);
+        drawCover(ctx, imgs[i], x, y, cellW, cellH);
+      }
+      return canvas.toDataURL('image/png');
+    };
+
+    const resolveProductionSourceImageUrl = async (): Promise<{ imageUrl: string; panelUrls?: string[] }> => {
+      const v: any = activeVersion as any;
+      const base = String(v?.imageUrl || '').trim();
+      if (!v || String(v?.type || '') !== 'panel_group') return { imageUrl: base };
+      const group = v?.metadata?.panelGroup;
+      const panels = Array.isArray(group?.panels) ? group.panels : [];
+      const panelUrls = panels
+        .map((p: any) => String(p?.refinedImageUrl || p?.imageUrl || '').trim())
+        .filter(Boolean);
+      if (!panelUrls.length) return { imageUrl: base };
+      const wantsNine = panelUrls.length >= 9;
+      const dataUrl = await buildStackContactSheetDataUrl(panelUrls, wantsNine ? { cols: 3, rows: 3 } : { cols: 2, rows: 2 });
+      const storedUrl = await storeImageDataUrl(dataUrl, `shot-${shot.sequence}-stack-sheet`);
+      return { imageUrl: storedUrl, panelUrls };
+    };
+
+    let imageUrl: string;
+    let stackPanelUrls: string[] | undefined;
+    try {
+      const resolved = await resolveProductionSourceImageUrl();
+      imageUrl = resolved.imageUrl;
+      stackPanelUrls = resolved.panelUrls;
+    } catch {
+      imageUrl = String((activeVersion as any)?.imageUrl || '').trim();
+    }
+
     if (!imageUrl) {
       addToast('Start Production blocked: generate/select a keyframe first.', 'info');
       return;
@@ -1421,6 +1520,7 @@ export default function App() {
                             prompt: videoPrompt,
                             sourceImageUrl: imageUrl,
                             sourceShotVersionId: String(activeVersion?.id || ''),
+                            sourceStackPanelUrls: Array.isArray(stackPanelUrls) ? stackPanelUrls : undefined,
                           },
                         };
                         return {
