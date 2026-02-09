@@ -1,6 +1,6 @@
 export { buildScaffoldPrompt } from './scaffold';
 export { buildDirectorActionsPrompt } from './director';
-export { buildShotImagePrompt, buildShotKeyframePrompt } from './image';
+export { buildShotImagePrompt, buildShotKeyframePrompt, buildShotSingleFramePrompt } from './image';
 export {
   buildMasterKeyVisualPrompt,
   buildLocationPreviewPrompt,

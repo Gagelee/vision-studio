@@ -144,6 +144,72 @@ export const buildShotKeyframePrompt = (args: {
   );
 };
 
+export const buildShotSingleFramePrompt = (args: {
+  shot: Shot;
+  styleGuide?: string;
+  environmentName?: string;
+  environmentStyle?: string;
+  castNames?: string[];
+  focusBeat?: string;
+}) => {
+  const shot = args.shot;
+  const styleGuide = String(args.styleGuide || '').trim();
+  const envName = String(args.environmentName || '').trim();
+  const envStyle = String(args.environmentStyle || '').trim();
+  const castNames = Array.isArray(args.castNames) ? args.castNames.map((s) => String(s || '').trim()).filter(Boolean) : [];
+  const focusBeat = String(args.focusBeat || '').trim();
+
+  const camera = String(shot.elements?.CAMERA?.prompt || '').trim();
+  const lighting = String(shot.elements?.LIGHTING?.prompt || '').trim();
+  const script = String((shot.elements as any)?.SCRIPT?.prompt || '').trim();
+  const audio = String((shot.elements as any)?.AUDIO?.prompt || '').trim();
+
+  const styleTranslation = buildStylePromptTranslation({
+    texts: [styleGuide, String(shot.description || ''), camera, lighting],
+    maxItems: 6,
+  });
+
+  const sceneInput = [
+    `Scene: ${String(shot.description || '').trim() || 'N/A'}`,
+    shot.timeOfDay ? `Time of day: ${shot.timeOfDay}` : '',
+    envName ? `Setting: ${envName}` : '',
+    envStyle ? `Environment style: ${envStyle}` : '',
+    castNames.length ? `Key subjects: ${castNames.join(', ')}` : '',
+    camera ? `Camera direction: ${camera}` : '',
+    lighting ? `Lighting direction: ${lighting}` : '',
+    script ? `Script beat: ${script}` : '',
+    audio ? `Audio mood cue: ${audio}` : '',
+    focusBeat ? `Focus beat (from contact sheet panel): ${focusBeat}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n- ');
+
+  return (
+    `You are a professional cinematographer.\n\n` +
+    `INPUTS\n` +
+    `- REFERENCE IMAGE(S): preserve identity exactly (face, body, proportions, costume, hair, accessories, materials, colors).\n` +
+    `- SCENE INPUT (text): scene description, setting, mood, and actions.\n\n` +
+    `TASK\n` +
+    `Create ONE photorealistic cinematic still frame in 16:9 aspect ratio.\n` +
+    `This is NOT a grid/contact-sheet. Output a single full-frame image only.\n` +
+    `No text, subtitles, watermarks, logos, UI overlays, or panel borders.\n\n` +
+    `CONTINUITY RULES (STRICT)\n` +
+    `- Do not introduce new key subjects.\n` +
+    `- Keep wardrobe and identity consistent with references.\n` +
+    `- Keep environment/time-of-day consistent.\n\n` +
+    `FILM LOOK\n` +
+    `- Photoreal cinematic still, filmic contrast, controlled highlights, natural texture.\n` +
+    `- Plausible lens choice and depth of field.\n\n` +
+    `PROJECT STYLE LOCK\n` +
+    `- Style guide (hard lock when provided): ${styleGuide || 'N/A'}\n` +
+    `- Style translation hints: ${styleTranslation || 'N/A'}\n\n` +
+    `SCENE INPUT:\n` +
+    `- ${sceneInput}\n\n` +
+    `OUTPUT\n` +
+    `Generate the final image only: one single-frame cinematic still.`
+  );
+};
+
 export const buildShotImagePrompt = (shot: Shot) => {
   return buildShotKeyframePrompt({ shot });
 };

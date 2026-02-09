@@ -1,8 +1,8 @@
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
-import { buildShotKeyframePrompt } from '../../lib/ai/prompts';
+import { buildShotKeyframePrompt, buildShotSingleFramePrompt } from '../../lib/ai/prompts';
 import { selectContactSheetPanelCount } from '../../lib/ai/prompts/image';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info, ChevronRight } from 'lucide-react';
 import {
@@ -10,9 +10,10 @@ import {
   getLocationActivePreviewUrl,
   getLookActivePreviewUrl,
   resolveShotActiveVideo,
-	} from '../../lib/ai/assetRefs';
+} from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 import { addDebugEvent } from '../../lib/debug/eventLog';
+import { computeGridPanelBBoxes } from '../../lib/ui/gridSplit';
 
 interface ShotEditorProps {
   shot: Shot;
@@ -54,43 +55,365 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const isProducingVideo = productionStatus === 'running' || productionStatus === 'queued';
   const activeVideoState = resolveShotActiveVideo(shot, { allowLegacyUnboundFallback: true });
   const scopedVideoVariants = activeVideoState.variants;
-	  const activeVideoVariant = activeVideoState.activeVariant;
-	  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
-	  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
-	  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
-	  const probedVideoUrlsRef = useRef<Set<string>>(new Set());
+  const activeVideoVariant = activeVideoState.activeVariant;
+  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
+  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
+  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
+  const probedVideoUrlsRef = useRef<Set<string>>(new Set());
 
-	  useEffect(() => {
-	    setVideoLoadFailed(false);
-	  }, [activeVideoUrl, activeVideoVariant?.id]);
+  const [isSplittingGrid, setIsSplittingGrid] = useState(false);
+  const [splitError, setSplitError] = useState<string | null>(null);
+  const [activePanelIndex, setActivePanelIndex] = useState(0);
 
-	  const probeVideoHead = async (url: string) => {
-	    const u = String(url || '').trim();
-	    if (!u) return;
-	    try {
-	      const resp = await fetch(u, { method: 'HEAD', cache: 'no-store' as any });
-	      addDebugEvent({
-	        level: resp.ok ? 'warn' : 'error',
-	        scope: 'asset.video',
-	        message: 'Video playback failed (HEAD probe)',
-	        data: {
-	          url: u,
-	          status: resp.status,
-	          contentType: resp.headers.get('content-type') || '',
-	          contentLength: resp.headers.get('content-length') || '',
-	          acceptRanges: resp.headers.get('accept-ranges') || '',
-	          cacheControl: resp.headers.get('cache-control') || '',
-	        },
-	      });
-	    } catch (e) {
-	      addDebugEvent({
-	        level: 'error',
-	        scope: 'asset.video',
-	        message: 'Video playback failed (HEAD probe error)',
-	        data: { url: u, error: e instanceof Error ? e.message : String(e) },
-	      });
-	    }
-	  };
+  useEffect(() => {
+    setVideoLoadFailed(false);
+  }, [activeVideoUrl, activeVideoVariant?.id]);
+
+  useEffect(() => {
+    setActivePanelIndex(0);
+  }, [activeVersion?.id]);
+
+  const probeVideoHead = async (url: string) => {
+    const u = String(url || '').trim();
+    if (!u) return;
+    try {
+      const resp = await fetch(u, { method: 'HEAD', cache: 'no-store' as any });
+      addDebugEvent({
+        level: resp.ok ? 'warn' : 'error',
+        scope: 'asset.video',
+        message: 'Video playback failed (HEAD probe)',
+        data: {
+          url: u,
+          status: resp.status,
+          contentType: resp.headers.get('content-type') || '',
+          contentLength: resp.headers.get('content-length') || '',
+          acceptRanges: resp.headers.get('accept-ranges') || '',
+          cacheControl: resp.headers.get('cache-control') || '',
+        },
+      });
+    } catch (e) {
+      addDebugEvent({
+        level: 'error',
+        scope: 'asset.video',
+        message: 'Video playback failed (HEAD probe error)',
+        data: { url: u, error: e instanceof Error ? e.message : String(e) },
+      });
+    }
+  };
+
+  const isContactSheetGrid = useMemo(() => {
+    const v: any = activeVersion as any;
+    const mode = String(v?.metadata?.keyframe?.mode || '').trim();
+    if (mode === 'contact_sheet') return true;
+    const prompt = String(v?.metadata?.prompt || '').toLowerCase();
+    if (prompt.includes('contact sheet') || prompt.includes('contact-sheet')) return true;
+    return false;
+  }, [activeVersion]);
+
+  const getPanelCount = () => {
+    const pc = Number((activeVersion as any)?.metadata?.keyframe?.panelCount);
+    if (pc === 4 || pc === 9) return pc as 4 | 9;
+    const byPlan = Number((shot as any)?.keyframePlan?.panelCount);
+    if (byPlan === 4 || byPlan === 9) return byPlan as 4 | 9;
+    return selectContactSheetPanelCount(Number(shot.duration || 0));
+  };
+
+  const storeImageDataUrl = async (dataUrl: string, filenameHint: string) => {
+    const resp = await fetch('/api/asset/image/store', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dataUrl, filenameHint }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`Store image failed (HTTP ${resp.status})${text ? `: ${text}` : ''}`);
+    }
+    const json = (await resp.json().catch(() => null)) as any;
+    const url = String(json?.imageUrl || '').trim();
+    if (!url) throw new Error('Store image failed: missing imageUrl');
+    return url;
+  };
+
+  const imageUrlToPngDataUrl = async (imageUrl: string, crop: { x: number; y: number; w: number; h: number }) => {
+    const res = await fetch(imageUrl, { cache: 'no-store' as any });
+    if (!res.ok) throw new Error(`Fetch image failed (HTTP ${res.status})`);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const img = new Image();
+      img.decoding = 'async';
+      img.crossOrigin = 'anonymous';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to decode image'));
+        img.src = objectUrl;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.floor(crop.w));
+      canvas.height = Math.max(1, Math.floor(crop.h));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas not supported');
+      ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, canvas.width, canvas.height);
+      return await new Promise<string>((resolve, reject) => {
+        canvas.toBlob(
+          (b) => {
+            if (!b) return reject(new Error('Canvas export failed'));
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Read blob failed'));
+            reader.readAsDataURL(b);
+          },
+          'image/png',
+          0.92,
+        );
+      });
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+
+  const getActivePreviewImageUrl = () => {
+    if (!activeVersion) return '';
+    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+    const panels = Array.isArray(group?.panels) ? group.panels : [];
+    if (String((activeVersion as any)?.type || '') !== 'panel_group' || !panels.length) {
+      return String(activeVersion.imageUrl || '').trim();
+    }
+    const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
+    const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
+    return String(hit?.imageUrl || activeVersion.imageUrl || '').trim();
+  };
+
+  const handleSplitGrid = async () => {
+    if (isSplittingGrid || !activeVersion) return;
+    if (String((activeVersion as any)?.type || '') === 'panel_group') return;
+    if (!String(activeVersion.imageUrl || '').trim()) return;
+    setSplitError(null);
+    setIsSplittingGrid(true);
+    const gridVersion = activeVersion;
+    let panelCount = getPanelCount();
+    const pcMeta = Number((gridVersion as any)?.metadata?.keyframe?.panelCount);
+    if (!(pcMeta === 4 || pcMeta === 9)) {
+      const wants9 = window.confirm('Split as 3x3 (9 panels)? Click Cancel for 2x2 (4 panels).');
+      panelCount = wants9 ? 9 : 4;
+    }
+    const gridLabel = panelCount === 9 ? '3x3' : '2x2';
+    const startedAt = Date.now();
+    try {
+      const res = await fetch(String(gridVersion.imageUrl || '').trim(), { cache: 'no-store' as any });
+      if (!res.ok) throw new Error(`Fetch grid image failed (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      let width = 0;
+      let height = 0;
+      try {
+        const img = new Image();
+        img.decoding = 'async';
+        img.crossOrigin = 'anonymous';
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error('Failed to decode grid image'));
+          img.src = objectUrl;
+        });
+        width = img.naturalWidth || img.width;
+        height = img.naturalHeight || img.height;
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      if (!width || !height) throw new Error('Grid image has invalid dimensions');
+
+      const panels = computeGridPanelBBoxes({ panelCount, insetPct: 0.035 });
+      const storedPanels = await Promise.all(
+        panels.map(async (p) => {
+          const crop = {
+            x: Math.round(p.bbox.x * width),
+            y: Math.round(p.bbox.y * height),
+            w: Math.round(p.bbox.w * width),
+            h: Math.round(p.bbox.h * height),
+          };
+          const dataUrl = await imageUrlToPngDataUrl(gridVersion.imageUrl, crop);
+          const imageUrl = await storeImageDataUrl(dataUrl, `shot-${shot.sequence}-panel-${p.index + 1}`);
+          return { index: p.index, imageUrl, bbox: p.bbox };
+        }),
+      );
+
+      const now = Date.now();
+      const existing = Array.isArray(shot.versions) ? shot.versions : [];
+      const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+      const baseList = cleaned.length ? cleaned : existing;
+      const groupVersion: ShotVersion = {
+        id: `v${baseList.length + 1}-${now}`,
+        imageUrl: storedPanels[0]?.imageUrl || gridVersion.imageUrl,
+        createdAt: now,
+        type: 'panel_group',
+        metadata: {
+          ...(gridVersion.metadata || {}),
+          keyframe: { mode: 'contact_sheet', panelCount, grid: gridLabel },
+          source: { sourceType: 'grid_panel_group', sourceGridId: gridVersion.id },
+          panelGroup: {
+            kind: 'stack',
+            activeIndex: 0,
+            panels: storedPanels.map((p) => ({ index: p.index, imageUrl: p.imageUrl, bbox: p.bbox })),
+          },
+        } as any,
+      };
+
+      addDebugEvent({
+        level: 'info',
+        scope: 'asset.image',
+        message: 'Split grid into panels',
+        data: { shotId: shot.id, gridVersionId: gridVersion.id, panelCount, panels: storedPanels.length, ms: Date.now() - startedAt },
+      });
+
+      onUpdateShot({
+        ...shot,
+        versions: [...baseList, groupVersion],
+        activeVersionId: groupVersion.id,
+        thumbnailUrl: groupVersion.imageUrl,
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      setSplitError(err);
+      addDebugEvent({ level: 'error', scope: 'asset.image', message: 'Split grid failed', data: { error: err } });
+    } finally {
+      setIsSplittingGrid(false);
+    }
+  };
+
+  const refineFromActivePanel = async () => {
+    if (isBusyGenerating || !activeVersion) return;
+    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+    const panels = Array.isArray(group?.panels) ? group.panels : [];
+    if (!panels.length) return;
+    const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
+    const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
+    const panelUrl = String(hit?.imageUrl || '').trim();
+    if (!panelUrl) return;
+
+    const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
+    const references: ImageReference[] = [{ url: panelUrl, label: `grid panel ${idx + 1}` }, ...parentRefs].slice(0, 6);
+
+    const settings =
+      imageSettings || {
+        provider: 'mock',
+        model: 'mock',
+        temperature: 0.5,
+      };
+
+    const loc = story?.locations?.find((l) => l.id === shot.locationId);
+    const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
+    const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+    const castArr = Array.isArray(cast) ? cast : [];
+    const castNames = (castArr || [])
+      .map((c: any) => {
+        const master = story?.characters?.find((x) => x.id === String(c?.id || ''));
+        if (!master) return null;
+        const activeLookId = String(c?.activeLookId || '');
+        const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
+        return `${master.name}${look?.name ? ` (${look.name})` : ''}`;
+      })
+      .filter(Boolean) as string[];
+
+    const prompt = buildShotSingleFramePrompt({
+      shot,
+      styleGuide,
+      environmentName: loc?.name,
+      environmentStyle: String(loc?.visualStyle || '').trim(),
+      castNames,
+      focusBeat: `Panel ${idx + 1} of ${panels.length}`,
+    });
+
+    const startedAt = Date.now();
+    setIsGenerating(true);
+    setGenerationError(null);
+    try {
+      const img = await generateImageFromPrompt({
+        prompt,
+        settings,
+        aspectRatio,
+        references,
+        promptSpec: {
+          kind: 'shot',
+          styleGuide,
+          aspectRatio,
+          keyframeMode: 'single_frame',
+          source: {
+            sourceType: 'grid_panel_group',
+            sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+            panelIndex: idx,
+          },
+          environment: loc ? { name: loc.name, description: loc.description, visualStyle: loc.visualStyle } : null,
+          cast: castNames,
+          shot: {
+            id: shot.id,
+            description: shot.description,
+            timeOfDay: shot.timeOfDay,
+            duration: shot.duration,
+            script: String((shot.elements as any)?.SCRIPT?.prompt || '').trim(),
+            camera: String((shot.elements as any)?.CAMERA?.prompt || '').trim(),
+            lighting: String((shot.elements as any)?.LIGHTING?.prompt || '').trim(),
+            audio: String((shot.elements as any)?.AUDIO?.prompt || '').trim(),
+          },
+        },
+        composePrompt: true,
+        composeSettings: { model: 'gemini-3-pro-preview', temperature: 0.2, maxOutputTokens: 512 },
+        strict: true,
+        requireAllReferences: references.length > 0,
+      });
+
+      const versionMeta: any = {
+        prompt,
+        references,
+        settings: {
+          provider: settings.provider,
+          model: settings.model,
+          temperature: settings.temperature,
+        },
+        aspectRatio,
+        keyframe: { mode: 'single_frame' },
+        source: {
+          sourceType: 'single',
+          sourcePanelGroupId: activeVersion.id,
+          sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+          panelIndex: idx,
+          panelBBox: (hit as any)?.bbox,
+        },
+      };
+
+      const now = Date.now();
+      const existing = Array.isArray(shot.versions) ? shot.versions : [];
+      const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+      const baseList = cleaned.length ? cleaned : existing;
+      const newVersion: ShotVersion = {
+        id: `v${baseList.length + 1}-${now}`,
+        imageUrl: img.imageUrl,
+        createdAt: now,
+        type: 'variation',
+        metadata: versionMeta,
+      };
+
+      addDebugEvent({
+        level: 'info',
+        scope: 'asset.image',
+        message: 'Refine from grid panel',
+        data: { ms: Date.now() - startedAt, panelIndex: idx, imageUrl: img.imageUrl },
+      });
+
+      onUpdateShot({
+        ...shot,
+        versions: [...baseList, newVersion],
+        activeVersionId: newVersion.id,
+        thumbnailUrl: newVersion.imageUrl,
+        aiState: 'idle',
+        aiPrompt: '',
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      setGenerationError(err);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   const selectVideoVariant = (variantId: string) => {
     const hit = scopedVideoVariants.find((v) => v.id === variantId);
@@ -260,16 +583,17 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         strict: true,
         requireAllReferences: references.length > 0,
       });
-      const versionMeta = {
-        prompt: fullPrompt,
-        references,
-        settings: {
-          provider: settings.provider,
-          model: settings.model,
-          temperature: settings.temperature,
-        },
-        aspectRatio,
-      };
+	      const versionMeta = {
+	        prompt: fullPrompt,
+	        references,
+	        settings: {
+	          provider: settings.provider,
+	          model: settings.model,
+	          temperature: settings.temperature,
+	        },
+	        aspectRatio,
+	        keyframe: { mode: 'contact_sheet' as const, panelCount, grid: panelCount === 9 ? '3x3' as const : '2x2' as const },
+	      };
 
       const now = Date.now();
       const existing = Array.isArray(shot.versions) ? shot.versions : [];
@@ -407,12 +731,28 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 )}
               </div>
             )}
-             <button className="flex items-center gap-2 bg-white text-black hover:bg-zinc-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-white/5">
-                <Download className="w-3.5 h-3.5" />
-                Export Frame
-            </button>
-        </div>
-      </div>
+	             <button className="flex items-center gap-2 bg-white text-black hover:bg-zinc-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-white/5">
+	                <Download className="w-3.5 h-3.5" />
+	                Export Frame
+	            </button>
+	            {activeVersion && !isPlaceholderActive && isContactSheetGrid && String((activeVersion as any)?.type || '') !== 'panel_group' && (
+	              <button
+	                type="button"
+	                onClick={() => void handleSplitGrid()}
+	                disabled={isSplittingGrid}
+	                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg ${
+	                  isSplittingGrid
+	                    ? 'bg-white/10 text-white/50 cursor-not-allowed shadow-white/5'
+	                    : 'bg-indigo-500 text-white hover:bg-indigo-400 shadow-indigo-500/20'
+	                }`}
+	                title="Split contact-sheet grid into panels (creates a stack group)"
+	              >
+	                <Layers className={`w-3.5 h-3.5 ${isSplittingGrid ? 'animate-spin' : ''}`} />
+	                Split Grid
+	              </button>
+	            )}
+	        </div>
+	      </div>
 
       {/* Main Preview Area */}
       <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
@@ -466,23 +806,79 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                         </div>
                       )}
                     </>
-                ) : activeVersion ? (
-                    isPlaceholderActive ? (
-                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
-                        <MonitorPlay className="w-14 h-14 opacity-50" />
-                        <span>Placeholder</span>
-                      </div>
-                    ) : (
-                      <img 
-                          src={activeVersion.imageUrl} 
-                          alt={`Shot ${shot.sequence} - Version ${activeVersion.id}`}
-                          className="w-full h-full object-contain bg-black cursor-zoom-in"
-                          onClick={() => activeVersion?.imageUrl && openLightbox({ url: activeVersion.imageUrl, title: `Shot #${shot.sequence}` })}
-                      />
-                    )
-                ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
-                        <MonitorPlay className="w-12 h-12 opacity-50" />
+	                ) : activeVersion ? (
+	                    isPlaceholderActive ? (
+	                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
+	                        <MonitorPlay className="w-14 h-14 opacity-50" />
+	                        <span>Placeholder</span>
+	                      </div>
+	                    ) : (
+	                      <>
+	                        <img 
+	                            src={getActivePreviewImageUrl()} 
+	                            alt={`Shot ${shot.sequence} - Version ${activeVersion.id}`}
+	                            className="w-full h-full object-contain bg-black cursor-zoom-in"
+	                            onClick={() => {
+	                              const url = getActivePreviewImageUrl();
+	                              if (url) openLightbox({ url, title: `Shot #${shot.sequence}` });
+	                            }}
+	                        />
+	                        {String((activeVersion as any)?.type || '') === 'panel_group' && (
+	                          <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
+	                            <div className="px-2.5 py-1 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-bold uppercase tracking-wider">
+	                              Stack
+	                            </div>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                const group: any = (activeVersion as any)?.metadata?.panelGroup;
+	                                const panels = Array.isArray(group?.panels) ? group.panels : [];
+	                                if (!panels.length) return;
+	                                setActivePanelIndex((prev) => (prev - 1 + panels.length) % panels.length);
+	                              }}
+	                              className="w-8 h-8 rounded-full bg-black/60 border border-white/20 text-white flex items-center justify-center hover:bg-black/75"
+	                              title="Previous panel"
+	                            >
+	                              <ChevronLeft className="w-4 h-4" />
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                const group: any = (activeVersion as any)?.metadata?.panelGroup;
+	                                const panels = Array.isArray(group?.panels) ? group.panels : [];
+	                                if (!panels.length) return;
+	                                setActivePanelIndex((prev) => (prev + 1) % panels.length);
+	                              }}
+	                              className="w-8 h-8 rounded-full bg-black/60 border border-white/20 text-white flex items-center justify-center hover:bg-black/75"
+	                              title="Next panel"
+	                            >
+	                              <ChevronRight className="w-4 h-4" />
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                void refineFromActivePanel();
+	                              }}
+	                              disabled={isBusyGenerating}
+	                              className={`px-3 py-2 rounded-full border text-[10px] font-black uppercase tracking-widest ${
+	                                isBusyGenerating
+	                                  ? 'bg-white/5 border-white/10 text-white/50 cursor-not-allowed'
+	                                  : 'bg-white/10 border-white/20 text-white hover:bg-white/15'
+	                              }`}
+	                              title="Regenerate a single-frame image from this panel"
+	                            >
+	                              Refine
+	                            </button>
+	                          </div>
+	                        )}
+	                      </>
+	                    )
+	                ) : (
+	                    <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
+	                        <MonitorPlay className="w-12 h-12 opacity-50" />
                         <span>No generated keyframe</span>
                     </div>
                 )}
@@ -565,11 +961,16 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                           />
                         )}
                         
-                        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
-                            v{versionNumber}
-                        </div>
-                        {version.metadata && (
-                          <button
+	                        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
+	                            v{versionNumber}
+	                        </div>
+	                        {String((version as any)?.type || '') === 'panel_group' && Array.isArray((version as any)?.metadata?.panelGroup?.panels) && (
+	                          <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
+	                            stack {((version as any).metadata.panelGroup.panels as any[]).length}
+	                          </div>
+	                        )}
+	                        {version.metadata && (
+	                          <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setVersionInfo(version);
@@ -610,14 +1011,21 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 );
             })}
         </div>
-        {generationError && !isImmersive && (
-          <div className="px-4 pb-4">
-            <div className="text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
-              Generate failed: {generationError}
-            </div>
-          </div>
-        )}
-      </div>
+	        {generationError && !isImmersive && (
+	          <div className="px-4 pb-4">
+	            <div className="text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
+	              Generate failed: {generationError}
+	            </div>
+	          </div>
+	        )}
+	        {splitError && !isImmersive && (
+	          <div className="px-4 pb-4">
+	            <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-2xl p-3">
+	              Split grid failed: {splitError}
+	            </div>
+	          </div>
+	        )}
+	      </div>
       {versionInfo && (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[60]" onClick={() => setVersionInfo(null)}>
           <div

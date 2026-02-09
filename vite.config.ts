@@ -1361,9 +1361,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	      }
 	    });
 
-    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
-      if (req.method !== 'POST') return next();
-      const body = await readJsonBody(req);
+	    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'POST') return next();
+	      const body = await readJsonBody(req);
 
       const prompt = String(body?.prompt || '').trim();
       const promptSpec = body?.promptSpec && typeof body.promptSpec === 'object' ? body.promptSpec : null;
@@ -1969,11 +1969,45 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           },
         });
       }
-    });
+	    });
 
-		    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
-		      if (req.method !== 'POST') return next();
-		        const body = await readJsonBody(req);
+	    // Store client-generated (e.g. cropped) images into the local generated-assets directory.
+	    // This keeps ShotVersion.imageUrl small (`/__generated__/...`) instead of embedding huge data URLs.
+	    middlewares.use('/api/asset/image/store', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'POST') return next();
+	      const body = await readJsonBody(req);
+	      const dataUrl = String(body?.dataUrl || '').trim();
+	      const filenameHint = String(body?.filenameHint || '').trim();
+	      if (!dataUrl.startsWith('data:image/')) return sendJson(res, 400, { ok: false, error: 'Expected dataUrl (data:image/*;base64,...)' });
+	      const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(dataUrl);
+	      if (!m) return sendJson(res, 400, { ok: false, error: 'Invalid dataUrl' });
+	      const mimeType = String(m[1] || 'image/png').toLowerCase();
+	      const b64 = String(m[2] || '');
+	      let bytes: Buffer;
+	      try {
+	        bytes = Buffer.from(b64, 'base64');
+	      } catch {
+	        return sendJson(res, 400, { ok: false, error: 'Invalid base64' });
+	      }
+	      if (!bytes.length) return sendJson(res, 400, { ok: false, error: 'Empty image bytes' });
+	      // Avoid OOM / accidental giant payloads.
+	      if (bytes.length > 12 * 1024 * 1024) return sendJson(res, 413, { ok: false, error: 'Image too large (max 12MB)' });
+
+	      const ext =
+	        mimeType === 'image/jpeg' ? '.jpg' :
+	          mimeType === 'image/webp' ? '.webp' :
+	            '.png';
+	      ensureGeneratedDir();
+	      const hash = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+	      const safeHint = filenameHint.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 48);
+	      const filename = `${Date.now()}-${safeHint ? `${safeHint}-` : ''}${hash}${ext}`;
+	      fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), bytes);
+	      return sendJson(res, 200, { ok: true, imageUrl: `/__generated__/${filename}`, mimeType, bytes: bytes.length });
+	    });
+
+			    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
+			      if (req.method !== 'POST') return next();
+			        const body = await readJsonBody(req);
 
 		        const prompt = String(body?.prompt || '').trim();
 		        const promptSpec = body?.promptSpec;

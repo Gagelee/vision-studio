@@ -130,6 +130,27 @@ export interface ShotVersion {
       temperature?: number;
     };
     aspectRatio?: string;
+    keyframe?: {
+      mode?: 'contact_sheet' | 'single_frame';
+      panelCount?: 4 | 9;
+      grid?: '2x2' | '3x3';
+    };
+    source?: {
+      sourceType?: 'single' | 'grid_panel_group' | 'grid_panel' | 'unknown';
+      sourceGridId?: string;
+      sourcePanelGroupId?: string;
+      panelIndex?: number;
+      panelBBox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
+    };
+    panelGroup?: {
+      kind?: 'stack';
+      activeIndex?: number;
+      panels?: Array<{
+        index: number;
+        imageUrl: string;
+        bbox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
+      }>;
+    };
   };
 }
 
