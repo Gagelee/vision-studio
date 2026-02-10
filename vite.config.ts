@@ -1486,6 +1486,27 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   const pipelineRateLimitPerMin = Math.max(1, Math.min(2000, Number(env.VISION_PIPELINE_RATE_LIMIT_PER_MINUTE || 120)));
   const pipelineMaxAttempts = Math.max(1, Math.min(5, Number(env.VISION_PIPELINE_MAX_ATTEMPTS || 2)));
   const pipelineAuditDir = path.resolve(process.cwd(), '.vision-audit');
+  const pipelineStateDir = path.resolve(process.cwd(), '.vision-pipeline');
+  const pipelineStateFile = path.join(pipelineStateDir, 'tasks.json');
+  type PipelineTaskState = {
+    id: string;
+    route: string;
+    kind: PipelineKind;
+    userId: string;
+    status: 'queued' | 'running' | 'success' | 'failed';
+    enqueuedAt: number;
+    startedAt?: number;
+    endedAt?: number;
+    attempts: number;
+    statusCode?: number;
+    error?: string;
+    waitMs?: number;
+    durationMs?: number;
+  };
+  const pipelineTaskStateById = new Map<string, PipelineTaskState>();
+  const pipelineTaskStateOrder: string[] = [];
+  const pipelineTaskStateLimit = Math.max(200, Math.min(10_000, Number(env.VISION_PIPELINE_TASK_HISTORY_LIMIT || 2000)));
+  let pipelineStateFlushTimer: any = null;
   const pipelineQueueByUser = new Map<string, QueuedTask[]>();
   const pipelineRunningByUser = new Map<string, number>();
   const pipelineRateWindows = new Map<string, { minute: number; count: number }>();
@@ -1504,6 +1525,57 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       // ignore audit errors
     }
   };
+
+  const scheduleFlushPipelineTaskState = () => {
+    if (pipelineStateFlushTimer) return;
+    pipelineStateFlushTimer = setTimeout(() => {
+      pipelineStateFlushTimer = null;
+      try {
+        fs.mkdirSync(pipelineStateDir, { recursive: true });
+        const tasks = pipelineTaskStateOrder
+          .map((id) => pipelineTaskStateById.get(id))
+          .filter(Boolean);
+        fs.writeFileSync(pipelineStateFile, JSON.stringify({ updatedAt: Date.now(), tasks }, null, 2));
+      } catch {
+        // ignore persistence errors
+      }
+    }, 250);
+  };
+
+  const upsertPipelineTaskState = (task: PipelineTaskState) => {
+    if (!pipelineTaskStateById.has(task.id)) pipelineTaskStateOrder.unshift(task.id);
+    pipelineTaskStateById.set(task.id, task);
+    while (pipelineTaskStateOrder.length > pipelineTaskStateLimit) {
+      const id = pipelineTaskStateOrder.pop();
+      if (id) pipelineTaskStateById.delete(id);
+    }
+    scheduleFlushPipelineTaskState();
+  };
+
+  const loadPipelineTaskState = () => {
+    try {
+      const raw = fs.readFileSync(pipelineStateFile, 'utf-8');
+      const parsed = JSON.parse(raw) as { tasks?: PipelineTaskState[] };
+      const items = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+      for (const t of items.slice(0, pipelineTaskStateLimit)) {
+        if (!t || typeof t !== 'object' || !t.id) continue;
+        const recovered: PipelineTaskState =
+          t.status === 'running'
+            ? {
+                ...t,
+                status: 'failed',
+                endedAt: Date.now(),
+                error: t.error || 'Recovered after process restart',
+              }
+            : t;
+        pipelineTaskStateById.set(recovered.id, recovered);
+        pipelineTaskStateOrder.push(recovered.id);
+      }
+    } catch {
+      // ignore missing/corrupt state file
+    }
+  };
+  loadPipelineTaskState();
 
   const takePipelineRateToken = (userId: string, kind: PipelineKind) => {
     const minute = Math.floor(Date.now() / 60_000);
@@ -1565,6 +1637,20 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       kind: args.kind,
       enqueuedAt: Date.now(),
     };
+    upsertPipelineTaskState({
+      id: tokenBase.id,
+      route: args.route,
+      kind: args.kind,
+      userId,
+      status: 'queued',
+      enqueuedAt: tokenBase.enqueuedAt,
+      attempts: 0,
+    });
+    try {
+      if (res && typeof res.setHeader === 'function') res.setHeader('x-vision-task-id', tokenBase.id);
+    } catch {
+      // ignore header errors
+    }
     const queue = pipelineQueueByUser.get(userId) || [];
     if (queue.length >= pipelineMaxQueuePerUser) {
       appendPipelineAudit({
@@ -1601,6 +1687,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
     pipelineQueueByUser.set(userId, queue);
     pumpPipelineQueueForUser(userId);
     const startedToken = await started;
+    const prev = pipelineTaskStateById.get(startedToken.id);
+    upsertPipelineTaskState({
+      ...(prev as PipelineTaskState),
+      id: startedToken.id,
+      route: args.route,
+      kind: args.kind,
+      userId,
+      status: 'running',
+      enqueuedAt: startedToken.enqueuedAt,
+      startedAt: startedToken.startedAt,
+      attempts: Math.max(1, Number(prev?.attempts || 0)),
+      waitMs: startedToken.startedAt - startedToken.enqueuedAt,
+    });
     appendPipelineAudit({
       type: 'pipeline.started',
       route: args.route,
@@ -1627,6 +1726,23 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       statusCode: args.statusCode || 0,
       error: args.error ? formatFetchError(args.error) : undefined,
     });
+    const prev = pipelineTaskStateById.get(token.id);
+    upsertPipelineTaskState({
+      ...(prev as PipelineTaskState),
+      id: token.id,
+      route: args.route,
+      kind: token.kind,
+      userId: token.userId,
+      status: args.ok ? 'success' : 'failed',
+      enqueuedAt: Number(prev?.enqueuedAt || token.enqueuedAt || Date.now()),
+      startedAt: Number(prev?.startedAt || token.startedAt || Date.now()),
+      endedAt: Date.now(),
+      attempts: Math.max(1, Number(prev?.attempts || token.attempt || 1)),
+      statusCode: Number(args.statusCode || 0) || undefined,
+      error: args.error ? formatFetchError(args.error) : undefined,
+      waitMs: prev?.waitMs,
+      durationMs: Date.now() - Number(prev?.startedAt || token.startedAt || Date.now()),
+    });
     pumpPipelineQueueForUser(token.userId);
   };
 
@@ -1640,6 +1756,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
     let lastErr: any = null;
     try {
       for (let attempt = 1; attempt <= pipelineMaxAttempts; attempt++) {
+        const prev = pipelineTaskStateById.get(token.id);
+        if (prev) {
+          upsertPipelineTaskState({
+            ...prev,
+            attempts: Math.max(Number(prev.attempts || 0), attempt),
+            status: 'running',
+          });
+        }
         try {
           return await args.run();
         } catch (e: any) {
@@ -1685,6 +1809,34 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           queueByUser,
           runningByUser,
         });
+      });
+
+      middlewares.use('/api/pipeline/tasks', async (req: any, res: any, next: any) => {
+        if (req.method !== 'GET') return next();
+        const full = String(req?.url || '');
+        const [pathnameRaw, queryRaw] = full.split('?');
+        const pathname = String(pathnameRaw || '');
+        const base = '/api/pipeline/tasks';
+        const query = new URLSearchParams(String(queryRaw || ''));
+        if (pathname === base || pathname === `${base}/`) {
+          const limit = Math.max(1, Math.min(500, Number(query.get('limit') || 100)));
+          const userId = normalizeUserId(query.get('userId') || '');
+          const status = String(query.get('status') || '').trim();
+          const out = pipelineTaskStateOrder
+            .map((id) => pipelineTaskStateById.get(id))
+            .filter(Boolean)
+            .filter((t) => (userId ? t!.userId === userId : true))
+            .filter((t) => (status ? t!.status === status : true))
+            .slice(0, limit);
+          return sendJson(res, 200, { ok: true, count: out.length, tasks: out as any });
+        }
+        if (pathname.startsWith(`${base}/`)) {
+          const id = decodeURIComponent(pathname.slice(`${base}/`.length));
+          const task = pipelineTaskStateById.get(id);
+          if (!task) return sendJson(res, 404, { ok: false, error: 'Task not found' });
+          return sendJson(res, 200, { ok: true, task });
+        }
+        return next();
       });
 
 	    middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
