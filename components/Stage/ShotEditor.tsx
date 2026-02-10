@@ -406,6 +406,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
               model: settings.model,
               temperature: settings.temperature,
             },
+            describe,
           },
         };
       });
@@ -544,6 +545,10 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         metadata: {
           ...((activeVersion as any)?.metadata || {}),
           prompt,
+          refine: {
+            prompt,
+            describe,
+          },
           references,
           settings: { provider: settings.provider, model: settings.model, temperature: settings.temperature },
           keyframe: { mode: 'single_frame' },
@@ -552,6 +557,10 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             originalImageUrl,
             refinedImageUrl: String(img.imageUrl || '').trim(),
             refinedAt: now,
+            sourceDescription: String(describe?.description || '').trim(),
+            refine: {
+              describe,
+            },
           },
         } as any,
       };
@@ -609,11 +618,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       metadata: {
         ...stripPanelGroupMeta(activeVersion.metadata || {}),
         keyframe: { mode: 'single_frame' },
+        refine: hit?.refine && typeof hit.refine === 'object' ? { ...hit.refine } : undefined,
         source: {
           sourceType: 'grid_panel',
           sourcePanelGroupId: activeVersion.id,
           sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
           originalImageUrl: panelUrl,
+          sourceDescription: String((hit as any)?.refine?.describe?.description || '').trim(),
+          refine: (hit as any)?.refine && typeof (hit as any).refine === 'object' ? { describe: (hit as any).refine.describe } : undefined,
           panelIndex: idx,
           panelBBox: (hit as any)?.bbox,
         },
@@ -651,11 +663,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         metadata: {
           ...stripPanelGroupMeta(activeVersion.metadata || {}),
           keyframe: { mode: 'single_frame' },
+          refine: p?.refine && typeof p.refine === 'object' ? { ...p.refine } : undefined,
           source: {
             sourceType: 'grid_panel',
             sourcePanelGroupId: activeVersion.id,
             sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
             originalImageUrl: panelUrl || String(activeVersion.imageUrl || '').trim(),
+            sourceDescription: String((p as any)?.refine?.describe?.description || '').trim(),
+            refine: (p as any)?.refine && typeof (p as any).refine === 'object' ? { describe: (p as any).refine.describe } : undefined,
             panelIndex: Number(p?.index) || i,
             panelBBox: p?.bbox,
           },

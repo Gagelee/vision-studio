@@ -1,6 +1,7 @@
 import type { AiSettings, AspectRatio, ElementType, Shot, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from './image/generate';
 import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, getStoryActiveKvUrl, isLikelyPlaceholderImageUrl } from './assetRefs';
+import { normalizeStorySceneModel } from '../story/sceneModel';
 import {
   buildMasterKeyVisualPrompt,
   buildCharacterAvatarPrompt,
@@ -119,7 +120,7 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
   }
 
   // shot
-  return {
+  return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== job.sequenceId) return seq;
@@ -132,7 +133,7 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
         ),
       };
     }),
-  };
+  });
 };
 
 export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
@@ -176,7 +177,7 @@ export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
   }
 
   // shot
-  return {
+  return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== job.sequenceId) return seq;
@@ -185,7 +186,7 @@ export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
         shots: seq.shots.map((s) => (s.id === job.shot.id ? { ...s, assetState: bumpState((s as any).assetState, patch) } : s)),
       };
     }),
-  };
+  });
 };
 
 export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): Story => {
@@ -217,7 +218,7 @@ export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): 
       }),
     };
   }
-  return {
+  return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== job.sequenceId) return seq;
@@ -228,7 +229,7 @@ export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): 
         ),
       };
     }),
-  };
+  });
 };
 
 export const applyAssetError = (story: Story, job: AssetJob, error: string): Story => {
@@ -260,7 +261,7 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
       }),
     };
   }
-  return {
+  return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== job.sequenceId) return seq;
@@ -271,7 +272,7 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
         ),
       };
     }),
-  };
+  });
 };
 
 export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, meta?: any): Story => {
@@ -463,7 +464,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
   }
 
   // shot
-  return {
+  return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== job.sequenceId) return seq;
@@ -504,7 +505,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
         }),
       };
     }),
-  };
+  });
 };
 
 const runPool = async <T,>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) => {

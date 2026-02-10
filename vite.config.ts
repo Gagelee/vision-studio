@@ -1484,6 +1484,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       const prompt = String(body?.prompt || '').trim();
       const promptSpec = body?.promptSpec && typeof body.promptSpec === 'object' ? body.promptSpec : null;
       const imageUrl = String(body?.imageUrl || '').trim();
+      const referenceImageUrls = (Array.isArray(body?.referenceImageUrls) ? body.referenceImageUrls : [])
+        .map((u: any) => String(u || '').trim())
+        .filter(Boolean)
+        .slice(0, 12);
       const durationRaw = Number(body?.durationSeconds ?? 6);
       const durationSeconds = durationRaw === 4 || durationRaw === 6 || durationRaw === 8 ? durationRaw : 6;
       const aspectRatio = String(body?.aspectRatio || '16:9').trim() === '9:16' ? '9:16' : '16:9';
@@ -1500,7 +1504,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       // Veo must call direct Gemini. Do NOT route through Compass gateway.
       if (!geminiDirectApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
 
-      const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any): string => {
+      const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any, refUrls: string[]): string => {
         const core = String(basePrompt || '').trim();
         const hasLabel = (labels: string[]) => {
           if (!core) return false;
@@ -1513,8 +1517,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const parts: string[] = [];
         parts.push('Image-to-video: use the provided image as the starting frame; preserve subject identity and environment continuity.');
         if (core) parts.push(`Core direction: ${core}`);
+        pushIfMissing(['current frame', 'frame description'], spec?.frameDescription ? `Current frame: ${String(spec.frameDescription).trim()}` : '');
+        pushIfMissing(['story context', 'narrative context'], spec?.storyContext ? `Story context: ${String(spec.storyContext).trim()}` : '');
         pushIfMissing(['scene'], spec?.shotDescription ? `Scene: ${String(spec.shotDescription).trim()}` : '');
+        pushIfMissing(['acting direction', 'performance direction'], spec?.actingDirection ? `Acting direction: ${String(spec.actingDirection).trim()}` : '');
         pushIfMissing(['action'], spec?.action ? `Action: ${String(spec.action).trim()}` : '');
+        pushIfMissing(['dialogue'], Array.isArray(spec?.dialogue) && spec.dialogue.length ? `Dialogue: ${spec.dialogue.map((x: any) => `"${String(x || '').trim()}"`).join(' ')}` : '');
+        pushIfMissing(['director notes'], spec?.directorNotes ? `Director notes: ${String(spec.directorNotes).trim()}` : '');
+        pushIfMissing(['cameraman', 'camera plan'], spec?.cameraman ? `Cameraman plan: ${String(spec.cameraman).trim()}` : '');
         pushIfMissing(['camera motion', 'camera'], spec?.camera ? `Camera motion: ${String(spec.camera).trim()}` : '');
         pushIfMissing(['composition'], spec?.composition ? `Composition: ${String(spec.composition).trim()}` : '');
         pushIfMissing(['lens/look', 'lens'], spec?.lensEffect ? `Lens/look: ${String(spec.lensEffect).trim()}` : '');
@@ -1527,6 +1537,23 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           });
         pushIfMissing(['style translation hints', 'style intent'], inferredStyle ? `Style translation hints: ${inferredStyle}.` : '');
         pushIfMissing(['audio intent', 'audio'], spec?.audio ? `Audio intent: ${String(spec.audio).trim()}` : '');
+        if (Array.isArray(spec?.referenceFrames) && spec.referenceFrames.length) {
+          const frameSummary = spec.referenceFrames
+            .slice(0, 8)
+            .map((f: any, i: number) => {
+              const idx = Number.isFinite(Number(f?.panelIndex)) ? `#${Number(f.panelIndex) + 1}` : `#${i + 1}`;
+              const d = String(f?.description || '').trim().slice(0, 180);
+              return d ? `${idx} ${d}` : idx;
+            })
+            .join(' | ');
+          pushIfMissing(['reference frames', 'reference bundle'], frameSummary ? `Reference frame bundle: ${frameSummary}` : '');
+        }
+        if (refUrls.length > 1) {
+          parts.push(
+            `Additional references: ${refUrls.length} images provided as context. ` +
+              'Current Gemini path uses the first frame as source image; keep continuity with all provided references.',
+          );
+        }
         const constraints = Array.isArray(spec?.constraints) ? spec.constraints : [];
         pushIfMissing(['constraints'], constraints.length ? `Constraints: ${constraints.map((x: any) => String(x).trim()).filter(Boolean).join(' ')}` : '');
         if (!/motion quality\s*:/i.test(core)) {
@@ -1538,7 +1565,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         return parts.join('\n').slice(0, 8000);
       };
 
-      const promptUsed = composeVeoImageToVideoPrompt(prompt, promptSpec);
+      const promptUsed = composeVeoImageToVideoPrompt(prompt, promptSpec, referenceImageUrls);
 
       const loadImage = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
         const u = String(url || '').trim();
@@ -1976,7 +2003,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         }
 
         if (videoBytes && videoBytes.length) {
-          const hash = crypto.createHash('sha256').update(`${model}\n${durationSeconds}\n${aspectRatio}\n${promptUsed}\n${imageUrl}`).digest('hex').slice(0, 16);
+          const hash = crypto
+            .createHash('sha256')
+            .update(`${model}\n${durationSeconds}\n${aspectRatio}\n${promptUsed}\n${imageUrl}\n${referenceImageUrls.join('\n')}`)
+            .digest('hex')
+            .slice(0, 16);
           const filename = `${Date.now()}-${hash}.mp4`;
           fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), videoBytes);
           return sendJson(res, 200, {
@@ -1993,6 +2024,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               bytes: videoBytes.length,
               promptPreview: prompt.slice(0, 240),
               promptUsedPreview: promptUsed.slice(0, 320),
+              referenceImageCount: referenceImageUrls.length,
               requestParameters: predictParamsUsed,
               uriCandidates: Array.from(uriCandidates).slice(0, 16),
             },
@@ -2033,6 +2065,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               raiReasons,
               promptPreview: prompt.slice(0, 240),
               promptUsedPreview: promptUsed.slice(0, 320),
+              referenceImageCount: referenceImageUrls.length,
             },
           });
         }
@@ -2082,6 +2115,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             imageUrlPreview: imageUrl.slice(0, 200),
             promptPreview: prompt.slice(0, 200),
             promptUsedPreview: promptUsed.slice(0, 320),
+            referenceImageCount: referenceImageUrls.length,
           },
         });
       }

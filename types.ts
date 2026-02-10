@@ -135,6 +135,19 @@ export interface ShotVersion {
       panelCount?: 4 | 9;
       grid?: '2x2' | '3x3';
     };
+    refine?: {
+      prompt?: string;
+      describe?: {
+        description?: string;
+        keySubjects?: string[];
+        environment?: string;
+        composition?: string;
+        camera?: string;
+        lighting?: string;
+        style?: string;
+        constraints?: string[];
+      };
+    };
     source?: {
       sourceType?: 'single' | 'grid_panel_group' | 'grid_panel' | 'manual_group' | 'unknown';
       sourceGridId?: string;
@@ -143,6 +156,19 @@ export interface ShotVersion {
       originalImageUrl?: string;
       refinedImageUrl?: string;
       refinedAt?: number;
+      sourceDescription?: string;
+      refine?: {
+        describe?: {
+          description?: string;
+          keySubjects?: string[];
+          environment?: string;
+          composition?: string;
+          camera?: string;
+          lighting?: string;
+          style?: string;
+          constraints?: string[];
+        };
+      };
       panelIndex?: number;
       panelBBox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
     };
@@ -159,6 +185,16 @@ export interface ShotVersion {
           prompt?: string;
           references?: Array<{ url: string; label?: string }>;
           settings?: { provider?: string; model?: string; temperature?: number };
+          describe?: {
+            description?: string;
+            keySubjects?: string[];
+            environment?: string;
+            composition?: string;
+            camera?: string;
+            lighting?: string;
+            style?: string;
+            constraints?: string[];
+          };
         };
         bbox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
       }>;
@@ -177,6 +213,9 @@ export interface ShotProductionVariant {
     prompt?: string;
     sourceImageUrl?: string;
     sourceShotVersionId?: string;
+    referenceImageUrls?: string[];
+    frameDescription?: string;
+    actingDirection?: string;
   };
 }
 

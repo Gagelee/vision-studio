@@ -4,6 +4,7 @@ import { addDebugEvent } from '../../debug/eventLog';
 export interface GenerateVideoFromImageRequest {
   prompt: string;
   imageUrl: string;
+  referenceImageUrls?: string[];
   durationSeconds: 4 | 6 | 8;
   aspectRatio?: AspectRatio;
   resolution?: '720p';
@@ -20,6 +21,13 @@ export interface GenerateVideoFromImageRequest {
     lensEffect?: string;
     mood?: string;
     audio?: string;
+    frameDescription?: string;
+    actingDirection?: string;
+    storyContext?: string;
+    dialogue?: string[];
+    cameraman?: string;
+    directorNotes?: string;
+    referenceFrames?: Array<{ url: string; description?: string; panelIndex?: number }>;
     constraints?: string[];
   };
 }
@@ -50,6 +58,7 @@ export const generateVideoFromImage = async (
       resolution: req.resolution || '720p',
       hasPrompt: Boolean(String(req.prompt || '').trim()),
       imageUrlPreview: String(req.imageUrl || '').slice(0, 160),
+      referenceImageCount: Array.isArray(req.referenceImageUrls) ? req.referenceImageUrls.length : 0,
     },
   });
 
@@ -66,6 +75,7 @@ export const generateVideoFromImage = async (
       body: JSON.stringify({
         prompt: String(req.prompt || ''),
         imageUrl: String(req.imageUrl || ''),
+        referenceImageUrls: Array.isArray(req.referenceImageUrls) ? req.referenceImageUrls : [],
         durationSeconds: req.durationSeconds,
         aspectRatio: req.aspectRatio || '16:9',
         resolution: req.resolution || '720p',

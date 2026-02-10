@@ -113,6 +113,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const storyRef = useRef<Story | null>(null);
   const completedRef = useRef(false);
   const stopUiUpdatesRef = useRef(false);
+  const isScaffoldRunningRef = useRef(false);
+  const activeRunIdRef = useRef(0);
+  const forcedProjectIdRef = useRef('');
   const preflightFileRef = useRef<HTMLInputElement | null>(null);
   const preflightMessagesRef = useRef<HTMLDivElement | null>(null);
   const preflightScrollTimeoutRef = useRef<number | null>(null);
@@ -223,6 +226,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     lastScaffoldArgsRef.current = null;
     completedRef.current = false;
     stopUiUpdatesRef.current = false;
+    isScaffoldRunningRef.current = false;
+    activeRunIdRef.current = 0;
+    forcedProjectIdRef.current = '';
   };
 
   const upsertStageDigest = (next: StageDigest) => {
@@ -331,8 +337,20 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     if (completedRef.current) return;
     completedRef.current = true;
     stopUiUpdatesRef.current = true;
+    isScaffoldRunningRef.current = false;
+    activeRunIdRef.current = 0;
     setIsProcessing(false);
     onComplete(project, planArg, debug);
+  };
+
+  const ensureRunProjectId = (story: Story): Story => {
+    const current = String(forcedProjectIdRef.current || '').trim();
+    if (!current) {
+      forcedProjectIdRef.current = `proj-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    }
+    const nextId = forcedProjectIdRef.current;
+    if (String(story.id || '') === nextId) return story;
+    return { ...story, id: nextId };
   };
 
   const readReferenceFiles = async (files: ArrayLike<File> | null | undefined) => {
@@ -524,7 +542,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     }
   };
 
-  const runAssets = async (res: Awaited<ReturnType<typeof scaffoldProjectWithSettings>>) => {
+  const runAssets = async (res: Awaited<ReturnType<typeof scaffoldProjectWithSettings>>, runId: number) => {
+    if (activeRunIdRef.current !== runId) return;
     // Auto-generate assets during creation so the progress UI is honest and users understand the wait.
     const ASSET_STAGE_TIMEOUT_MS = 6 * 60_000;
     let total = 0;
@@ -551,6 +570,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	          maxAttempts: 3,
 	          stopAfterMasterKvFailure: false,
 		          onEvent: (ev) => {
+                if (activeRunIdRef.current !== runId) return;
 			            const currentStory = storyRef.current || res.story;
                 if (stopUiUpdatesRef.current) {
                   if (ev.type === 'start') {
@@ -642,6 +662,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
             assetExec.then(() => 'done' as const),
             new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), ASSET_STAGE_TIMEOUT_MS)),
           ]);
+          if (activeRunIdRef.current !== runId) return;
           if (race === 'timeout') {
             const partial = storyRef.current || res.story;
             finishCreation(partial, res.plan, {
@@ -653,6 +674,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 	      }
     }
 
+    if (activeRunIdRef.current !== runId) return;
     const finalStory = storyRef.current || res.story;
     finishCreation(finalStory, res.plan, {
       ...res.debug,
@@ -660,9 +682,25 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     });
   };
 
-  const runScaffold = async (opts?: { allowSingleFallback?: boolean; intentOverride?: string; retriedJsonRepair?: boolean }) => {
+  const runScaffold = async (opts?: { allowSingleFallback?: boolean; intentOverride?: string; retriedJsonRepair?: boolean; runId?: number }) => {
+    const runId = Number(opts?.runId || Date.now());
+    const isFreshRun = !opts?.runId;
+    if (isFreshRun) {
+      if (isScaffoldRunningRef.current) return;
+      isScaffoldRunningRef.current = true;
+      activeRunIdRef.current = runId;
+      forcedProjectIdRef.current = '';
+    } else if (activeRunIdRef.current !== runId) {
+      return;
+    }
     const effectiveIntent = String(opts?.intentOverride || intent || '').trim();
-    if (!effectiveIntent) return;
+    if (!effectiveIntent) {
+      if (isFreshRun) {
+        isScaffoldRunningRef.current = false;
+        activeRunIdRef.current = 0;
+      }
+      return;
+    }
     setIsProcessing(true);
     setError(null);
     setMockFallbackConfirmArmed(false);
@@ -696,6 +734,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
               },
               {
                 onEvent: (ev) => {
+                  if (activeRunIdRef.current !== runId) return;
                   if (ev.event === 'progress') {
                     const agent = String(ev.data?.agent || '');
                     const provider = String(ev.data?.provider || '');
@@ -755,7 +794,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
         const globalRefs = normalized.filter((a) => a.assignedTo === 'global').map(({ assignedTo, ...x }) => x);
         const charRefs = normalized.filter((a) => a.assignedTo.startsWith('character:'));
         const locRefs = normalized.filter((a) => a.assignedTo.startsWith('location:'));
-        const enrichedStory = {
+        const enrichedStoryRaw = {
           ...res.story,
           referenceImages: globalRefs as any,
           referenceMode: globalRefs.length ? 'auto' : (res.story as any).referenceMode,
@@ -790,6 +829,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
             } as any;
           }),
         } as Story;
+        const enrichedStory = ensureRunProjectId(enrichedStoryRaw);
         const enrichedRes = { ...res, story: enrichedStory } as typeof res;
 	      lastScaffoldRef.current = enrichedRes;
 	      storyRef.current = enrichedStory;
@@ -824,8 +864,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
           }
         }
         onDraftProject?.(enrichedStory);
-	      await runAssets(enrichedRes);
+	      await runAssets(enrichedRes, runId);
     } catch (e) {
+      if (activeRunIdRef.current !== runId) return;
       const errMsg = e instanceof Error ? e.message : String(e);
       const looksLikeJsonFormatIssue =
         /not valid json|invalid json|json parse|response was not valid json|malformed json/i.test(errMsg);
@@ -843,16 +884,23 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
           allowSingleFallback: true,
           intentOverride: strictIntent,
           retriedJsonRepair: true,
+          runId,
         });
         return;
       }
       if (isAgentApiError(e) && e.bodyJson?.errorCode === 'MULTI_AGENT_FAILED') {
         setCanSingleFallback(true);
         setError(String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message || 'Multi-agent scaffold failed'));
+        setIsProcessing(false);
+        isScaffoldRunningRef.current = false;
+        activeRunIdRef.current = 0;
         return;
       }
       setCanSingleFallback(false);
       setError(errMsg);
+      setIsProcessing(false);
+      isScaffoldRunningRef.current = false;
+      activeRunIdRef.current = 0;
     }
   };
 
@@ -884,6 +932,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   };
 
   const handleGenerate = async () => {
+    if (isScaffoldRunningRef.current || isProcessing) return;
     const seededPrompt = String(intent || '').trim();
     if (!seededPrompt) return;
     resetProgress();
@@ -1742,6 +1791,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                     sendPreflightMessage(preflightInput).catch(() => {});
                                     return;
                                   }
+                                  if (isProcessing) return;
                                   handleGenerate().catch(() => {});
                                 }}
                                 className="flex-1 bg-transparent border-none outline-none text-base font-light tracking-wide text-white placeholder-white/10 h-14"
@@ -1752,7 +1802,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                 disabled={
                                   isPreflightOpen
                                     ? isPreflightThinking
-                                    : !hasIntent
+                                    : !hasIntent || isProcessing
                                 }
                                 onClick={() => {
                                   if (isPreflightOpen) {
@@ -1763,6 +1813,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                     sendPreflightMessage(preflightInput).catch(() => {});
                                     return;
                                   }
+                                  if (isProcessing) return;
                                   handleGenerate().catch(() => {});
                                 }}
                                 className={`ml-4 w-12 h-12 rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all duration-500 disabled:opacity-20 disabled:scale-100 shadow-2xl ${

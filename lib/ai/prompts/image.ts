@@ -12,11 +12,18 @@ const clampText = (s: string, n = 220) => {
   return t.length > n ? `${t.slice(0, n - 1)}...` : t;
 };
 
+const enforcePromptBudget = (s: string, maxChars = 5600) => {
+  const t = String(s || '').trim();
+  if (!t) return '';
+  if (t.length <= maxChars) return t;
+  return `${t.slice(0, Math.max(0, maxChars - 64)).trim()}\n\n[Extra guidance trimmed to fit prompt length.]`;
+};
+
 const uniqueList = (items: string[]) => {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of items) {
-    const v = clampText(raw, 180);
+    const v = clampText(raw, 140);
     const k = v.toLowerCase();
     if (!v || seen.has(k)) continue;
     seen.add(k);
@@ -59,18 +66,20 @@ export const buildShotKeyframePrompt = (args: {
   panelHints?: string[];
 }) => {
   const shot = args.shot;
-  const styleGuide = String(args.styleGuide || '').trim();
-  const envName = String(args.environmentName || '').trim();
-  const envStyle = String(args.environmentStyle || '').trim();
-  const castNames = Array.isArray(args.castNames) ? args.castNames.map((s) => String(s || '').trim()).filter(Boolean) : [];
+  const styleGuide = clampText(String(args.styleGuide || '').trim(), 900);
+  const envName = clampText(String(args.environmentName || '').trim(), 96);
+  const envStyle = clampText(String(args.environmentStyle || '').trim(), 320);
+  const castNames = Array.isArray(args.castNames)
+    ? args.castNames.map((s) => clampText(String(s || '').trim(), 72)).filter(Boolean).slice(0, 5)
+    : [];
   const panelCount = selectContactSheetPanelCount(Number(shot.duration || 0));
   const gridLabel = panelCount === 9 ? '3x3' : '2x2';
   const panelHints = collectPanelHints(shot, panelCount, args.panelHints);
 
-  const camera = String(shot.elements?.CAMERA?.prompt || '').trim();
-  const lighting = String(shot.elements?.LIGHTING?.prompt || '').trim();
-  const script = String((shot.elements as any)?.SCRIPT?.prompt || '').trim();
-  const audio = String((shot.elements as any)?.AUDIO?.prompt || '').trim();
+  const camera = clampText(String(shot.elements?.CAMERA?.prompt || '').trim(), 260);
+  const lighting = clampText(String(shot.elements?.LIGHTING?.prompt || '').trim(), 240);
+  const script = clampText(String((shot.elements as any)?.SCRIPT?.prompt || '').trim(), 420);
+  const audio = clampText(String((shot.elements as any)?.AUDIO?.prompt || '').trim(), 160);
 
   const styleTranslation = buildStylePromptTranslation({
     texts: [styleGuide, String(shot.description || ''), camera, lighting],
@@ -78,7 +87,7 @@ export const buildShotKeyframePrompt = (args: {
   });
 
   const sceneInput = [
-    `Scene: ${String(shot.description || '').trim() || 'N/A'}`,
+    `Scene: ${clampText(String(shot.description || '').trim(), 420) || 'N/A'}`,
     shot.timeOfDay ? `Time of day: ${shot.timeOfDay}` : '',
     envName ? `Setting: ${envName}` : '',
     envStyle ? `Environment style: ${envStyle}` : '',
@@ -94,53 +103,40 @@ export const buildShotKeyframePrompt = (args: {
   const panelGuidance =
     panelHints.length > 0
       ? panelHints.map((b, i) => `${i + 1}. ${b}`).join('\n')
-      : 'No fixed micro-beats provided. Freely design a coherent progression that matches the scene input.';
+      : 'No fixed micro-beats provided. Build a coherent progression from the scene input.';
 
-  return (
-    `You are a professional cinematographer + storyboard artist.\n\n` +
-    `INPUTS\n` +
-    `- REFERENCE IMAGE(S): character/subject reference(s). Preserve identity exactly (face, body, proportions, costume, hair, accessories, materials, colors).\n` +
-    `- SCENE INPUT (text): scene description, setting, mood, actions, and any required props.\n\n` +
-    `TASK\n` +
-    `Create ONE photorealistic cinematic contact sheet as a strict ${gridLabel} grid (${panelCount} panels total) in 16:9 aspect ratio.\n` +
-    `All panels must feature the SAME key subjects in the SAME environment, with consistent wardrobe and cinematic lighting/color grade.\n` +
-    `Panels must form a coherent micro-sequence. Keep time-of-day and lighting direction stable.\n\n` +
-    `STEP 1 — ANALYZE\n` +
-    `Identify and lock all key subjects from references + scene input:\n` +
-    `- People/creatures: count, roles, defining features, clothing.\n` +
-    `- Vehicles/objects: type, distinguishing marks, materials, textures.\n` +
-    `- Spatial relationships: near/far, interaction, primary/secondary subjects.\n` +
-    `Do NOT introduce new key subjects. Do NOT remove key subjects.\n\n` +
-    `STEP 2 — CONTINUITY RULES (STRICT)\n` +
-    `- Same identities across all panels (no face/outfit/accessory changes).\n` +
-    `- Same environment and same time-of-day/weather.\n` +
-    `- Same cinematic lighting direction and same LUT/color grade (minor realistic shifts only).\n` +
-    `- Distinct composition per panel (no duplicated framing).\n` +
-    `- Realistic depth of field changes by shot scale.\n` +
-    `- Keep group continuity if subjects are a pair/group.\n` +
-    `- No text, subtitles, watermarks, logos, UI overlays, or panel labels.\n\n` +
-    `STEP 3 — PANEL MICRO-BEATS (OPTIONAL GUIDANCE)\n` +
-    `${panelGuidance}\n` +
-    `Use these beats when present. If guidance is sparse, infer cinematic transitions naturally.\n\n` +
-    `STEP 4 — GRID OUTPUT\n` +
-    `Render a clean ${gridLabel} contact sheet with uniform gutters/borders. Each panel is a photoreal film still (not illustration).\n\n` +
-    `CAMERA / FILM LOOK (CONSISTENT)\n` +
-    `- Photoreal cinematic still, filmic contrast, controlled highlights, natural texture.\n` +
-    `- Use realistic lens logic per framing (wide/mid/close) and plausible aperture.\n` +
-    `- Keep white balance and grade coherent across all panels.\n` +
-    `- Imply motion naturally; avoid excessive blur unless needed by action.\n\n` +
-    `COMPOSITION NOTES\n` +
-    `- Preserve left-right orientation and spatial continuity.\n` +
-    `- Ensure required key subjects stay present in every panel.\n` +
-    `- Avoid awkward cropping; use intentional LS/CU/ECU framing.\n\n` +
-    `PROJECT STYLE LOCK\n` +
-    `- Style guide (hard lock when provided): ${styleGuide || 'N/A'}\n` +
-    `- Style translation hints: ${styleTranslation || 'N/A'}\n` +
-    `- Avoid generic CGI/3D-render aesthetics unless explicitly required by the style guide.\n\n` +
-    `SCENE INPUT:\n` +
-    `- ${sceneInput}\n\n` +
-    `OUTPUT\n` +
-    `Generate the final image only: one ${gridLabel} storyboard/contact sheet image.`
+  return enforcePromptBudget(
+    `You are a professional cinematographer and storyboard artist.\n\n` +
+      `TASK\n` +
+      `Create ONE photorealistic cinematic contact sheet as a strict ${gridLabel} grid (${panelCount} panels), 16:9.\n` +
+      `All panels must depict the SAME key subjects in the SAME environment with stable identity and style continuity.\n\n` +
+      `ANALYZE FIRST\n` +
+      `Lock key subjects from references and scene text before rendering:\n` +
+      `- Preserve identity anchors: face, body proportions, wardrobe, accessories, material/color cues.\n` +
+      `- Preserve environment anchors: location structure, mood, time-of-day, weather logic.\n` +
+      `- Do not add/remove major subjects unless the scene explicitly requests it.\n\n` +
+      `CONTINUITY RULES (STRICT)\n` +
+      `1) Identity consistency across all panels (no face/outfit drift).\n` +
+      `2) Environment continuity across all panels (same location/time/weather).\n` +
+      `3) Lighting direction and color grade continuity (minor cinematic variation allowed).\n` +
+      `4) Composition progression required: each panel should be distinct and narratively connected.\n` +
+      `5) Preserve left-right spatial continuity and interaction logic.\n` +
+      `6) No text/subtitles/watermarks/logos/UI/panel labels.\n\n` +
+      `CAMERA / FILM LOOK\n` +
+      `- Photoreal cinematic stills, filmic contrast, controlled highlights, natural texture.\n` +
+      `- Use plausible lens language across shot scales (wide / medium / close).\n` +
+      `- Depth-of-field and motion implication should be realistic, not stylized gimmicks.\n\n` +
+      `PANEL MICRO-BEATS\n` +
+      `${panelGuidance}\n` +
+      `Follow these beats when present; otherwise infer a coherent visual progression from the scene.\n\n` +
+      `PROJECT STYLE LOCK\n` +
+      `- Style guide: ${styleGuide || 'N/A'}\n` +
+      `- Style translation hints: ${styleTranslation || 'N/A'}\n` +
+      `- Avoid accidental style drift into generic CGI look unless explicitly requested.\n\n` +
+      `SCENE INPUT\n` +
+      `- ${sceneInput}\n\n` +
+      `OUTPUT\n` +
+      `Return only the final ${gridLabel} storyboard/contact-sheet image.`,
   );
 };
 

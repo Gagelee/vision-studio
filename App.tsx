@@ -28,6 +28,7 @@ import { isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
 import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
 import { generateVideoFromImage } from './lib/ai/video/generate';
 import { buildStylePromptTranslation } from './lib/ai/styleIntent';
+import { buildActingDirection, composeStructuredVideoPrompt, extractDialogueLines, resolveVideoSourceBundle } from './lib/ai/videoPromptComposer';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -1145,7 +1146,7 @@ export default function App() {
   };
 
   const cancelAssetJobs = (matcher: (key: string) => boolean) => {
-    for (const key of Array.from(assetJobAbortControllersRef.current.keys())) {
+    for (const key of Array.from(assetJobAbortControllersRef.current.keys()) as string[]) {
       if (!matcher(key)) continue;
       cancelledAssetJobKeysRef.current.add(key);
       const ctrl = assetJobAbortControllersRef.current.get(key);
@@ -1155,7 +1156,7 @@ export default function App() {
   };
 
   const cancelShotProduction = (matcher: (key: string) => boolean) => {
-    for (const key of Array.from(shotProductionAbortControllersRef.current.keys())) {
+    for (const key of Array.from(shotProductionAbortControllersRef.current.keys()) as string[]) {
       if (!matcher(key)) continue;
       const ctrl = shotProductionAbortControllersRef.current.get(key);
       ctrl?.abort();
@@ -1308,14 +1309,9 @@ export default function App() {
 	    const activeVersion =
 	      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
 	      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
-	
-	    if (String((activeVersion as any)?.type || '') === 'panel_group') {
-	      addToast('Video generation from Stack is not supported yet. Ungroup or Extract a single frame, then generate video.', 'info');
-	      return;
-	    }
-	
-	    const imageUrl = String((activeVersion as any)?.imageUrl || '').trim();
 
+    const sourceBundle = resolveVideoSourceBundle(shot, activeVersion as any);
+    const imageUrl = String(sourceBundle.sourceImageUrl || '').trim();
     if (!imageUrl) {
       addToast('Start Production blocked: generate/select a keyframe first.', 'info');
       return;
@@ -1328,21 +1324,47 @@ export default function App() {
     const lightingPrompt = String(shot.elements?.[ElementType.LIGHTING]?.prompt || '').trim();
     const audioPrompt = String(shot.elements?.[ElementType.AUDIO]?.prompt || '').trim();
     const authoredVideoPrompt = String((shot.elements as any)?.[ElementType.CAMERA]?.metadata?.videoPrompt || '').trim();
+    const dialogue = extractDialogueLines(shotAction);
+    const frameDescription = String(sourceBundle.frameDescription || shot.description || '').trim();
+    const storyContext = [
+      storyNow.logline ? `Logline: ${String(storyNow.logline).trim()}` : '',
+      storyNow.intent ? `Intent: ${String(storyNow.intent).trim()}` : '',
+      seq.context ? `Sequence context: ${String(seq.context).trim()}` : '',
+      shot.description ? `Shot dramatic beat: ${String(shot.description).trim()}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const actingDirection = buildActingDirection({
+      frameDescription,
+      script: shotAction,
+      shotDescription: String(shot.description || '').trim(),
+      sequenceContext: String(seq.context || '').trim(),
+      dialogue,
+    });
     const inferredStyleTranslation = buildStylePromptTranslation({
       texts: [storyNow.intent, styleGuide, location?.visualStyle, cameraPrompt, lightingPrompt, shot.description],
       maxItems: 6,
     });
 
-    const videoPrompt =
-      authoredVideoPrompt ||
-      [
-        'Use the provided source image as the first frame and preserve subject identity and environment continuity.',
-        inferredStyleTranslation ? `Style translation hints: ${inferredStyleTranslation}.` : '',
-        'Motion quality: natural physics, stable anatomy, no flicker, no abrupt style drift.',
-        'Output: coherent, style-consistent, high detail.',
-      ]
-        .filter(Boolean)
-        .join('\n');
+    const { prompt: videoPrompt } = composeStructuredVideoPrompt({
+      sourceKind: sourceBundle.sourceKind,
+      referenceFrames: sourceBundle.referenceFrames,
+      frameDescription,
+      storyContext,
+      actingDirection,
+      cameraPrompt,
+      lightingPrompt,
+      audioPrompt,
+      style: styleGuide || String(location?.visualStyle || '').trim(),
+      styleTranslation: inferredStyleTranslation,
+      dialogue,
+      directorNotes: authoredVideoPrompt,
+      constraints: [
+        'Preserve character identity and wardrobe continuity.',
+        'Avoid flicker, morphing artifacts, and geometry instability.',
+      ],
+      maxChars: 7200,
+    });
 
     const durationSeconds = normalizeShotDurationSeconds(shot.duration);
     const productionKey = `${storyNow.id}|${args.sequenceId}|${args.shotId}`;
@@ -1381,20 +1403,28 @@ export default function App() {
       const out = await generateVideoFromImage({
         prompt: videoPrompt,
         imageUrl,
+        referenceImageUrls: sourceBundle.referenceImageUrls,
         durationSeconds,
         aspectRatio,
         resolution: '720p',
         generateAudio: true,
         signal: productionController.signal,
         promptSpec: {
+          frameDescription,
           shotDescription: String(shot.description || '').trim(),
           action: shotAction,
+          actingDirection,
+          storyContext,
+          dialogue,
+          cameraman: cameraPrompt,
+          directorNotes: authoredVideoPrompt,
           style: styleGuide || String(location?.visualStyle || '').trim(),
           styleTranslation: inferredStyleTranslation,
           camera: cameraPrompt,
           composition: `Aspect ratio ${aspectRatio}`,
           mood: lightingPrompt,
           audio: audioPrompt,
+          referenceFrames: sourceBundle.referenceFrames.slice(0, 9),
           constraints: [
             'Preserve character identity and wardrobe continuity.',
             'Avoid flicker, morphing artifacts, and geometry instability.',
@@ -1428,6 +1458,9 @@ export default function App() {
 	                            prompt: videoPrompt,
 	                            sourceImageUrl: imageUrl,
 	                            sourceShotVersionId: String(activeVersion?.id || ''),
+                              referenceImageUrls: sourceBundle.referenceImageUrls,
+                              frameDescription,
+                              actingDirection,
 	                          },
 	                        };
                         return {
@@ -3276,7 +3309,7 @@ export default function App() {
               jobs: exec.deferredJobs,
               scopeLabel: exec.scopeLabel || 'director:interaction',
               concurrency: exec.concurrency || 2,
-              story: exec.storyAfterUpdates || storyWithAttachments,
+              story: exec.storyAfterUpdates || activeStory,
             });
             addToast('Interaction mode: generation is waiting for your confirmation.', 'info');
           }
