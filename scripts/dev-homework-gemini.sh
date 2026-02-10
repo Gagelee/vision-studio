@@ -29,6 +29,11 @@ if rg -n 'COMPASS_API_KEY|COMPASS_GATEWAY_URL|GATEWAY_URL' vite.config.ts >/dev/
   exit 1
 fi
 
+if ! rg -n "type ModelProvider = 'gemini';" vite.config.ts >/dev/null 2>&1; then
+  echo "error: vite.config.ts is not locked to Gemini-only provider mode" >&2
+  exit 1
+fi
+
 echo "ok: homework branch + GEMINI_API_KEY validated."
 if [[ "${mode}" == "--check" ]]; then
   exit 0
