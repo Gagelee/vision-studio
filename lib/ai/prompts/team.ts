@@ -183,7 +183,7 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
   return (
     `You are the CAMERA & ART DESIGN agent.\n` +
     `${jsonOnly()}\n` +
-    `For each shot, propose camera, lighting, audio AND a production-ready "videoPrompt".\n` +
+    `For each shot, propose camera, lighting, audio. "videoPrompt" is optional and should be concise if provided.\n` +
     `Output schema:\n` +
     `{\n` +
     `  "sequences": Array<{\n` +
@@ -194,18 +194,18 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
     `        "camera": string,\n` +
     `        "lighting": string,\n` +
     `        "audio": string,\n` +
-    `        "videoPrompt": string,\n` +
+    `        "videoPrompt"?: string,\n` +
     `        "keyframePlan"?: { "panelCount"?: 4|9, "panelGuidance"?: string[] }\n` +
     `      }>\n` +
     `    }>\n` +
     `  }>\n` +
     `}\n` +
     `Rules:\n` +
-    `- "videoPrompt" must be self-contained and consistent with director style bible.\n` +
+    `- Prefer high-quality camera/lighting/audio guidance. videoPrompt is optional because runtime will compose final prompt asynchronously.\n` +
     `- Treat DirectorBrief style medium as HARD LOCK; do not swap to another medium.\n` +
     `- Translate abstract user adjectives into executable visual terms (camera language, composition scale, lighting behavior, motion quality).\n` +
     `- Include environment + cast + action + lens/camera + lighting cues.\n` +
-    `- Start each "videoPrompt" with a short STYLE header derived from director style bible (rendering style/medium, palette, lighting mood, camera language).\n` +
+    `- If you provide "videoPrompt", start with a short STYLE header derived from director style bible (rendering style/medium, palette, lighting mood, camera language).\n` +
     `- Also prepare optional keyframePlan for storyboard contact-sheet generation: panelCount by duration (8s -> 9 panels; 4/6s -> 4 panels).\n` +
     `- keyframePlan.panelGuidance should only include important micro-beats; keep concise and optional.\n` +
     `- No text/watermarks.\n` +
@@ -244,7 +244,7 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `       "camera": string, "lighting": string, "audio": string,\n` +
     `       "locationName": string, "castNames": string[],\n` +
     `       "script": string,\n` +
-    `       "videoPrompt": string,\n` +
+    `       "videoPrompt"?: string,\n` +
     `       "keyframePlan"?: { "panelCount"?: 4|9, "panelGuidance"?: string[] }\n` +
     `  }> }> }>\n` +
     `}\n` +
@@ -254,7 +254,7 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `- Preserve editor.sceneDecision for each sequence; if missing, infer and fill it (split optional but decision is required).\n` +
     `- Ensure characters/locations match names used in shots.\n` +
     `- Keep rendering medium/style consistent with DirectorBrief. If user intent specified medium explicitly, preserve it as hard lock.\n` +
-    `- Ensure final styleGuide and shot-level camera/lighting/videoPrompt contain concrete, generation-ready style terms (not only abstract adjectives).\n` +
+    `- Ensure final styleGuide and shot-level camera/lighting contain concrete, generation-ready style terms (not only abstract adjectives).\n` +
     `- "styleGuide" must be a concise, production-ready style bible derived from DirectorBrief.styleBible (rendering style, palette, lighting, camera language, constraints).\n` +
     `DirectorBrief: ${brief}\n` +
     `Casting: ${casting}\n` +

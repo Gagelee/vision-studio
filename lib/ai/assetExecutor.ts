@@ -78,6 +78,12 @@ export const buildAssetJobs = (story: Story, scope: AssetScope = 'all'): AssetJo
 };
 
 const bumpState = (prev: any, patch: any) => ({ ...(prev || { status: 'idle' }), ...patch });
+const resolveShotSequenceId = (story: Story, requestedSequenceId: string, shotId: string): string | null => {
+  const direct = (story.sequences || []).find((seq) => seq.id === requestedSequenceId && (seq.shots || []).some((s) => s.id === shotId));
+  if (direct) return direct.id;
+  const fallback = (story.sequences || []).find((seq) => (seq.shots || []).some((s) => s.id === shotId));
+  return fallback ? fallback.id : null;
+};
 
 export const applyAssetStart = (story: Story, job: AssetJob): Story => {
   const now = Date.now();
@@ -120,10 +126,12 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
   }
 
   // shot
+  const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
+  if (!targetSeqId) return story;
   return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
-      if (seq.id !== job.sequenceId) return seq;
+      if (seq.id !== targetSeqId) return seq;
       return {
         ...seq,
         shots: seq.shots.map((s) =>
@@ -177,10 +185,12 @@ export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
   }
 
   // shot
+  const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
+  if (!targetSeqId) return story;
   return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
-      if (seq.id !== job.sequenceId) return seq;
+      if (seq.id !== targetSeqId) return seq;
       return {
         ...seq,
         shots: seq.shots.map((s) => (s.id === job.shot.id ? { ...s, assetState: bumpState((s as any).assetState, patch) } : s)),
@@ -218,10 +228,12 @@ export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): 
       }),
     };
   }
+  const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
+  if (!targetSeqId) return story;
   return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
-      if (seq.id !== job.sequenceId) return seq;
+      if (seq.id !== targetSeqId) return seq;
       return {
         ...seq,
         shots: seq.shots.map((s) =>
@@ -261,10 +273,12 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
       }),
     };
   }
+  const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
+  if (!targetSeqId) return story;
   return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
-      if (seq.id !== job.sequenceId) return seq;
+      if (seq.id !== targetSeqId) return seq;
       return {
         ...seq,
         shots: seq.shots.map((s) =>
@@ -464,10 +478,12 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
   }
 
   // shot
+  const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
+  if (!targetSeqId) return story;
   return normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
-      if (seq.id !== job.sequenceId) return seq;
+      if (seq.id !== targetSeqId) return seq;
       return {
         ...seq,
         shots: seq.shots.map((s) => {

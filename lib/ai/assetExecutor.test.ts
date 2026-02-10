@@ -72,5 +72,39 @@ describe('assetExecutor shot state sync', () => {
     expect(sceneShotB.thumbnailUrl).toBe(UNSPLASH_PLACEHOLDER);
     expect(sceneShotB.assetState?.status).toBe('running');
   });
-});
 
+  it('still applies shot result when job.sequenceId is stale but shot id exists elsewhere', () => {
+    const shotA = makeShot('shot-a', 1);
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [],
+      characters: [],
+      sequences: [
+        {
+          id: 'seq-real',
+          title: 'S1',
+          context: '',
+          scenes: [{ id: 'scene-1', title: 'Scene 1', shots: [shotA] }],
+          shots: [shotA],
+        },
+      ],
+    };
+
+    const doneJob: AssetJob = { kind: 'shot', sequenceId: 'seq-stale', shot: { id: 'shot-a' } as any };
+    const realUrl = '/__generated__/shot-a-real-stale-seq.png';
+    const updated = applyAssetResult(story, doneJob, realUrl) as any;
+
+    const seqShotA = updated.sequences[0].shots.find((s: any) => s.id === 'shot-a');
+    const sceneShotA = updated.sequences[0].scenes[0].shots.find((s: any) => s.id === 'shot-a');
+    expect(seqShotA.thumbnailUrl).toBe(realUrl);
+    expect(seqShotA.assetState?.status).toBe('done');
+    expect(sceneShotA.thumbnailUrl).toBe(realUrl);
+    expect(sceneShotA.assetState?.status).toBe('done');
+  });
+});

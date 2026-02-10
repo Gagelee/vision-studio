@@ -53,8 +53,16 @@ export const StageView: React.FC<StageViewProps> = ({
   }, [sequence.id, sequence.title]);
 
   const groupedScenes = useMemo(() => {
+    const canonicalShots = Array.isArray(sequence.shots) ? sequence.shots : [];
+    const byShotId = new Map(canonicalShots.map((s) => [String(s.id || ''), s]));
     const raw = Array.isArray((sequence as any)?.scenes) ? (sequence as any).scenes : [];
-    if (raw.length) return raw;
+    if (raw.length) {
+      return raw.map((scene: any) => {
+        const shotList = Array.isArray(scene?.shots) ? scene.shots : [];
+        const shots = shotList.map((shot: Shot) => byShotId.get(String(shot?.id || '')) || shot);
+        return { ...scene, shots };
+      });
+    }
     return [{ id: `${sequence.id}-scene-1`, title: 'Scene 1', shots: sequence.shots || [] }];
   }, [sequence]);
 

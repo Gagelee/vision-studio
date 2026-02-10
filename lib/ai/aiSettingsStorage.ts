@@ -4,17 +4,17 @@ const AI_SETTINGS_STORAGE_KEY = 'vision-studio.ai.settings.v1';
 
 const normalizeGeminiModel = (model: string): string => {
   const m = String(model || '').trim();
-  if (!m) return 'gemini-2.5-flash';
+  if (!m) return 'gemini-3-flash-preview';
   // Gemini 1.5 (including gemini-1.5-flash / -pro) was shut down on 2025-09-29.
   if (m.startsWith('gemini-1.5-')) return 'gemini-3-pro-preview';
   // Older internal names we used during prototyping.
-  if (m === 'gemini-2.0-flash-thinking') return 'gemini-2.5-flash';
+  if (m === 'gemini-2.0-flash-thinking') return 'gemini-3-flash-preview';
   return m;
 };
 
 const getDefaultModelSettings = (): ModelRuntimeSettings => ({
   provider: 'gemini',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3-flash-preview',
   temperature: 0.6,
   maxOutputTokens: 4096,
   baseUrl: '',
@@ -29,19 +29,19 @@ export const getDefaultAiSettings = (): AiSettings => ({
   version: 2,
   scaffoldPlanner: {
     ...getDefaultModelSettings(),
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3-flash-preview',
     temperature: 0.4,
     maxOutputTokens: 8192,
   },
   scaffoldWorker: {
     ...getDefaultModelSettings(),
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3-flash-preview',
     temperature: 0.6,
     maxOutputTokens: 8192,
   },
   direct: {
     ...getDefaultModelSettings(),
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3-flash-preview',
     temperature: 0.5,
     workflowMode: 'auto',
     useFunctionCalling: true,
@@ -92,7 +92,7 @@ export const loadAiSettings = (): AiSettings => {
     const preferFlash = (s: ModelRuntimeSettings): ModelRuntimeSettings => {
       if (s.provider !== 'gemini') return s;
       if (String(s.model || '').trim() !== 'gemini-3-pro-preview') return s;
-      return { ...s, model: 'gemini-2.5-flash' };
+      return { ...s, model: 'gemini-3-flash-preview' };
     };
 
     const bumpScaffoldTokens = (s: ModelRuntimeSettings): ModelRuntimeSettings => {

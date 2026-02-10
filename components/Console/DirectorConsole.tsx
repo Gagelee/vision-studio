@@ -19,6 +19,7 @@ interface DirectorConsoleProps {
   variant?: 'default' | 'floating';
   workflowMode?: 'auto' | 'interaction';
   onWorkflowModeChange?: (mode: 'auto' | 'interaction') => void;
+  compact?: boolean;
 }
 
 export const DirectorConsole: React.FC<DirectorConsoleProps> = ({
@@ -30,6 +31,7 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({
   variant = 'default',
   workflowMode = 'auto',
   onWorkflowModeChange,
+  compact = false,
 }) => {
   const [input, setInput] = useState('');
   const [showHistory, setShowHistory] = useState(false);
@@ -163,7 +165,11 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({
 
   // DEFAULT VARIANT
   return (
-    <div className={`bg-white dark:bg-zinc-950 border-t border-zinc-200 dark:border-zinc-800 flex flex-col z-30 transition-all duration-300 ${showHistory ? 'h-[400px]' : 'h-auto'}`}>
+    <div
+      className={`bg-white dark:bg-zinc-950 border-t border-zinc-200 dark:border-zinc-800 flex flex-col z-30 transition-all duration-300 ${
+        showHistory ? (compact ? 'h-[300px]' : 'h-[400px]') : 'h-auto'
+      }`}
+    >
       
       {/* History Panel (Collapsible) */}
       {showHistory && (
@@ -290,10 +296,10 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({
       )}
 
       {/* Input Area */}
-      <div className="relative p-4 bg-white dark:bg-zinc-950 shadow-[0_-1px_20px_rgba(0,0,0,0.05)]">
+      <div className="relative p-3 sm:p-4 bg-white dark:bg-zinc-950 shadow-[0_-1px_20px_rgba(0,0,0,0.05)]">
         
         {/* Context Status Bar */}
-        <div className="absolute top-0 left-0 right-0 -mt-3 flex justify-center pointer-events-none">
+        <div className="mb-2 flex justify-center">
             <div className="bg-zinc-900 dark:bg-zinc-800 text-white dark:text-zinc-300 text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full border border-zinc-700 shadow-sm flex items-center gap-2 pointer-events-auto">
                 <span className={config.accent}>{context.type} Context</span>
                 <span className="opacity-50">|</span>

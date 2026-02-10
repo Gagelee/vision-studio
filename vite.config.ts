@@ -238,7 +238,7 @@ const GEMINI_SCHEMA = {
                   title: schemaString(),
                   shots: schemaArray(
                     schemaObject({
-                      required: ['camera', 'lighting', 'audio', 'videoPrompt'],
+                      required: ['camera', 'lighting', 'audio'],
                       propertyOrdering: ['camera', 'lighting', 'audio', 'videoPrompt'],
                       properties: {
                         camera: schemaString(),
@@ -330,7 +330,6 @@ const GEMINI_SCHEMA = {
                         'locationName',
                         'castNames',
                         'script',
-                        'videoPrompt',
                       ],
                       propertyOrdering: [
                         'description',
@@ -354,6 +353,7 @@ const GEMINI_SCHEMA = {
                         locationName: schemaString(),
                         castNames: schemaArray(schemaString()),
                         script: schemaString(),
+                        // Optional now: video prompt is composed asynchronously at shot production stage.
                         videoPrompt: schemaString(),
                       },
                     }),
@@ -3212,7 +3212,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	      const plannerSettings = body?.plannerSettings || {};
       const provider = String(settings?.provider || 'gemini');
       // Gemini 1.5 models were shut down in 2025; default to a supported model.
-      const model = String(settings?.model || 'gemini-3-pro-preview');
+      const model = String(settings?.model || 'gemini-3-flash-preview');
       const temperature = Number(settings?.temperature ?? 0.6);
       const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
       const plannerModel = String(plannerSettings?.model || '');
@@ -3694,16 +3694,41 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			                const meta = getPromptMetaForAgent('scaffold', agent);
 				                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
 				                try {
-				                  const outRes = await callGeminiJson({
-		                    apiKey: compassApiKey,
-                        baseUrl: compassBaseUrl || undefined,
-		                    model: String(opts?.model || chosenModel),
-	                    temperature: Number(opts?.temperature ?? chosenTemperature),
-	                    maxOutputTokens: Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192),
-	                    prompt,
-	                    env,
-	                    responseSchema: opts?.responseSchema,
-	                  });
+                          const runGemini = async (args: { promptText: string; temperature: number; maxTokens: number }) =>
+                            callGeminiJson({
+                              apiKey: compassApiKey,
+                              baseUrl: compassBaseUrl || undefined,
+                              model: String(opts?.model || chosenModel),
+                              temperature: args.temperature,
+                              maxOutputTokens: args.maxTokens,
+                              prompt: args.promptText,
+                              env,
+                              responseSchema: opts?.responseSchema,
+                            });
+                          const baseTemp = Number(opts?.temperature ?? chosenTemperature);
+                          const baseTokens = Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192);
+                          let retryUsed = false;
+                          let outRes: any;
+                          try {
+                            outRes = await runGemini({ promptText: prompt, temperature: baseTemp, maxTokens: baseTokens });
+                          } catch (firstErr: any) {
+                            const firstMsg = String(firstErr?.message || firstErr || '');
+                            const shouldRetryCompact = /not valid json/i.test(firstMsg);
+                            if (!shouldRetryCompact) throw firstErr;
+                            retryUsed = true;
+                            const compactPrompt =
+                              `${prompt}\n\n` +
+                              `CRITICAL OUTPUT FIX:\n` +
+                              `- Return ONLY one valid JSON object matching the schema.\n` +
+                              `- No markdown/code fences/comments.\n` +
+                              `- Keep all string fields concise.\n` +
+                              `- If content is long, shorten prose but keep required keys complete.\n`;
+                            outRes = await runGemini({
+                              promptText: compactPrompt,
+                              temperature: Math.min(baseTemp, 0.2),
+                              maxTokens: Math.min(16384, Math.max(baseTokens + 1024, Math.floor(baseTokens * 1.5))),
+                            });
+                          }
                           const out = outRes.value;
 				                  const trace = {
 				                    agent,
@@ -3711,6 +3736,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 				                    model: String(opts?.model || chosenModel),
 				                    ms: Date.now() - started,
 				                    ok: true,
+                            ...(retryUsed ? { retryUsed: 'compact-json' } : {}),
                             gateway: 'compass',
                             usage: outRes.usage,
 				                    promptId: meta?.id,
@@ -3790,15 +3816,208 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }),
                   { model: workerModel, temperature: workerTemperature, maxOutputTokens: resolvedWorkerTokens, responseSchema: GEMINI_SCHEMA.scaffoldEditor },
                 );
-                const cameraArtSpec = await call(
-                  'camera_art',
-                  buildTeamScaffoldCameraArtPrompt({
-                    directorBriefJson,
-                    editorJson: JSON.stringify(editorSpec),
-                    aspectRatio,
-                  }),
-                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: resolvedWorkerTokens, responseSchema: GEMINI_SCHEMA.scaffoldCameraArt },
-                );
+                const CAMERA_ART_BATCH_SIZE = 6;
+                const normalizeDurationForPanelCount = (v: any) => {
+                  const n = Number(v);
+                  if (n <= 5) return 4;
+                  if (n <= 7) return 6;
+                  return 8;
+                };
+                const buildCompactEditorForCameraArt = (editorLike: any) => {
+                  const sequences = Array.isArray(editorLike?.sequences) ? editorLike.sequences : [];
+                  return {
+                    sequences: sequences.map((seq: any) => ({
+                      title: String(seq?.title || 'Sequence'),
+                      context: String(seq?.context || '').slice(0, 240),
+                      scenes: (Array.isArray(seq?.scenes) ? seq.scenes : []).map((scene: any) => ({
+                        title: String(scene?.title || 'Scene'),
+                        summary: String(scene?.summary || '').slice(0, 220),
+                        shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((shot: any) => ({
+                          description: String(shot?.description || shot?.beat || '').slice(0, 260),
+                          timeOfDay: String(shot?.timeOfDay || '').slice(0, 60),
+                          duration: normalizeDurationForPanelCount(shot?.duration),
+                          locationName: String(shot?.locationName || '').slice(0, 100),
+                          castNames: Array.isArray(shot?.castNames) ? shot.castNames.slice(0, 4).map((x: any) => String(x || '').slice(0, 48)) : [],
+                          script: String(shot?.script || '').slice(0, 320),
+                        })),
+                      })),
+                    })),
+                  };
+                };
+                const collectEditorShotRefs = (editorLike: any) => {
+                  const refs: Array<{ seqIdx: number; sceneIdx: number; shotIdx: number }> = [];
+                  const seqs = Array.isArray(editorLike?.sequences) ? editorLike.sequences : [];
+                  for (let si = 0; si < seqs.length; si++) {
+                    const scenes = Array.isArray(seqs[si]?.scenes) ? seqs[si].scenes : [];
+                    for (let ci = 0; ci < scenes.length; ci++) {
+                      const shots = Array.isArray(scenes[ci]?.shots) ? scenes[ci].shots : [];
+                      for (let hi = 0; hi < shots.length; hi++) refs.push({ seqIdx: si, sceneIdx: ci, shotIdx: hi });
+                    }
+                  }
+                  return refs;
+                };
+                const buildEditorChunkByRefs = (
+                  compactEditor: any,
+                  refs: Array<{ seqIdx: number; sceneIdx: number; shotIdx: number }>,
+                ) => {
+                  const keep = new Set(refs.map((r) => `${r.seqIdx}|${r.sceneIdx}|${r.shotIdx}`));
+                  const out = {
+                    sequences: (Array.isArray(compactEditor?.sequences) ? compactEditor.sequences : []).map((seq: any, seqIdx: number) => ({
+                      title: String(seq?.title || 'Sequence'),
+                      context: String(seq?.context || ''),
+                      scenes: (Array.isArray(seq?.scenes) ? seq.scenes : [])
+                        .map((scene: any, sceneIdx: number) => ({
+                          title: String(scene?.title || 'Scene'),
+                          summary: String(scene?.summary || ''),
+                          shots: (Array.isArray(scene?.shots) ? scene.shots : []).filter((_: any, shotIdx: number) =>
+                            keep.has(`${seqIdx}|${sceneIdx}|${shotIdx}`),
+                          ),
+                        }))
+                        .filter((sc: any) => Array.isArray(sc.shots) && sc.shots.length > 0),
+                    })),
+                  };
+                  out.sequences = out.sequences.filter((seq: any) => Array.isArray(seq.scenes) && seq.scenes.length > 0);
+                  return out;
+                };
+                const readCameraShotByPath = (cameraArtLike: any, seqIdx: number, sceneIdx: number, shotIdx: number) => {
+                  const seq = Array.isArray(cameraArtLike?.sequences) ? cameraArtLike.sequences[seqIdx] : null;
+                  const scene = seq && Array.isArray(seq?.scenes) ? seq.scenes[sceneIdx] : null;
+                  const shot = scene && Array.isArray(scene?.shots) ? scene.shots[shotIdx] : null;
+                  return shot || null;
+                };
+                const buildCameraArtFallbackSpec = (editorLike: any, briefLike: any, ar: string) => {
+                  const styleBible = (briefLike && typeof briefLike === 'object' ? (briefLike as any).styleBible : {}) || {};
+                  const styleHeader = [
+                    styleBible.genre ? `genre=${String(styleBible.genre)}` : '',
+                    styleBible.tone ? `tone=${String(styleBible.tone)}` : '',
+                    styleBible.cameraLanguage ? `camera=${String(styleBible.cameraLanguage)}` : '',
+                    Array.isArray(styleBible.visualKeywords) && styleBible.visualKeywords.length
+                      ? `look=${styleBible.visualKeywords.slice(0, 4).join(', ')}`
+                      : '',
+                  ]
+                    .filter(Boolean)
+                    .join('; ');
+                  const rootSeq = Array.isArray((editorLike as any)?.sequences) ? (editorLike as any).sequences : [];
+                  return {
+                    sequences: rootSeq.map((seq: any) => ({
+                      title: String(seq?.title || 'Sequence'),
+                      scenes: (Array.isArray(seq?.scenes) ? seq.scenes : []).map((scene: any) => ({
+                        title: String(scene?.title || 'Scene'),
+                        shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((shot: any) => {
+                          const shotDesc = String(shot?.description || shot?.beat || '').trim();
+                          const script = String(shot?.script || '').trim();
+                          const locationName = String(shot?.locationName || '').trim();
+                          const castNames = Array.isArray(shot?.castNames) ? shot.castNames.slice(0, 4).map((x: any) => String(x || '').trim()).filter(Boolean) : [];
+                          const timeOfDay = String(shot?.timeOfDay || '').trim();
+                          const duration = normalizeDurationForPanelCount(shot?.duration);
+                          const hasDialogue = /[:：]["“”'A-Za-z0-9\u4e00-\u9fa5]/.test(script) || /LIN|WEI|INT\.|EXT\./i.test(script);
+                          const camera = `Narrative ${ar} shot, motivated movement, composition focused on ${castNames[0] || 'the key subject'}.`;
+                          const lighting =
+                            timeOfDay
+                              ? `${timeOfDay} motivated cinematic lighting, soft contrast, practical highlights that support mood.`
+                              : 'Cinematic motivated lighting with controlled contrast and practical highlights.';
+                          const audio = hasDialogue
+                            ? 'Natural ambience plus clear dialogue focus; subtle score supports emotional beats.'
+                            : 'Natural ambience and subtle score; no distracting foreground noise.';
+                          const videoPrompt = [
+                            `STYLE: ${styleHeader || 'cinematic realism with controlled palette and emotional camera language'}.`,
+                            `SHOT: ${shotDesc || 'Character-driven dramatic beat'}${locationName ? ` at ${locationName}` : ''}.`,
+                            castNames.length ? `CAST: ${castNames.join(', ')}.` : '',
+                            `ACTION: Translate the scripted beat into clear physical performance with readable emotion shifts${script ? `; script context: ${script.slice(0, 220)}` : ''}.`,
+                            `CAMERA: ${camera}`,
+                            `LIGHTING: ${lighting}`,
+                            `AUDIO: ${audio}`,
+                            'CONSTRAINTS: preserve character identity/wardrobe continuity, avoid flicker/morphing artifacts, no text/watermark.',
+                          ]
+                            .filter(Boolean)
+                            .join(' ');
+                          return {
+                            camera,
+                            lighting,
+                            audio,
+                            videoPrompt,
+                            keyframePlan: {
+                              panelCount: duration === 8 ? 9 : 4,
+                              panelGuidance: duration === 8
+                                ? ['establish spatial relation', 'action escalation', 'emotional turn', 'resolve beat']
+                                : ['establish beat', 'emotional shift', 'end beat'],
+                            },
+                          };
+                        }),
+                      })),
+                    })),
+                  };
+                };
+                let cameraArtSpec: any;
+                try {
+                  const compactEditor = buildCompactEditorForCameraArt(editorSpec);
+                  const allRefs = collectEditorShotRefs(compactEditor);
+                  if (!allRefs.length) {
+                    cameraArtSpec = { sequences: [] };
+                  } else {
+                    const mergedByPath = new Map<string, any>();
+                    for (let i = 0; i < allRefs.length; i += CAMERA_ART_BATCH_SIZE) {
+                      const chunkRefs = allRefs.slice(i, i + CAMERA_ART_BATCH_SIZE);
+                      const chunkEditor = buildEditorChunkByRefs(compactEditor, chunkRefs);
+                      const chunkOut = await call(
+                        'camera_art',
+                        buildTeamScaffoldCameraArtPrompt({
+                          directorBriefJson,
+                          editorJson: JSON.stringify(chunkEditor),
+                          aspectRatio,
+                        }),
+                        {
+                          model: workerModel,
+                          temperature: workerTemperature,
+                          maxOutputTokens: resolvedWorkerTokens,
+                          responseSchema: GEMINI_SCHEMA.scaffoldCameraArt,
+                        },
+                      );
+                      // Map chunk output shots back by order to original editor path.
+                      const chunkInputRefs = collectEditorShotRefs(chunkEditor);
+                      const chunkOutputRefs = collectEditorShotRefs(chunkOut);
+                      const pairCount = Math.min(chunkInputRefs.length, chunkOutputRefs.length);
+                      for (let j = 0; j < pairCount; j++) {
+                        const src = chunkInputRefs[j];
+                        const out = chunkOutputRefs[j];
+                        const outShot = readCameraShotByPath(chunkOut, out.seqIdx, out.sceneIdx, out.shotIdx);
+                        if (!outShot) continue;
+                        mergedByPath.set(`${src.seqIdx}|${src.sceneIdx}|${src.shotIdx}`, outShot);
+                      }
+                    }
+                    const fallback = buildCameraArtFallbackSpec(compactEditor, directorBrief, String(aspectRatio || '16:9'));
+                    cameraArtSpec = {
+                      sequences: (Array.isArray(compactEditor?.sequences) ? compactEditor.sequences : []).map((seq: any, seqIdx: number) => ({
+                        title: String(seq?.title || 'Sequence'),
+                        scenes: (Array.isArray(seq?.scenes) ? seq.scenes : []).map((scene: any, sceneIdx: number) => ({
+                          title: String(scene?.title || 'Scene'),
+                          shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((_: any, shotIdx: number) => {
+                            const key = `${seqIdx}|${sceneIdx}|${shotIdx}`;
+                            const resolved = mergedByPath.get(key);
+                            if (resolved) return resolved;
+                            return (
+                              readCameraShotByPath(fallback, seqIdx, sceneIdx, shotIdx) || {
+                                camera: '',
+                                lighting: '',
+                                audio: '',
+                                videoPrompt: '',
+                                keyframePlan: { panelCount: 4, panelGuidance: [] },
+                              }
+                            );
+                          }),
+                        })),
+                      })),
+                    };
+                  }
+                } catch (e: any) {
+                  cameraArtSpec = buildCameraArtFallbackSpec(buildCompactEditorForCameraArt(editorSpec), directorBrief, String(aspectRatio || '16:9'));
+                  teamMessages.push({
+                    agent: 'camera_art',
+                    ok: false,
+                    degraded: true,
+                    error: `camera_art failed, used fallback template: ${formatFetchError(e)}`,
+                  });
+                }
 
                 const spec = await call(
                   'director.merge',
@@ -4245,7 +4464,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const allowSingleFallback = Boolean(body?.allowSingleFallback);
         const useFunctionCalling = Boolean(body?.useFunctionCalling);
         const provider = String(settings?.provider || 'gemini');
-        const model = String(settings?.model || 'gemini-3-pro-preview');
+        const model = String(settings?.model || 'gemini-3-flash-preview');
         const temperature = Number(settings?.temperature ?? 0.6);
         const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
         const tokenFloor = 4096;

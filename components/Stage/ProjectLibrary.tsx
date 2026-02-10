@@ -62,10 +62,11 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={onOpenDebug}
-              className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors text-zinc-600 dark:text-zinc-300"
+              className="px-2.5 py-2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors text-zinc-600 dark:text-zinc-300 inline-flex items-center gap-1.5"
               title="Debug (Cmd/Ctrl+Shift+D)"
             >
               <Bug className="w-4 h-4" />
+              <span className="hidden sm:inline text-[11px] font-bold tracking-wide">Debug</span>
             </button>
             <button
               onClick={onOpenAiSettings}
