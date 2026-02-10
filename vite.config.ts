@@ -520,6 +520,36 @@ const sendJson = (res: any, status: number, payload: JsonValue) => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const clampNumber = (raw: unknown, min: number, max: number, fallback: number) => {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+};
+
+const randomIntBetween = (min: number, max: number) => {
+  const lo = Math.floor(Math.min(min, max));
+  const hi = Math.floor(Math.max(min, max));
+  if (hi <= lo) return lo;
+  return lo + Math.floor(Math.random() * (hi - lo + 1));
+};
+
+const isGeminiSimulatedModel = (model: string) => /^mock[-_]?sim/i.test(String(model || '').trim());
+const isGeminiSimulationEnabled = (args: {
+  provider: string;
+  model: string;
+  env?: Record<string, string>;
+}) => {
+  if (String(args.provider || '') !== 'gemini') return false;
+  const forceEnv = String(args.env?.VISION_SIMULATE_GEMINI || '').trim();
+  if (forceEnv === '1' || /^true$/i.test(forceEnv)) return true;
+  return isGeminiSimulatedModel(args.model);
+};
+
+const SIMULATED_PNG_BYTES = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Xn0YAAAAASUVORK5CYII=',
+  'base64',
+);
+
 const formatFetchError = (e: any) => {
   const name = e?.name ? String(e.name) : '';
   const code = e?.cause?.code || e?.code ? String(e?.cause?.code || e?.code) : '';
@@ -2839,6 +2869,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		        const provider = String(settings?.provider || 'gemini');
 		        const model = String(settings?.model || 'nano-banana-pro');
 		        const temperature = Number(settings?.temperature ?? 0.6);
+            const simulateGemini = isGeminiSimulationEnabled({ provider, model, env });
 
         if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
 
@@ -2846,6 +2877,40 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		        let composed: any = null;
             let composeUsage: TokenUsage | undefined;
 		        const promptPreview = prompt.slice(0, 120);
+
+            if (simulateGemini) {
+              const delayMinMs = clampNumber(env.VISION_SIM_IMAGE_MIN_MS, 100, 120_000, 2500);
+              const delayMaxMs = clampNumber(env.VISION_SIM_IMAGE_MAX_MS, delayMinMs, 180_000, 8500);
+              const failureRate = clampNumber(env.VISION_SIM_IMAGE_FAIL_RATE, 0, 1, 0);
+              const delayMs = randomIntBetween(delayMinMs, delayMaxMs);
+              await sleep(delayMs);
+              if (Math.random() < failureRate) {
+                throw new Error(`Simulated Gemini image failure (rate=${failureRate.toFixed(2)})`);
+              }
+              ensureGeneratedDir(userId);
+              const hash = crypto
+                .createHash('sha256')
+                .update(`${model}\n${aspectRatio || ''}\n${prompt}`)
+                .digest('hex')
+                .slice(0, 16);
+              const filename = `${Date.now()}-${hash}-sim.png`;
+              fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), SIMULATED_PNG_BYTES);
+              return sendJson(res, 200, {
+                imageUrl: buildGeneratedAssetUrl(userId, filename),
+                debug: {
+                  transport: 'mock-simulated',
+                  provider,
+                  model,
+                  promptPreview,
+                  promptUsedPreview: String(prompt || '').slice(0, 240),
+                  simulated: {
+                    delayMs,
+                    failureRate,
+                    asyncRequested: asyncRequested && !bypassPipeline,
+                  },
+                },
+              });
+            }
 
 		        try {
 		          if (provider === 'gemini') {
@@ -3283,6 +3348,72 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         };
 
         const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
+        const simulateGemini = isGeminiSimulationEnabled({ provider, model, env });
+        if (simulateGemini) {
+          const stepMinMs = clampNumber(env.VISION_SIM_SCAFFOLD_STEP_MIN_MS, 120, 60_000, 700);
+          const stepMaxMs = clampNumber(env.VISION_SIM_SCAFFOLD_STEP_MAX_MS, stepMinMs, 90_000, 2200);
+          const failRate = clampNumber(env.VISION_SIM_SCAFFOLD_FAIL_RATE, 0, 1, 0);
+          const failAgentName = String(env.VISION_SIM_SCAFFOLD_FAIL_AGENT || '').trim().toLowerCase();
+          const agents = [
+            'director.brief',
+            'casting_director',
+            'environment_director',
+            'script_writer',
+            'editor',
+            'camera_art',
+            'director.merge',
+          ];
+          const teamTrace: any[] = [];
+          const traceId = crypto.randomUUID();
+          for (const agent of agents) {
+            emit('progress', { agent, provider, model });
+            const ms = randomIntBetween(stepMinMs, stepMaxMs);
+            await sleep(ms);
+            const forceFail = failAgentName && failAgentName === agent.toLowerCase();
+            const randomFail = !forceFail && Math.random() < failRate;
+            if (forceFail || randomFail) {
+              const errText = `Simulated scaffold failure at ${agent}`;
+              const failTrace = { agent, provider, model, ms, ok: false, error: errText };
+              teamTrace.push(failTrace);
+              emit('trace', failTrace);
+              if (!allowSingleFallback) {
+                return finish(502, {
+                  ok: false,
+                  errorCode: 'MULTI_AGENT_FAILED',
+                  message: 'Multi-agent scaffold failed (simulated)',
+                  provider,
+                  model,
+                  traceId,
+                  teamTrace,
+                  mode: 'multi-agent',
+                  multiAgentError: errText,
+                });
+              }
+              break;
+            }
+            const okTrace = { agent, provider, model, ms, ok: true, gateway: 'mock-simulated' };
+            teamTrace.push(okTrace);
+            emit('trace', okTrace);
+          }
+          const payload = mock();
+          payload.plan.summary = 'Scaffolded a first-pass story structure (Gemini simulated API).';
+          payload.debug = {
+            ...(payload.debug || {}),
+            transport: 'mock-simulated',
+            provider,
+            model,
+            traceId,
+            teamTrace,
+            mode: 'multi-agent',
+            simulated: {
+              stepMinMs,
+              stepMaxMs,
+              failRate,
+              failAgent: failAgentName || undefined,
+            },
+          };
+          return finish(200, payload as any);
+        }
 
 	        const inferStyleLockFromIntent = (rawIntent: string) => {
 	          const t = String(rawIntent || '').toLowerCase();
