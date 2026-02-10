@@ -129,3 +129,13 @@ Batch 3 (style strategy decision required):
 - Choose avatar strategy A vs B.
 - Implement chosen strategy consistently in avatar/look/shot prompts and the reference policy text.
 
+---
+
+## Debug Iteration Addendum (2026-02-11)
+
+For pipeline/task-tracking regressions, use the heavy mock interaction harness instead of relying only on unit tests.
+
+- Playbook: `docs/debug_iteration.md`
+- Postmortem: `docs/task_tracking_postmortem_2026-02-11.md`
+- Skill proposal: `docs/skill_proposal_mock-real-interaction-debug.md`
+- Runner: `scripts/debug-iteration.mjs`

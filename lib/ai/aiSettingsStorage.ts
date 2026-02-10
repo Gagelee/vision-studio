@@ -12,6 +12,8 @@ const normalizeGeminiModel = (model: string): string => {
   return m;
 };
 
+const isSimulatedGeminiModel = (model: string): boolean => /^mock[-_]?sim/i.test(String(model || '').trim());
+
 const getDefaultModelSettings = (): ModelRuntimeSettings => ({
   provider: 'gemini',
   model: 'gemini-3-flash-preview',
@@ -102,12 +104,24 @@ export const loadAiSettings = (): AiSettings => {
       return s;
     };
 
+    const forceSimulatedGeminiModel = (s: ModelRuntimeSettings, fallbackModel = 'mock-sim'): ModelRuntimeSettings => {
+      if (s.provider !== 'gemini') return s;
+      if (isSimulatedGeminiModel(String(s.model || ''))) return s;
+      return { ...s, model: fallbackModel };
+    };
+
     return {
       ...loaded,
-      scaffoldPlanner: bumpScaffoldTokens(preferFlash(normalize(loaded.scaffoldPlanner))),
-      scaffoldWorker: bumpScaffoldTokens(preferFlash(normalize(loaded.scaffoldWorker))),
+      scaffoldPlanner: forceSimulatedGeminiModel(
+        bumpScaffoldTokens(preferFlash(normalize(loaded.scaffoldPlanner))),
+        'mock-sim-scaffold-planner',
+      ),
+      scaffoldWorker: forceSimulatedGeminiModel(
+        bumpScaffoldTokens(preferFlash(normalize(loaded.scaffoldWorker))),
+        'mock-sim-scaffold-worker',
+      ),
       direct: preferFlash(normalize(loaded.direct)),
-      image: normalize(loaded.image),
+      image: forceSimulatedGeminiModel(normalize(loaded.image), 'mock-sim-image'),
     };
   } catch {
     return getDefaultAiSettings();

@@ -25,7 +25,7 @@ export type AssetJobEvent =
   | { type: 'start'; job: AssetJob; done: number; total: number }
   | { type: 'task'; job: AssetJob; done: number; total: number; taskId: string; statusUrl?: string }
   | { type: 'success'; job: AssetJob; done: number; total: number; imageUrl: string; debug?: any; meta?: any }
-  | { type: 'error'; job: AssetJob; done: number; total: number; error: string }
+  | { type: 'error'; job: AssetJob; done: number; total: number; error: string; taskId?: string; statusUrl?: string }
   | { type: 'blocked'; job: AssetJob; done: number; total: number; reason: string };
 
 type AssetTaskLedgerJobRef =
@@ -1185,6 +1185,8 @@ export const executeAssetJobs = async (args: {
             strict: true,
             requireAllReferences: false,
             async: true,
+            pipelinePriority: 'high',
+            pollIntervalMs: 450,
             }),
           );
           const meta = withTaskMeta({
@@ -1392,7 +1394,17 @@ export const executeAssetJobs = async (args: {
     } catch (e) {
       done += 1;
       errors += 1;
-      emitEvent({ type: 'error', job, done, total, error: e instanceof Error ? e.message : String(e) });
+      const taskId = String((e as any)?.taskId || '').trim();
+      const statusUrl = String((e as any)?.statusUrl || '').trim();
+      emitEvent({
+        type: 'error',
+        job,
+        done,
+        total,
+        error: e instanceof Error ? e.message : String(e),
+        taskId: taskId || undefined,
+        statusUrl: statusUrl || undefined,
+      });
     }
   };
 

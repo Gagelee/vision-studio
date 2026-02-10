@@ -1662,7 +1662,7 @@ export default function App() {
       } finally {
         pipelineReconcileInFlightRef.current = false;
       }
-    }, 8_000);
+    }, 2_500);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -3049,12 +3049,19 @@ export default function App() {
         if (ev.type === 'error') {
           releaseJobController(ev.job);
           storyRef = applyAssetError(storyRef, ev.job, ev.error);
-          updateStoryById(projectId, (prev) => applyAssetError(prev, ev.job, ev.error));
+          if (ev.taskId) {
+            storyRef = applyAssetTaskBinding(storyRef, ev.job, { taskId: ev.taskId, statusUrl: ev.statusUrl });
+          }
+          updateStoryById(projectId, (prev) => {
+            const errored = applyAssetError(prev, ev.job, ev.error);
+            if (ev.taskId) return applyAssetTaskBinding(errored, ev.job, { taskId: ev.taskId, statusUrl: ev.statusUrl });
+            return errored;
+          });
           addDebugEvent({
             level: 'warn',
             scope: 'asset.exec',
             message: 'Error',
-            data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error },
+            data: { done: ev.done, total: ev.total, job: ev.job, error: ev.error, taskId: ev.taskId, statusUrl: ev.statusUrl },
           });
         }
         if (ev.done === ev.total) addToast('Assets generated (director).', 'success');

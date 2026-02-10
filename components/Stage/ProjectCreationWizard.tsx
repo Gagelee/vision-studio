@@ -652,7 +652,10 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                   } else if (ev.type === 'blocked') {
                     storyRef.current = applyAssetBlocked(currentStory, ev.job, ev.reason);
                   } else {
-                    storyRef.current = applyAssetError(currentStory, ev.job, ev.error);
+                    const errored = applyAssetError(currentStory, ev.job, ev.error);
+                    storyRef.current = ev.taskId
+                      ? applyAssetTaskBinding(errored, ev.job, { taskId: ev.taskId, statusUrl: ev.statusUrl })
+                      : errored;
                   }
                   if (storyRef.current) onDraftProject?.(storyRef.current);
                   return;
@@ -731,8 +734,11 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 		            // error
                 assetJobAbortControllersRef.current.delete(getAssetJobKey(res.story.id, ev.job));
 	            storyRef.current = applyAssetError(currentStory, ev.job, ev.error);
-	            done = ev.done;
-	            errors += 1;
+                if (ev.taskId) {
+                  storyRef.current = applyAssetTaskBinding(storyRef.current, ev.job, { taskId: ev.taskId, statusUrl: ev.statusUrl });
+                }
+		            done = ev.done;
+		            errors += 1;
 	            setAssetDone(ev.done);
 	            setAssetErrors((n) => n + 1);
 	            setAssetCurrent(getJobLabel(ev.job, storyRef.current));

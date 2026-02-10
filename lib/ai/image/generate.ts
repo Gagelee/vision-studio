@@ -50,6 +50,8 @@ export const generateImageFromPrompt = async (req: {
   strict?: boolean;
   requireAllReferences?: boolean;
   async?: boolean;
+  pipelinePriority?: 'high' | 'normal';
+  pollIntervalMs?: number;
   onTaskAccepted?: (task: { taskId: string; statusUrl: string }) => void;
 }): Promise<GenerateShotImageResponse> => {
   try {
@@ -89,6 +91,7 @@ export const generateImageFromPrompt = async (req: {
         aspectRatio: req.aspectRatio,
         references: Array.isArray(req.references) ? req.references : [],
         requireAllReferences: Boolean(req.requireAllReferences),
+        pipelinePriority: req.pipelinePriority === 'high' ? 'high' : 'normal',
         settings: {
           provider: req.settings.provider,
           model: req.settings.model,
@@ -119,7 +122,7 @@ export const generateImageFromPrompt = async (req: {
       });
 
       const pollTimeoutMs = 20 * 60_000;
-      const pollIntervalMs = 2_000;
+      const pollIntervalMs = Math.max(250, Number(req.pollIntervalMs || 1200));
       const pollStartedAt = Date.now();
       let consecutivePollErrors = 0;
       const maxConsecutivePollErrors = 6;

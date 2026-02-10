@@ -1459,6 +1459,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   type QueuedTask = {
     token: Omit<PipelineTaskToken, 'startedAt' | 'attempt'>;
     start: (token: PipelineTaskToken) => void;
+    priority?: 'high' | 'normal';
   };
   const pipelineConcurrencyPerUser = Math.max(1, Math.min(16, Number(env.VISION_PIPELINE_CONCURRENCY_PER_USER || 2)));
   const pipelineMaxQueuePerUser = Math.max(1, Math.min(200, Number(env.VISION_PIPELINE_MAX_QUEUE_PER_USER || 24)));
@@ -1591,7 +1592,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   const enqueuePipelineTask = (
     req: any,
     res: any,
-    args: { kind: PipelineKind; route: string },
+    args: { kind: PipelineKind; route: string; priority?: 'high' | 'normal' },
   ): { tokenBase: Omit<PipelineTaskToken, 'startedAt' | 'attempt'>; started: Promise<PipelineTaskToken> } | null => {
     const userId = getRequestUserId(req);
     const rate = takePipelineRateToken(userId, args.kind);
@@ -1659,10 +1660,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
     });
 
     const started = new Promise<PipelineTaskToken>((resolve) => {
-      queue.push({
+      const queuedTask: QueuedTask = {
         token: tokenBase,
         start: resolve,
-      });
+        priority: args.priority === 'high' ? 'high' : 'normal',
+      };
+      if (queuedTask.priority === 'high') queue.unshift(queuedTask);
+      else queue.push(queuedTask);
     });
     pipelineQueueByUser.set(userId, queue);
     pumpPipelineQueueForUser(userId);
@@ -1699,7 +1703,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   const beginPipelineTask = async (
     req: any,
     res: any,
-    args: { kind: PipelineKind; route: string },
+    args: { kind: PipelineKind; route: string; priority?: 'high' | 'normal' },
   ): Promise<PipelineTaskToken | null> => {
     const enqueued = enqueuePipelineTask(req, res, args);
     if (!enqueued) return null;
@@ -1744,9 +1748,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   const withPipelineTask = async <T,>(
     req: any,
     res: any,
-    args: { kind: PipelineKind; route: string; run: () => Promise<T> },
+    args: { kind: PipelineKind; route: string; priority?: 'high' | 'normal'; run: () => Promise<T> },
   ) => {
-    const token = await beginPipelineTask(req, res, { kind: args.kind, route: args.route });
+    const token = await beginPipelineTask(req, res, { kind: args.kind, route: args.route, priority: args.priority });
     if (!token) return null;
     let lastErr: any = null;
     try {
@@ -1789,9 +1793,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   const submitPipelineTask = <T,>(
     req: any,
     res: any,
-    args: { kind: PipelineKind; route: string; run: () => Promise<T>; mapResult?: (out: T) => any },
+    args: { kind: PipelineKind; route: string; priority?: 'high' | 'normal'; run: () => Promise<T>; mapResult?: (out: T) => any },
   ): { taskId: string; statusUrl: string } | null => {
-    const enqueued = enqueuePipelineTask(req, res, { kind: args.kind, route: args.route });
+    const enqueued = enqueuePipelineTask(req, res, { kind: args.kind, route: args.route, priority: args.priority });
     if (!enqueued) return null;
     const taskId = enqueued.tokenBase.id;
     enqueued.started
@@ -1865,12 +1869,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
       middlewares.use('/api/pipeline/tasks', async (req: any, res: any, next: any) => {
         if (req.method !== 'GET') return next();
-        const full = String(req?.url || '');
+        const full = String(req?.originalUrl || req?.url || '');
         const [pathnameRaw, queryRaw] = full.split('?');
         const pathname = String(pathnameRaw || '');
         const base = '/api/pipeline/tasks';
         const query = new URLSearchParams(String(queryRaw || ''));
-        if (pathname === base || pathname === `${base}/`) {
+        const isMountedRoot = pathname === '' || pathname === '/';
+        if (isMountedRoot || pathname === base || pathname === `${base}/`) {
           const limit = Math.max(1, Math.min(500, Number(query.get('limit') || 100)));
           const userId = normalizeUserId(query.get('userId') || '');
           const status = String(query.get('status') || '').trim();
@@ -1882,8 +1887,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             .slice(0, limit);
           return sendJson(res, 200, { ok: true, count: out.length, tasks: out as any });
         }
-        if (pathname.startsWith(`${base}/`)) {
-          const id = decodeURIComponent(pathname.slice(`${base}/`.length));
+        const taskIdPath = pathname.startsWith(`${base}/`)
+          ? pathname.slice(`${base}/`.length)
+          : pathname.startsWith('/')
+            ? pathname.slice(1)
+            : '';
+        if (taskIdPath) {
+          const id = decodeURIComponent(taskIdPath);
           const task = pipelineTaskStateById.get(id);
           if (!task) return sendJson(res, 404, { ok: false, error: 'Task not found' });
           return sendJson(res, 200, { ok: true, task });
@@ -2854,7 +2864,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             const bypassPipeline = String(reqUrl.searchParams.get('bypassPipeline') || '').trim() === '1';
             const preferHeader = String(req?.headers?.prefer || req?.headers?.Prefer || '').toLowerCase();
             const body = await readJsonBody(req);
-            const asyncRequested = !bypassPipeline && (Boolean(body?.async) || preferHeader.includes('respond-async'));
+            const requestSettings = body?.settings || {};
+            const requestProvider = String(requestSettings?.provider || 'gemini');
+            const requestModel = String(requestSettings?.model || 'nano-banana-pro');
+            const requestPriority = String(body?.pipelinePriority || '').trim().toLowerCase() === 'high' ? 'high' : 'normal';
+            const simulatedGeminiRequest = isGeminiSimulationEnabled({ provider: requestProvider, model: requestModel, env });
+            const simulatedBypassPipeline =
+              simulatedGeminiRequest &&
+              (String(env.VISION_SIM_IMAGE_BYPASS_PIPELINE || '').trim() === '1' ||
+                /^true$/i.test(String(env.VISION_SIM_IMAGE_BYPASS_PIPELINE || '').trim()));
+            const asyncRequested = !bypassPipeline && !simulatedBypassPipeline && (Boolean(body?.async) || preferHeader.includes('respond-async'));
             const runImageGenerate = async (inputBody: any = body) => {
               const body = inputBody || {};
 
@@ -2879,8 +2898,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		        const promptPreview = prompt.slice(0, 120);
 
             if (simulateGemini) {
-              const delayMinMs = clampNumber(env.VISION_SIM_IMAGE_MIN_MS, 100, 120_000, 2500);
-              const delayMaxMs = clampNumber(env.VISION_SIM_IMAGE_MAX_MS, delayMinMs, 180_000, 8500);
+              const delayMinMs = clampNumber(env.VISION_SIM_IMAGE_MIN_MS, 50, 120_000, 250);
+              const delayMaxMs = clampNumber(env.VISION_SIM_IMAGE_MAX_MS, delayMinMs, 180_000, 900);
               const failureRate = clampNumber(env.VISION_SIM_IMAGE_FAIL_RATE, 0, 1, 0);
               const delayMs = randomIntBetween(delayMinMs, delayMaxMs);
               await sleep(delayMs);
@@ -3164,6 +3183,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               const submitted = submitPipelineTask(req, res, {
                 kind: 'asset.image.generate',
                 route: '/api/asset/image/generate',
+                priority: requestPriority,
                 run: async () => {
                   const internalBase = String(env.VISION_INTERNAL_BASE_URL || `http://127.0.0.1:${String(env.PORT || '3000')}`).replace(/\/$/, '');
                   const internalUrl = `${internalBase}/api/asset/image/generate?bypassPipeline=1`;
@@ -3207,10 +3227,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               });
             }
 
-            if (bypassPipeline) return runImageGenerate(body);
+            if (bypassPipeline || simulatedBypassPipeline) return runImageGenerate(body);
             return withPipelineTask(req, res, {
               kind: 'asset.image.generate',
               route: '/api/asset/image/generate',
+              priority: requestPriority,
               run: async () => runImageGenerate(body),
             });
       });
@@ -3350,8 +3371,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const scaffoldPrompt = buildScaffoldPrompt({ intent, aspectRatio });
         const simulateGemini = isGeminiSimulationEnabled({ provider, model, env });
         if (simulateGemini) {
-          const stepMinMs = clampNumber(env.VISION_SIM_SCAFFOLD_STEP_MIN_MS, 120, 60_000, 700);
-          const stepMaxMs = clampNumber(env.VISION_SIM_SCAFFOLD_STEP_MAX_MS, stepMinMs, 90_000, 2200);
+          const stepMinMs = clampNumber(env.VISION_SIM_SCAFFOLD_STEP_MIN_MS, 40, 60_000, 90);
+          const stepMaxMs = clampNumber(env.VISION_SIM_SCAFFOLD_STEP_MAX_MS, stepMinMs, 90_000, 260);
           const failRate = clampNumber(env.VISION_SIM_SCAFFOLD_FAIL_RATE, 0, 1, 0);
           const failAgentName = String(env.VISION_SIM_SCAFFOLD_FAIL_AGENT || '').trim().toLowerCase();
           const agents = [
