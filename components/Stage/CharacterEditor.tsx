@@ -70,22 +70,20 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
 
   const mergeRuntimeAssetFields = (baseDraft: Character, source: Character): Character => {
     if (String(baseDraft.id || '') !== String(source.id || '')) return normalizeDraft(source);
-    const srcByLookId = new Map((source.looks || []).map((lk) => [String(lk.id), lk]));
-    const mergedLooks = (baseDraft.looks || []).map((lk) => {
-      const src = srcByLookId.get(String(lk.id));
-      if (!src) return lk;
+    const baseByLookId = new Map((baseDraft.looks || []).map((lk) => [String(lk.id), lk]));
+    // Runtime source is authoritative: remove looks that no longer exist upstream.
+    const mergedLooks = (source.looks || []).map((src) => {
+      const lk = baseByLookId.get(String(src.id));
+      if (!lk) return src;
       return {
         ...lk,
+        ...src,
         previewUrl: src.previewUrl,
         previewVersions: (src as any).previewVersions,
         activePreviewVersionId: (src as any).activePreviewVersionId,
         assetState: (src as any).assetState,
       } as any;
     });
-    const known = new Set(mergedLooks.map((lk) => String(lk.id)));
-    for (const src of source.looks || []) {
-      if (!known.has(String(src.id))) mergedLooks.push(src);
-    }
     return normalizeDraft({
       ...baseDraft,
       avatarUrl: source.avatarUrl,
@@ -140,6 +138,22 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     character.looks,
   ]);
 
+  useEffect(() => {
+    // If runtime state already settled, clear any stale local busy flags.
+    setGeneratingLookIds((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const lk of character.looks || []) {
+        const st = String((lk as any)?.assetState?.status || '').toLowerCase();
+        if ((st === 'done' || st === 'error' || st === 'blocked') && next[lk.id]) {
+          next[lk.id] = false;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [character.looks]);
+
   const isLookBoundToAvatar = (look: CharacterLook, avatarVersionId: string) => {
     const activeId = String((look as any)?.activePreviewVersionId || '').trim();
     if (!activeId || !avatarVersionId) return false;
@@ -165,8 +179,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   const isDirty = JSON.stringify(draft) !== JSON.stringify(normalizedCharacter);
   const isLocked = draft.status === 'locked';
   const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
-  const avatarStatus = draft.assetState?.status || character.assetState?.status;
-  const isAvatarBusy = isGeneratingAvatar;
+  const avatarStatus = character.assetState?.status || draft.assetState?.status;
+  const isAvatarBusy = isGeneratingAvatar || avatarStatus === 'running' || avatarStatus === 'queued';
   const referenceImages = Array.isArray((draft as any).referenceImages) ? (draft as any).referenceImages : [];
   const maxReferenceImages = 4;
   const useReferenceImages = (draft as any).referenceMode !== 'off';
@@ -298,7 +312,18 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
       const versions = (look as any).previewVersions || seeded.versions;
       const match = (versions || []).find((ver: any) => String(ver?.metadata?.sourceAvatarVersionId || '') === String(active.id));
       if (!match) {
-        return { ...look, previewUrl: '', previewVersions: versions, activePreviewVersionId: '' as any };
+        return {
+          ...look,
+          previewUrl: '',
+          previewVersions: versions,
+          activePreviewVersionId: '' as any,
+          assetState: {
+            ...((look as any).assetState || {}),
+            status: 'blocked',
+            lastError: 'Look is not bound to the selected avatar. Regenerate look for this avatar.',
+            lastAttemptAt: Date.now(),
+          },
+        };
       }
       return { ...look, previewUrl: String(match.imageUrl), previewVersions: versions, activePreviewVersionId: String(match.id) as any };
     });
@@ -872,8 +897,9 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                         const liveLook = character.looks?.find((lk) => lk.id === look.id);
                         const draftStatus = (look as any).assetState?.status;
                         const liveStatus = (liveLook as any)?.assetState?.status;
-                        const lookStatus = draftStatus || liveStatus;
-                        const isLookBusy = Boolean(generatingLookIds[look.id]);
+                        // Prefer live runtime status from the parent story state to avoid stale local "running".
+                        const lookStatus = liveStatus || draftStatus;
+                        const isLookBusy = Boolean(generatingLookIds[look.id]) && lookStatus !== 'done' && lookStatus !== 'error';
                         return (
                           <div
                             key={look.id}

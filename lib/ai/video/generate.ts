@@ -12,6 +12,7 @@ export interface GenerateVideoFromImageRequest {
   generateAudio?: boolean;
   model?: string;
   signal?: AbortSignal;
+  onTaskAccepted?: (task: { taskId: string; statusUrl: string }) => void;
   promptSpec?: {
     shotDescription?: string;
     action?: string;
@@ -155,6 +156,7 @@ export const generateVideoFromImage = async (
       const taskId = String(data.taskId || '').trim();
       const statusUrl = joinPossiblyRelativeUrl(req.baseUrl, String(data.statusUrl || '').trim());
       if (!taskId || !statusUrl) throw new Error('Video task accepted but missing taskId/statusUrl');
+      req.onTaskAccepted?.({ taskId, statusUrl });
       addDebugEvent({
         level: 'info',
         scope: 'asset.video',
@@ -165,6 +167,8 @@ export const generateVideoFromImage = async (
       const pollTimeoutMs = 20 * 60_000;
       const pollIntervalMs = 2_000;
       const pollStartedAt = Date.now();
+      let consecutivePollErrors = 0;
+      const maxConsecutivePollErrors = 6;
       while (true) {
         if (Date.now() - pollStartedAt > pollTimeoutMs) {
           const err: any = new Error(`Video task timeout after ${Math.round(pollTimeoutMs / 1000)}s`);
@@ -172,42 +176,63 @@ export const generateVideoFromImage = async (
           throw err;
         }
         await sleepWithSignal(pollIntervalMs, controller.signal);
-        const statusRes = await fetch(statusUrl, {
-          method: 'GET',
-          headers: getVisionUserRequestHeaders(),
-          signal: controller.signal,
-        });
-        if (!statusRes.ok) {
-          const text = await statusRes.text().catch(() => '');
-          throw new Error(`Task status fetch failed (HTTP ${statusRes.status})${text ? `: ${text}` : ''}`);
-        }
-        const statusJson = (await statusRes.json().catch(() => null)) as any;
-        const task = statusJson?.task;
-        const status = String(task?.status || '').toLowerCase();
-        if (!status) continue;
-        addDebugEvent({
-          level: 'info',
-          scope: 'asset.video',
-          message: 'Async task poll',
-          data: { taskId, status, attempts: task?.attempts, endedAt: task?.endedAt },
-        });
-        if (status === 'queued' || status === 'running') continue;
-        if (status === 'success') {
-          const videoUrl = String(task?.result?.videoUrl || '').trim();
-          if (!videoUrl) throw new Error('Video task completed without videoUrl');
-          return {
-            videoUrl,
-            operationName: String(task?.result?.operationName || '').trim() || undefined,
-            taskId,
-            debug: { ...(task?.result || {}), task },
-          };
-        }
-        if (status === 'failed') {
-          const errText = String(task?.error || 'Video task failed');
-          const err: any = new Error(errText);
-          err.taskId = taskId;
-          err.task = task;
-          throw err;
+        try {
+          const statusRes = await fetch(statusUrl, {
+            method: 'GET',
+            headers: getVisionUserRequestHeaders(),
+            signal: controller.signal,
+          });
+          if (!statusRes.ok) {
+            if (statusRes.status === 404) {
+              const err: any = new Error('Video task not found');
+              err.code = 'PIPELINE_TASK_NOT_FOUND';
+              err.taskId = taskId;
+              throw err;
+            }
+            const text = await statusRes.text().catch(() => '');
+            throw new Error(`Task status fetch failed (HTTP ${statusRes.status})${text ? `: ${text}` : ''}`);
+          }
+          const statusJson = (await statusRes.json().catch(() => null)) as any;
+          const task = statusJson?.task;
+          const status = String(task?.status || '').toLowerCase();
+          consecutivePollErrors = 0;
+          if (!status) continue;
+          addDebugEvent({
+            level: 'info',
+            scope: 'asset.video',
+            message: 'Async task poll',
+            data: { taskId, status, attempts: task?.attempts, endedAt: task?.endedAt },
+          });
+          if (status === 'queued' || status === 'running') continue;
+          if (status === 'success') {
+            const videoUrl = String(task?.result?.videoUrl || '').trim();
+            if (!videoUrl) throw new Error('Video task completed without videoUrl');
+            return {
+              videoUrl,
+              operationName: String(task?.result?.operationName || '').trim() || undefined,
+              taskId,
+              debug: { ...(task?.result || {}), task },
+            };
+          }
+          if (status === 'failed') {
+            const errText = String(task?.error || 'Video task failed');
+            const err: any = new Error(errText);
+            err.taskId = taskId;
+            err.task = task;
+            throw err;
+          }
+        } catch (pollErr) {
+          if (pollErr instanceof DOMException && pollErr.name === 'AbortError') throw pollErr;
+          const code = String((pollErr as any)?.code || '').trim();
+          if (code === 'PIPELINE_TASK_NOT_FOUND') throw pollErr;
+          consecutivePollErrors += 1;
+          if (consecutivePollErrors >= maxConsecutivePollErrors) {
+            const err: any = new Error(
+              `Video task status polling failed (${consecutivePollErrors} consecutive errors): ${String((pollErr as any)?.message || pollErr)}`,
+            );
+            err.taskId = taskId;
+            throw err;
+          }
         }
       }
     }

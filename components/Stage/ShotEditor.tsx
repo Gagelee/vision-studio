@@ -1396,7 +1396,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	                ) : (
 	                    <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
 	                        <MonitorPlay className="w-12 h-12 opacity-50" />
-                        <span>No generated keyframe</span>
+                        <span>No frame image</span>
                     </div>
                 )}
 

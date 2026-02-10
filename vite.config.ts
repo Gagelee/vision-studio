@@ -2031,22 +2031,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           parts.push(line);
         };
         const parts: string[] = [];
-        parts.push('Image-to-video: keep subject/environment from the source frame. Focus on detailed motion and performance beats.');
-        if (core) parts.push(`Core direction: ${core}`);
+        if (core) parts.push(core);
         pushIfMissing(['current frame', 'frame description'], spec?.frameDescription ? `Current frame: ${String(spec.frameDescription).trim()}` : '');
-        pushIfMissing(['story context', 'narrative context'], spec?.storyContext ? `Story context: ${String(spec.storyContext).trim()}` : '');
         pushIfMissing(['scene'], spec?.shotDescription ? `Scene: ${String(spec.shotDescription).trim()}` : '');
         pushIfMissing(['acting direction', 'performance direction'], spec?.actingDirection ? `Acting direction: ${String(spec.actingDirection).trim()}` : '');
         pushIfMissing(['action'], spec?.action ? `Action: ${String(spec.action).trim()}` : '');
-        pushIfMissing(['dialogue'], Array.isArray(spec?.dialogue) && spec.dialogue.length ? `Dialogue: ${spec.dialogue.map((x: any) => `"${String(x || '').trim()}"`).join(' ')}` : '');
-        pushIfMissing(['director notes'], spec?.directorNotes ? `Director notes: ${String(spec.directorNotes).trim()}` : '');
         pushIfMissing(['cameraman', 'camera plan'], spec?.cameraman ? `Cameraman plan: ${String(spec.cameraman).trim()}` : '');
         pushIfMissing(['camera motion', 'camera'], spec?.camera ? `Camera motion: ${String(spec.camera).trim()}` : '');
         pushIfMissing(['composition'], spec?.composition ? `Composition: ${String(spec.composition).trim()}` : '');
         pushIfMissing(['lens/look', 'lens'], spec?.lensEffect ? `Lens behavior: ${String(spec.lensEffect).trim()}` : '');
         pushIfMissing(['lighting and mood', 'lighting', 'mood'], spec?.mood ? `Lighting continuity: ${String(spec.mood).trim()}` : '');
         parts.push('Look lock: keep the source image style and identity; do not introduce a new style treatment.');
-        pushIfMissing(['audio intent', 'audio'], spec?.audio ? `Audio intent: ${String(spec.audio).trim()}` : '');
         if (Array.isArray(spec?.referenceFrames) && spec.referenceFrames.length) {
           const frameSummary = spec.referenceFrames
             .slice(0, 8)
@@ -2056,7 +2051,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               return d ? `${idx} ${d}` : idx;
             })
             .join(' | ');
-          pushIfMissing(['reference frames', 'reference bundle'], frameSummary ? `Reference frame bundle: ${frameSummary}` : '');
+          pushIfMissing(['grid beat continuity', 'reference frames', 'reference bundle'], frameSummary ? `Grid beat continuity: ${frameSummary}` : '');
         }
         if (refUrls.length > 1) {
           parts.push(
@@ -2824,12 +2819,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
 			    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
 			      if (req.method !== 'POST') return next();
-            return withPipelineTask(req, res, {
-              kind: 'asset.image.generate',
-              route: '/api/asset/image/generate',
-              run: async () => {
             const userId = getRequestUserId(req);
-			        const body = await readJsonBody(req);
+            const reqUrl = new URL(String(req?.url || '/api/asset/image/generate'), 'http://127.0.0.1');
+            const bypassPipeline = String(reqUrl.searchParams.get('bypassPipeline') || '').trim() === '1';
+            const preferHeader = String(req?.headers?.prefer || req?.headers?.Prefer || '').toLowerCase();
+            const body = await readJsonBody(req);
+            const asyncRequested = !bypassPipeline && (Boolean(body?.async) || preferHeader.includes('respond-async'));
+            const runImageGenerate = async (inputBody: any = body) => {
+              const body = inputBody || {};
 
 		        const prompt = String(body?.prompt || '').trim();
 		        const promptSpec = body?.promptSpec;
@@ -3096,7 +3093,60 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           imageUrl: url,
           debug: { transport: 'mock', provider, model, promptPreview },
         });
-              },
+            };
+
+            if (asyncRequested) {
+              const submitted = submitPipelineTask(req, res, {
+                kind: 'asset.image.generate',
+                route: '/api/asset/image/generate',
+                run: async () => {
+                  const internalBase = String(env.VISION_INTERNAL_BASE_URL || `http://127.0.0.1:${String(env.PORT || '3000')}`).replace(/\/$/, '');
+                  const internalUrl = `${internalBase}/api/asset/image/generate?bypassPipeline=1`;
+                  const resp = await fetch(internalUrl, {
+                    method: 'POST',
+                    headers: {
+                      'content-type': 'application/json',
+                      [VISION_USER_ID_HEADER]: userId,
+                      'x-vision-internal-pipeline': '1',
+                    },
+                    body: JSON.stringify({ ...body, async: false }),
+                  });
+                  const data = (await resp.json().catch(() => null)) as any;
+                  if (!resp.ok) {
+                    const err: any = new Error(String(data?.error || `HTTP ${resp.status}`));
+                    err.status = resp.status;
+                    err.debug = data?.debug;
+                    throw err;
+                  }
+                  return data;
+                },
+                mapResult: (out: any) => ({
+                  imageUrl: String(out?.imageUrl || ''),
+                  debug:
+                    out?.debug && typeof out.debug === 'object'
+                      ? {
+                          transport: out.debug.transport,
+                          provider: out.debug.provider,
+                          model: out.debug.model,
+                          promptUsedPreview: String(out.debug.promptUsedPreview || '').slice(0, 240),
+                        }
+                      : undefined,
+                }),
+              });
+              if (!submitted) return;
+              return sendJson(res, 202, {
+                ok: true,
+                accepted: true,
+                taskId: submitted.taskId,
+                statusUrl: submitted.statusUrl,
+              });
+            }
+
+            if (bypassPipeline) return runImageGenerate(body);
+            return withPipelineTask(req, res, {
+              kind: 'asset.image.generate',
+              route: '/api/asset/image/generate',
+              run: async () => runImageGenerate(body),
             });
       });
 

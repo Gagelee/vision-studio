@@ -25,7 +25,7 @@ import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
 import { getCharacterActiveAvatarUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
-import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
+import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, applyAssetTaskBinding, buildAssetJobs, clearAssetTaskBinding, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
 import { generateVideoFromImage } from './lib/ai/video/generate';
 import { buildActingDirection, composeStructuredVideoPrompt, extractDialogueLines, resolveVideoSourceBundle } from './lib/ai/videoPromptComposer';
 import { getOrCreateVisionUserId, getVisionUserRequestHeaders } from './lib/userSession';
@@ -69,8 +69,8 @@ interface PendingInteractionGeneration {
 }
 
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
-const STALE_GENERATION_MAX_AGE_MS = 30 * 60_000;
-const STALE_PRODUCTION_MAX_AGE_MS = 60 * 60_000;
+const STALE_GENERATION_MAX_AGE_MS = 8 * 60_000;
+const STALE_PRODUCTION_MAX_AGE_MS = 20 * 60_000;
 const GENERATED_PREFIX = '/__generated__/';
 
 const collectGeneratedAssetUrlsFromStory = (story: Story): string[] => {
@@ -138,6 +138,7 @@ const recoverAssetStateIfStale = (state: any, now: number, fallbackTs: number): 
   if (!state) return { next: state, fixed: false };
   const status = String(state.status || '').toLowerCase();
   if (status !== 'queued' && status !== 'running') return { next: state, fixed: false };
+  if (String(state.pipelineTaskId || '').trim()) return { next: state, fixed: false };
   const ts = typeof state.lastAttemptAt === 'number' ? state.lastAttemptAt : fallbackTs;
   if (!ts || now - ts < STALE_GENERATION_MAX_AGE_MS) return { next: state, fixed: false };
   return {
@@ -155,6 +156,7 @@ const recoverProductionStateIfStale = (production: any, now: number, fallbackTs:
   if (!production || typeof production !== 'object') return { next: production, fixed: false };
   const status = String(production.status || '').toLowerCase();
   if (status !== 'queued' && status !== 'running') return { next: production, fixed: false };
+  if (String(production.pipelineTaskId || '').trim()) return { next: production, fixed: false };
   const ts = typeof production.lastStartedAt === 'number' ? production.lastStartedAt : fallbackTs;
   if (!ts || now - ts < STALE_PRODUCTION_MAX_AGE_MS) return { next: production, fixed: false };
   return {
@@ -373,6 +375,224 @@ const mergeShotProductionState = (current: any, incoming: any) => {
   if (incomingScore > currentScore) return incoming;
   if (currentScore > incomingScore) return current;
   return preferTerminalStatus(String(current?.status || ''), String(incoming?.status || '')) ? current : incoming;
+};
+
+type AssetTaskBinding = { taskId: string; statusUrl?: string; job: AssetJob };
+type ProductionTaskBinding = { taskId: string; statusUrl?: string; sequenceId: string; shotId: string };
+
+const collectStoryPipelineBindings = (story: Story): { assets: AssetTaskBinding[]; productions: ProductionTaskBinding[] } => {
+  const assets: AssetTaskBinding[] = [];
+  const productions: ProductionTaskBinding[] = [];
+  const shouldTrackAsset = (state: any) => {
+    const taskId = String(state?.pipelineTaskId || '').trim();
+    if (!taskId) return false;
+    const status = String(state?.status || '').toLowerCase();
+    return status === 'queued' || status === 'running' || status === 'error' || status === 'blocked';
+  };
+  const shouldTrackProduction = (state: any) => {
+    const taskId = String(state?.pipelineTaskId || '').trim();
+    if (!taskId) return false;
+    const status = String(state?.status || '').toLowerCase();
+    return status === 'queued' || status === 'running' || status === 'error';
+  };
+
+  const masterState = (story as any)?.masterKvState;
+  if (shouldTrackAsset(masterState)) {
+    assets.push({
+      taskId: String(masterState?.pipelineTaskId || '').trim(),
+      statusUrl: String(masterState?.pipelineStatusUrl || '').trim() || undefined,
+      job: { kind: 'masterkv', prompt: '' },
+    });
+  }
+
+  for (const loc of story.locations || []) {
+    const st = (loc as any)?.assetState;
+    if (!shouldTrackAsset(st)) continue;
+    assets.push({
+      taskId: String(st?.pipelineTaskId || '').trim(),
+      statusUrl: String(st?.pipelineStatusUrl || '').trim() || undefined,
+      job: { kind: 'location', locationId: String(loc.id || ''), prompt: '' },
+    });
+  }
+
+  for (const ch of story.characters || []) {
+    const st = (ch as any)?.assetState;
+    if (shouldTrackAsset(st)) {
+      assets.push({
+        taskId: String(st?.pipelineTaskId || '').trim(),
+        statusUrl: String(st?.pipelineStatusUrl || '').trim() || undefined,
+        job: { kind: 'character', characterId: String(ch.id || ''), prompt: '' },
+      });
+    }
+    for (const lk of ch.looks || []) {
+      const lst = (lk as any)?.assetState;
+      if (!shouldTrackAsset(lst)) continue;
+      assets.push({
+        taskId: String(lst?.pipelineTaskId || '').trim(),
+        statusUrl: String(lst?.pipelineStatusUrl || '').trim() || undefined,
+        job: {
+          kind: 'look',
+          characterId: String(ch.id || ''),
+          lookId: String(lk.id || ''),
+          prompt: '',
+          avatarVersionId: String((ch as any)?.activeAvatarVersionId || '').trim() || undefined,
+        },
+      });
+    }
+  }
+
+  for (const seq of story.sequences || []) {
+    for (const shot of seq.shots || []) {
+      const st = (shot as any)?.assetState;
+      if (shouldTrackAsset(st)) {
+        assets.push({
+          taskId: String(st?.pipelineTaskId || '').trim(),
+          statusUrl: String(st?.pipelineStatusUrl || '').trim() || undefined,
+          job: { kind: 'shot', sequenceId: String(seq.id || ''), shot },
+        });
+      }
+      const pst = (shot as any)?.production;
+      if (!shouldTrackProduction(pst)) continue;
+      productions.push({
+        taskId: String(pst?.pipelineTaskId || '').trim(),
+        statusUrl: String(pst?.pipelineStatusUrl || '').trim() || undefined,
+        sequenceId: String(seq.id || ''),
+        shotId: String(shot.id || ''),
+      });
+    }
+  }
+
+  return { assets, productions };
+};
+
+const applyAssetPipelineTaskOutcome = (story: Story, binding: AssetTaskBinding, task: any): Story => {
+  const status = String(task?.status || '').toLowerCase();
+  if (status === 'success') {
+    const imageUrl = String(task?.result?.imageUrl || '').trim();
+    if (!imageUrl) {
+      const errored = applyAssetError(story, binding.job, 'Pipeline task succeeded without imageUrl');
+      return clearAssetTaskBinding(errored, binding.job);
+    }
+    return applyAssetResult(story, binding.job, imageUrl, {
+      ...(task?.result?.debug && typeof task.result.debug === 'object' ? task.result.debug : {}),
+      pipeline: { taskId: binding.taskId, statusUrl: binding.statusUrl || '' },
+      reconciledFromTask: true,
+    });
+  }
+  if (status === 'failed') {
+    const errored = applyAssetError(story, binding.job, String(task?.error || 'Pipeline task failed'));
+    return clearAssetTaskBinding(errored, binding.job);
+  }
+  return story;
+};
+
+const applyAssetPipelineTaskMissing = (story: Story, binding: AssetTaskBinding): Story => {
+  const errored = applyAssetError(story, binding.job, 'Pipeline task not found (expired or restarted). Please retry.');
+  return clearAssetTaskBinding(errored, binding.job);
+};
+
+const applyProductionPipelineTaskOutcome = (story: Story, binding: ProductionTaskBinding, task: any): Story => {
+  const status = String(task?.status || '').toLowerCase();
+  if (status !== 'success' && status !== 'failed') return story;
+  const now = Date.now();
+  return {
+    ...story,
+    sequences: (story.sequences || []).map((seq) => {
+      if (String(seq.id || '') !== binding.sequenceId) return seq;
+      return {
+        ...seq,
+        shots: (seq.shots || []).map((shot) => {
+          if (String(shot.id || '') !== binding.shotId) return shot;
+          if (status === 'failed') {
+            return {
+              ...shot,
+              production: {
+                ...(shot.production || { status: 'idle' }),
+                status: 'error',
+                lastError: String(task?.error || 'Pipeline task failed'),
+                pipelineTaskId: '',
+                pipelineStatusUrl: '',
+                pipelineUpdatedAt: now,
+              },
+            };
+          }
+          const videoUrl = String(task?.result?.videoUrl || '').trim();
+          if (!videoUrl) {
+            return {
+              ...shot,
+              production: {
+                ...(shot.production || { status: 'idle' }),
+                status: 'error',
+                lastError: 'Pipeline task succeeded without videoUrl',
+                pipelineTaskId: '',
+                pipelineStatusUrl: '',
+                pipelineUpdatedAt: now,
+              },
+            };
+          }
+          const operationName = String(task?.result?.operationName || '').trim();
+          const prevVariants = Array.isArray(shot.production?.variants) ? shot.production?.variants : [];
+          const existing = prevVariants.find((v: any) => String(v?.videoUrl || '') === videoUrl);
+          const variant =
+            existing ||
+            ({
+              id: `pv-${now}-${Math.random().toString(16).slice(2, 8)}`,
+              videoUrl,
+              createdAt: now,
+              durationSeconds: shot.production?.durationSeconds,
+              resolution: '720p',
+              operationName: operationName || undefined,
+              metadata: {
+                sourceShotVersionId: String(shot.activeVersionId || ''),
+              },
+            } as any);
+          return {
+            ...shot,
+            production: {
+              ...(shot.production || { status: 'idle' }),
+              status: 'done',
+              lastCompletedAt: now,
+              lastError: '',
+              pipelineTaskId: '',
+              pipelineStatusUrl: '',
+              pipelineUpdatedAt: now,
+              operationName: operationName || shot.production?.operationName,
+              videoUrl,
+              variants: existing ? prevVariants : [...prevVariants, variant],
+              activeVariantId: String(variant.id || shot.production?.activeVariantId || ''),
+            },
+          };
+        }),
+      };
+    }),
+  };
+};
+
+const applyProductionPipelineTaskMissing = (story: Story, binding: ProductionTaskBinding): Story => {
+  const now = Date.now();
+  return {
+    ...story,
+    sequences: (story.sequences || []).map((seq) => {
+      if (String(seq.id || '') !== binding.sequenceId) return seq;
+      return {
+        ...seq,
+        shots: (seq.shots || []).map((shot) => {
+          if (String(shot.id || '') !== binding.shotId) return shot;
+          return {
+            ...shot,
+            production: {
+              ...(shot.production || { status: 'idle' }),
+              status: 'error',
+              lastError: 'Pipeline task not found (expired or restarted). Please retry.',
+              pipelineTaskId: '',
+              pipelineStatusUrl: '',
+              pipelineUpdatedAt: now,
+            },
+          };
+        }),
+      };
+    }),
+  };
 };
 
 function createBlankShot(
@@ -1108,6 +1328,7 @@ export default function App() {
   const cancelledAssetJobKeysRef = useRef<Set<string>>(new Set());
   const assetJobAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const shotProductionAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const pipelineReconcileInFlightRef = useRef(false);
 
   const activeStory = useMemo<Story | null>(() => {
     if (!workspace.activeProjectId) return null;
@@ -1242,6 +1463,97 @@ export default function App() {
       return { ...prev, projects };
     });
   };
+
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      if (pipelineReconcileInFlightRef.current) return;
+      const snapshot = workspaceRef.current;
+      if (!Array.isArray(snapshot?.projects) || snapshot.projects.length === 0) return;
+
+      const projectTaskIds = new Map<string, Set<string>>();
+      const taskFetchTargets = new Map<string, string>();
+      for (const project of snapshot.projects) {
+        const bindings = collectStoryPipelineBindings(project);
+        if (!bindings.assets.length && !bindings.productions.length) continue;
+        const ids = new Set<string>();
+        for (const b of bindings.assets) {
+          const taskId = String(b.taskId || '').trim();
+          if (!taskId) continue;
+          ids.add(taskId);
+          if (b.statusUrl) taskFetchTargets.set(taskId, String(b.statusUrl));
+        }
+        for (const b of bindings.productions) {
+          const taskId = String(b.taskId || '').trim();
+          if (!taskId) continue;
+          ids.add(taskId);
+          if (b.statusUrl) taskFetchTargets.set(taskId, String(b.statusUrl));
+        }
+        if (ids.size) projectTaskIds.set(String(project.id || ''), ids);
+      }
+
+      const taskIds = Array.from(new Set(Array.from(projectTaskIds.values()).flatMap((s) => Array.from(s)))).slice(0, 256);
+      if (!taskIds.length) return;
+
+      pipelineReconcileInFlightRef.current = true;
+      try {
+        const taskById = new Map<string, any>();
+        const missingTaskIds = new Set<string>();
+        await Promise.all(
+          taskIds.map(async (taskId) => {
+            const statusUrl = String(taskFetchTargets.get(taskId) || '').trim() || `/api/pipeline/tasks/${encodeURIComponent(taskId)}`;
+            try {
+              const res = await fetch(statusUrl, { method: 'GET', headers: getVisionUserRequestHeaders() });
+              if (!res.ok) {
+                if (res.status === 404) missingTaskIds.add(taskId);
+                return;
+              }
+              const payload = (await res.json().catch(() => null)) as any;
+              const task = payload?.task;
+              if (!task || typeof task !== 'object') return;
+              taskById.set(taskId, task);
+            } catch {
+              // keep silent; we'll retry in next reconcile tick
+            }
+          }),
+        );
+        if (!taskById.size && !missingTaskIds.size) return;
+
+        for (const [projectId, ids] of projectTaskIds.entries()) {
+          updateStoryById(projectId, (prev) => {
+            const bindings = collectStoryPipelineBindings(prev);
+            if (!bindings.assets.length && !bindings.productions.length) return prev;
+            let next = prev;
+            for (const b of bindings.assets) {
+              if (!ids.has(b.taskId)) continue;
+              const task = taskById.get(b.taskId);
+              if (task) {
+                next = applyAssetPipelineTaskOutcome(next, b, task);
+                continue;
+              }
+              if (missingTaskIds.has(b.taskId)) {
+                next = applyAssetPipelineTaskMissing(next, b);
+              }
+            }
+            for (const b of bindings.productions) {
+              if (!ids.has(b.taskId)) continue;
+              const task = taskById.get(b.taskId);
+              if (task) {
+                next = applyProductionPipelineTaskOutcome(next, b, task);
+                continue;
+              }
+              if (missingTaskIds.has(b.taskId)) {
+                next = applyProductionPipelineTaskMissing(next, b);
+              }
+            }
+            return next;
+          });
+        }
+      } finally {
+        pipelineReconcileInFlightRef.current = false;
+      }
+    }, 8_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const updateActiveStory = (updater: (prev: Story) => Story) => {
     setWorkspace((prev) => {
@@ -1543,20 +1855,15 @@ export default function App() {
     const authoredPrompt = String(args.authoredPrompt || '').trim();
     const frameDescription = String(sourceBundle.frameDescription || shot.description || '').trim();
     const dialogue = extractDialogueLines(shotAction);
-    const storyContext = [
-      story.logline ? `Logline: ${String(story.logline).trim()}` : '',
-      story.intent ? `Intent: ${String(story.intent).trim()}` : '',
-      seq.context ? `Sequence context: ${String(seq.context).trim()}` : '',
-      shot.description ? `Shot dramatic beat: ${String(shot.description).trim()}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
+    const storyContext = '';
     const actingDirection = buildActingDirection({
       frameDescription,
       script: shotAction,
       shotDescription: String(shot.description || '').trim(),
       sequenceContext: String(seq.context || '').trim(),
       dialogue,
+      sourceKind: sourceBundle.sourceKind,
+      referenceFrames: sourceBundle.referenceFrames,
     });
     const minimalStyleLock =
       String(location?.visualStyle || '').trim() ||
@@ -1569,15 +1876,11 @@ export default function App() {
       sourceKind: sourceBundle.sourceKind,
       referenceFrames: sourceBundle.referenceFrames,
       frameDescription,
-      storyContext,
       actingDirection,
       cameraPrompt,
       lightingPrompt,
-      audioPrompt,
       style: minimalStyleLock,
       styleTranslation: '',
-      dialogue,
-      directorNotes: authoredPrompt,
       constraints: [
         'Preserve character identity and wardrobe continuity.',
         'Avoid flicker, morphing artifacts, and geometry instability.',
@@ -1776,6 +2079,9 @@ export default function App() {
                         status: 'running',
                         lastStartedAt: now,
                         lastError: '',
+                        pipelineTaskId: '',
+                        pipelineStatusUrl: '',
+                        pipelineUpdatedAt: now,
                         durationSeconds,
                         resolution: '720p',
                       },
@@ -1795,24 +2101,46 @@ export default function App() {
         resolution: '720p',
         generateAudio: true,
         signal: productionController.signal,
-        promptSpec: {
-          frameDescription: composed.frameDescription,
-          shotDescription: String(shot.description || '').trim(),
-          action: composed.shotAction,
-          actingDirection: composed.actingDirection,
-          storyContext: composed.storyContext,
-          dialogue: composed.dialogue,
-          cameraman: composed.cameraPrompt,
-          directorNotes: authoredVideoPrompt,
-          style: composed.styleGuide || composed.locationStyle,
-          styleTranslation: '',
-          camera: composed.cameraPrompt,
-          composition: `Aspect ratio ${aspectRatio}`,
-          mood: composed.lightingPrompt,
-          audio: composed.audioPrompt,
-          referenceFrames: sourceBundle.referenceFrames.slice(0, 9),
-          constraints: [
-            'Preserve character identity and wardrobe continuity.',
+        onTaskAccepted: ({ taskId, statusUrl }) => {
+          updateActiveStory((prev) => ({
+            ...prev,
+            sequences: prev.sequences.map((s) =>
+              s.id !== args.sequenceId
+                ? s
+                : {
+                    ...s,
+                    shots: s.shots.map((x) =>
+                      x.id !== args.shotId
+                        ? x
+                        : {
+                            ...x,
+                            production: {
+                              ...x.production,
+                              pipelineTaskId: String(taskId || '').trim(),
+                              pipelineStatusUrl: String(statusUrl || '').trim(),
+                              pipelineUpdatedAt: Date.now(),
+                            },
+                          },
+                    ),
+                  },
+            ),
+          }));
+        },
+          promptSpec: {
+            frameDescription: composed.frameDescription,
+            shotDescription: String(shot.description || '').trim(),
+            action: composed.shotAction,
+            actingDirection: composed.actingDirection,
+            cameraman: composed.cameraPrompt,
+            directorNotes: authoredVideoPrompt,
+            style: composed.styleGuide || composed.locationStyle,
+            styleTranslation: '',
+            camera: composed.cameraPrompt,
+            composition: `Aspect ratio ${aspectRatio}`,
+            mood: composed.lightingPrompt,
+            referenceFrames: sourceBundle.referenceFrames.slice(0, 9),
+            constraints: [
+              'Preserve character identity and wardrobe continuity.',
             'Avoid flicker, morphing artifacts, and geometry instability.',
             'No text overlays, subtitles, logos, or watermark.',
           ],
@@ -1856,6 +2184,9 @@ export default function App() {
                             status: 'done',
                             lastCompletedAt: finishedAt,
                             lastError: '',
+                            pipelineTaskId: '',
+                            pipelineStatusUrl: '',
+                            pipelineUpdatedAt: finishedAt,
                             durationSeconds,
                             resolution: '720p',
                             operationName: out.operationName,
@@ -1893,6 +2224,9 @@ export default function App() {
                             ...x.production,
                             status: 'idle',
                             lastError: '',
+                            pipelineTaskId: '',
+                            pipelineStatusUrl: '',
+                            pipelineUpdatedAt: Date.now(),
                           },
                         },
                   ),
@@ -1923,6 +2257,7 @@ export default function App() {
                           ...x.production,
                           status: 'error',
                           lastError: err,
+                          pipelineUpdatedAt: Date.now(),
                           durationSeconds,
                           resolution: '720p',
                         },
@@ -2501,17 +2836,40 @@ export default function App() {
           updateStoryById(projectId, (prev) => applyAssetStart(prev, ev.job));
           addDebugEvent({ level: 'info', scope: 'asset.exec', message: 'Start', data: { done: ev.done, total: ev.total, job: ev.job } });
         }
+        if (ev.type === 'task') {
+          storyRef = applyAssetTaskBinding(storyRef, ev.job, { taskId: ev.taskId, statusUrl: ev.statusUrl });
+          updateStoryById(projectId, (prev) => applyAssetTaskBinding(prev, ev.job, { taskId: ev.taskId, statusUrl: ev.statusUrl }));
+          addDebugEvent({
+            level: 'info',
+            scope: 'asset.exec',
+            message: 'Task linked',
+            data: { done: ev.done, total: ev.total, job: ev.job, taskId: ev.taskId, statusUrl: ev.statusUrl },
+          });
+        }
         if (ev.type === 'success') {
           releaseJobController(ev.job);
           const applySuccess = (base: Story) => {
             const afterResult = applyAssetResult(base, ev.job, ev.imageUrl, ev.meta);
             if (ev.job?.kind !== 'shot') return afterResult;
-            return hydrateShotVideoPromptFromKeyframe(
-              afterResult,
-              String(ev.job.sequenceId || ''),
-              String(ev.job.shot?.id || ''),
-              Date.now(),
-            );
+            try {
+              return hydrateShotVideoPromptFromKeyframe(
+                afterResult,
+                String(ev.job.sequenceId || ''),
+                String(ev.job.shot?.id || ''),
+                Date.now(),
+              );
+            } catch (e) {
+              addDebugEvent({
+                level: 'warn',
+                scope: 'asset.exec',
+                message: 'Shot success hydration failed; keeping keyframe binding only',
+                data: {
+                  job: ev.job,
+                  error: e instanceof Error ? e.message : String(e),
+                },
+              });
+              return afterResult;
+            }
           };
           storyRef = applySuccess(storyRef);
           updateStoryById(projectId, (prev) => applySuccess(prev));

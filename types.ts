@@ -107,6 +107,9 @@ export interface AssetGenerationState {
   lastError?: string;
   lastAttemptAt?: number;
   attempts?: number;
+  pipelineTaskId?: string;
+  pipelineStatusUrl?: string;
+  pipelineUpdatedAt?: number;
 }
 
 export interface DirectorElement {
@@ -249,6 +252,9 @@ export interface Shot {
     lastStartedAt?: number;
     lastCompletedAt?: number;
     lastError?: string;
+    pipelineTaskId?: string;
+    pipelineStatusUrl?: string;
+    pipelineUpdatedAt?: number;
     operationName?: string;
     durationSeconds?: 4 | 6 | 8;
     resolution?: '720p';

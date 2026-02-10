@@ -33,9 +33,10 @@ describe('videoPromptComposer.composeStructuredVideoPrompt', () => {
       constraints: ['No watermark.'],
       maxChars: 5000,
     });
-    expect(out.prompt.indexOf('Objective:')).toBeLessThan(out.prompt.indexOf('Current Frame:'));
-    expect(out.prompt.indexOf('Current Frame:')).toBeLessThan(out.prompt.indexOf('Acting Direction:'));
-    expect(out.sectionsUsed.includes('style')).toBe(true);
+    expect(out.prompt.indexOf('Action & Performance Beats:')).toBeLessThan(out.prompt.indexOf('Current Frame:'));
+    expect(out.sectionsUsed.includes('style_lock')).toBe(true);
+    expect(out.prompt.includes('Story Context:')).toBe(false);
+    expect(out.prompt.includes('Dialogue:')).toBe(false);
     expect(out.prompt.includes('No watermark.')).toBe(true);
   });
 
@@ -62,5 +63,47 @@ describe('videoPromptComposer.composeStructuredVideoPrompt', () => {
     expect(out.prompt.length).toBeLessThanOrEqual(2400);
     expect(out.droppedSections.length).toBeGreaterThan(0);
   });
-});
 
+  it('dummy case emphasizes action beats and keeps style minimal', () => {
+    const out = composeStructuredVideoPrompt({
+      sourceKind: 'single',
+      frameDescription: 'A detective stands in a rain-soaked alley, hand hovering near coat pocket.',
+      storyContext: 'He spots the suspect behind a flickering neon sign and decides whether to approach.',
+      actingDirection:
+        'Beat 1: pause, shallow inhale, eyes lock on suspect. Beat 2: left foot slides forward, shoulders tighten, right hand opens coat. Beat 3: brief hesitation, jaw clenches, then decisive step into light.',
+      cameraPrompt: 'Start over-shoulder medium shot, then slow lateral move to reveal suspect profile, end in close-up on detective reaction.',
+      lightingPrompt: 'Preserve wet pavement reflections and neon spill; no dramatic relight.',
+      style: 'Neo-noir cinematic',
+      styleTranslation: 'high-contrast city night',
+      dialogue: ['Stop right there.'],
+      constraints: ['No unrealistic speed changes.', 'Preserve costume continuity.'],
+      maxChars: 5000,
+    });
+    expect(out.prompt.includes('Action & Performance Beats:')).toBe(true);
+    expect(out.prompt.includes('Look Lock (Minimal):')).toBe(true);
+    expect(out.prompt.includes('Story Context:')).toBe(false);
+    expect(out.prompt.includes('Dialogue:')).toBe(false);
+    expect(out.prompt.includes('Audio Cues:')).toBe(false);
+    expect(out.prompt.includes('Style Translation Hints:')).toBe(false);
+    expect(out.prompt.includes('Visual style:')).toBe(false);
+  });
+
+  it('stack/grid mode promotes grid continuity over single frame restatement', () => {
+    const out = composeStructuredVideoPrompt({
+      sourceKind: 'stack',
+      referenceFrames: [
+        { panelIndex: 0, url: '/f1.png', description: 'Kaelen scans the terminal and freezes.' },
+        { panelIndex: 1, url: '/f2.png', description: 'He pivots left and reaches for sidearm.' },
+        { panelIndex: 2, url: '/f3.png', description: 'He commits to a forward step into hard blue light.' },
+      ],
+      frameDescription: 'Single frame fallback',
+      actingDirection: 'Beat 1: scan. Beat 2: pivot. Beat 3: step.',
+      cameraPrompt: 'Low angle with aggressive parallax move.',
+      style: 'Sterile tech-noir',
+      constraints: ['Preserve identity continuity.'],
+    });
+    expect(out.prompt.includes('Grid Beat Continuity:')).toBe(true);
+    expect(out.prompt.includes('Current Frame:')).toBe(false);
+    expect(out.prompt.indexOf('Action & Performance Beats:')).toBeLessThan(out.prompt.indexOf('Grid Beat Continuity:'));
+  });
+});

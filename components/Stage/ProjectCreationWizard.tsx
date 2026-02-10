@@ -5,7 +5,7 @@ import { AgentPlan, AiSettings, AspectRatio, Story } from '../../types';
 import { createLocalMockProject, scaffoldProjectStream, scaffoldProjectWithSettings } from '../../lib/ai/agent/scaffold';
 import { runDirectorCommand } from '../../lib/ai/agent/direct';
 import { isAgentApiError } from '../../lib/ai/agent/apiError';
-import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, getJobLabel } from '../../lib/ai/assetExecutor';
+import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, applyAssetTaskBinding, buildAssetJobs, executeAssetJobs, getJobLabel, type AssetJob } from '../../lib/ai/assetExecutor';
 
 type PreflightMsg = { id: string; role: 'user' | 'agent' | 'system'; content: string; attachmentIds?: string[] };
 type PreflightAttachment = {
@@ -116,6 +116,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const isScaffoldRunningRef = useRef(false);
   const activeRunIdRef = useRef(0);
   const forcedProjectIdRef = useRef('');
+  const assetCancelledJobKeysRef = useRef<Set<string>>(new Set());
+  const assetJobAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const preflightFileRef = useRef<HTMLInputElement | null>(null);
   const preflightMessagesRef = useRef<HTMLDivElement | null>(null);
   const preflightScrollTimeoutRef = useRef<number | null>(null);
@@ -150,6 +152,15 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [isPreflightOpen, preflightMessages, isPreflightThinking]);
+
+  // Guardrail: preflight is interaction-only. If mode switches to auto, force-close preflight UI.
+  useEffect(() => {
+    if (workflowMode === 'interaction') return;
+    if (!isPreflightOpen) return;
+    setIsPreflightOpen(false);
+    setIsPreflightThinking(false);
+    setPreflightInput('');
+  }, [workflowMode, isPreflightOpen]);
 
   useEffect(() => {
     if (String(intent || '').trim()) return;
@@ -229,6 +240,40 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     isScaffoldRunningRef.current = false;
     activeRunIdRef.current = 0;
     forcedProjectIdRef.current = '';
+    assetCancelledJobKeysRef.current.clear();
+    for (const ctrl of assetJobAbortControllersRef.current.values()) ctrl.abort();
+    assetJobAbortControllersRef.current.clear();
+  };
+
+  const getAssetJobKey = (projectId: string, job: AssetJob): string => {
+    if (job.kind === 'masterkv') return `${projectId}|masterkv`;
+    if (job.kind === 'location') return `${projectId}|location|${job.locationId}`;
+    if (job.kind === 'character') return `${projectId}|character|${job.characterId}`;
+    if (job.kind === 'look') return `${projectId}|look|${job.characterId}|${job.lookId}`;
+    return `${projectId}|shot|${job.sequenceId}|${job.shot.id}`;
+  };
+
+  const isTerminalAssetJob = (story: Story, job: AssetJob) => {
+    const doneLike = (s: any) => ['done', 'error', 'blocked'].includes(String(s?.status || '').toLowerCase());
+    if (job.kind === 'masterkv') return doneLike((story as any).masterKvState);
+    if (job.kind === 'location') {
+      const loc = (story.locations || []).find((l) => l.id === job.locationId);
+      return doneLike((loc as any)?.assetState);
+    }
+    if (job.kind === 'character') {
+      const ch = (story.characters || []).find((c) => c.id === job.characterId);
+      return doneLike((ch as any)?.assetState);
+    }
+    if (job.kind === 'look') {
+      const ch = (story.characters || []).find((c) => c.id === job.characterId);
+      const lk = (ch?.looks || []).find((x) => x.id === job.lookId);
+      return doneLike((lk as any)?.assetState);
+    }
+    const seq = (story.sequences || []).find((s) => s.id === job.sequenceId);
+    const shot =
+      (seq?.shots || []).find((x) => x.id === job.shot.id) ||
+      (story.sequences || []).flatMap((s) => s.shots || []).find((x) => x.id === job.shot.id);
+    return doneLike((shot as any)?.assetState);
   };
 
   const upsertStageDigest = (next: StageDigest) => {
@@ -337,6 +382,11 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     if (completedRef.current) return;
     completedRef.current = true;
     stopUiUpdatesRef.current = true;
+    for (const key of Array.from(assetJobAbortControllersRef.current.keys())) {
+      assetCancelledJobKeysRef.current.add(key);
+    }
+    for (const ctrl of assetJobAbortControllersRef.current.values()) ctrl.abort();
+    assetJobAbortControllersRef.current.clear();
     isScaffoldRunningRef.current = false;
     activeRunIdRef.current = 0;
     setIsProcessing(false);
@@ -554,6 +604,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
       setPhase('assets');
       setAssetStartAt(Date.now());
       setSkipArmed(false);
+      assetCancelledJobKeysRef.current.clear();
+      for (const ctrl of assetJobAbortControllersRef.current.values()) ctrl.abort();
+      assetJobAbortControllersRef.current.clear();
       const jobs = buildAssetJobs(res.story, 'all');
       total = jobs.length;
       setAssetTotal(jobs.length);
@@ -562,19 +615,31 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
         storyRef.current = jobs.reduce((acc, job) => applyAssetQueued(acc, job), storyRef.current || res.story);
         if (storyRef.current) onDraftProject?.(storyRef.current);
           const assetExec = executeAssetJobs({
-	          jobs,
-	          settings: aiSettings.image,
-	          aspectRatio: res.story.aspectRatio,
-	          concurrency: 2,
-	          getStoryForRefs: () => storyRef.current,
-	          maxAttempts: 3,
-	          stopAfterMasterKvFailure: false,
-		          onEvent: (ev) => {
+		          jobs,
+		          settings: aiSettings.image,
+		          aspectRatio: res.story.aspectRatio,
+		          concurrency: 2,
+		          getStoryForRefs: () => storyRef.current,
+		          maxAttempts: 3,
+		          stopAfterMasterKvFailure: false,
+              shouldCancelJob: (job) => assetCancelledJobKeysRef.current.has(getAssetJobKey(res.story.id, job)),
+              getSignalForJob: (job) => {
+                const key = getAssetJobKey(res.story.id, job);
+                if (assetCancelledJobKeysRef.current.has(key)) return undefined;
+                const existing = assetJobAbortControllersRef.current.get(key);
+                if (existing) return existing.signal;
+                const ctrl = new AbortController();
+                assetJobAbortControllersRef.current.set(key, ctrl);
+                return ctrl.signal;
+              },
+			          onEvent: (ev) => {
                 if (activeRunIdRef.current !== runId) return;
-			            const currentStory = storyRef.current || res.story;
+				            const currentStory = storyRef.current || res.story;
                 if (stopUiUpdatesRef.current) {
                   if (ev.type === 'start') {
                     storyRef.current = applyAssetStart(currentStory, ev.job);
+                  } else if (ev.type === 'task') {
+                    storyRef.current = applyAssetTaskBinding(currentStory, ev.job, { taskId: ev.taskId, statusUrl: ev.statusUrl });
                   } else if (ev.type === 'success') {
                     storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl, ev.meta);
                   } else if (ev.type === 'blocked') {
@@ -598,7 +663,21 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
 	            }
-		            if (ev.type === 'success') {
+                if (ev.type === 'task') {
+                  storyRef.current = applyAssetTaskBinding(currentStory, ev.job, { taskId: ev.taskId, statusUrl: ev.statusUrl });
+                  setAssetCurrent(getJobLabel(ev.job, storyRef.current));
+                  upsertStageDigest({
+                    id: `asset-${ev.job.kind}-${(ev.job as any).characterId || (ev.job as any).locationId || (ev.job as any).lookId || (ev.job as any).shot?.id || 'job'}`,
+                    title: `Asset • ${ev.job.kind.toUpperCase()}`,
+                    summary: `${getJobLabel(ev.job, storyRef.current)} queued in pipeline (${String(ev.taskId || '').slice(0, 12)}…).`,
+                    status: 'running',
+                    timestamp: Date.now(),
+                  });
+                  if (storyRef.current) onDraftProject?.(storyRef.current);
+                  return;
+                }
+			            if (ev.type === 'success') {
+                  assetJobAbortControllersRef.current.delete(getAssetJobKey(res.story.id, ev.job));
               storyRef.current = applyAssetResult(currentStory, ev.job, ev.imageUrl, ev.meta);
 		              done = ev.done;
 		              setAssetDone(ev.done);
@@ -625,8 +704,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
 	            }
-	            if (ev.type === 'blocked') {
-	              storyRef.current = applyAssetBlocked(currentStory, ev.job, ev.reason);
+		            if (ev.type === 'blocked') {
+                  assetJobAbortControllersRef.current.delete(getAssetJobKey(res.story.id, ev.job));
+		              storyRef.current = applyAssetBlocked(currentStory, ev.job, ev.reason);
 	              done = ev.done;
 	              setAssetDone(ev.done);
 	              setAssetErrors((n) => n + 1);
@@ -641,7 +721,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
 	            }
-	            // error
+		            // error
+                assetJobAbortControllersRef.current.delete(getAssetJobKey(res.story.id, ev.job));
 	            storyRef.current = applyAssetError(currentStory, ev.job, ev.error);
 	            done = ev.done;
 	            errors += 1;
@@ -663,11 +744,22 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
             new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), ASSET_STAGE_TIMEOUT_MS)),
           ]);
           if (activeRunIdRef.current !== runId) return;
-          if (race === 'timeout') {
-            const partial = storyRef.current || res.story;
-            finishCreation(partial, res.plan, {
-              ...res.debug,
-              assets: { total, done, errors, timedOut: true, timeoutMs: ASSET_STAGE_TIMEOUT_MS },
+	          if (race === 'timeout') {
+              for (const job of jobs) {
+                const key = getAssetJobKey(res.story.id, job);
+                assetCancelledJobKeysRef.current.add(key);
+                assetJobAbortControllersRef.current.get(key)?.abort();
+              }
+              assetJobAbortControllersRef.current.clear();
+	            let partial = storyRef.current || res.story;
+              for (const job of jobs) {
+                if (isTerminalAssetJob(partial, job)) continue;
+                partial = applyAssetBlocked(partial, job, `Timed out after ${Math.round(ASSET_STAGE_TIMEOUT_MS / 1000)}s`);
+              }
+              storyRef.current = partial;
+	            finishCreation(partial, res.plan, {
+	              ...res.debug,
+	              assets: { total, done, errors, timedOut: true, timeoutMs: ASSET_STAGE_TIMEOUT_MS },
             });
             return;
           }
@@ -717,6 +809,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     storyRef.current = null;
     completedRef.current = false;
     stopUiUpdatesRef.current = false;
+    assetCancelledJobKeysRef.current.clear();
+    for (const ctrl of assetJobAbortControllersRef.current.values()) ctrl.abort();
+    assetJobAbortControllersRef.current.clear();
 
     let scaffoldIntent = effectiveIntent;
     lastScaffoldArgsRef.current = { intent: scaffoldIntent, ratio };
@@ -891,14 +986,16 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
       if (isAgentApiError(e) && e.bodyJson?.errorCode === 'MULTI_AGENT_FAILED') {
         setCanSingleFallback(true);
         setError(String(e.bodyJson?.multiAgentError || e.bodyJson?.message || e.message || 'Multi-agent scaffold failed'));
-        setIsProcessing(false);
+        // Keep processing shell visible so retry/single-call/local-mock actions remain available.
+        setIsProcessing(true);
         isScaffoldRunningRef.current = false;
         activeRunIdRef.current = 0;
         return;
       }
       setCanSingleFallback(false);
       setError(errMsg);
-      setIsProcessing(false);
+      // Keep processing shell visible so user can retry directly from the error panel.
+      setIsProcessing(true);
       isScaffoldRunningRef.current = false;
       activeRunIdRef.current = 0;
     }
@@ -1018,6 +1115,11 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     highlightGlowBlurPx: 14,
     spreadGlowBlurPx: 30,
   } as const;
+  const sharedInputAuraShadow = isPreflightOpen
+    ? '0 0 0 1px rgba(255,255,255,0.26), 0 0 10px rgba(198,225,255,0.28), 0 0 8px rgba(255,184,150,0.22)'
+    : isSharedInputFocused
+      ? '0 0 0 1px rgba(255,255,255,0.2), 0 0 8px rgba(190,220,255,0.21), 0 0 6px rgba(255,184,150,0.17)'
+      : '0 0 0 1px rgba(255,255,255,0.14), 0 0 6px rgba(188,218,255,0.16), 0 0 4px rgba(255,182,148,0.12)';
 
   return (
     <div className="fixed inset-0 z-[2000] bg-[#050505] flex items-center justify-center p-8 overflow-hidden">
@@ -1026,21 +1128,21 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
             @keyframes pcw-border-breathe {
               0%, 100% {
                 opacity: 0.62;
-                box-shadow: 0 0 18px rgba(255,255,255,0.4), 0 0 36px rgba(210,230,255,0.22), 0 0 30px rgba(255,196,170,0.14);
+                box-shadow: 0 0 8px rgba(255,255,255,0.34), 0 0 18px rgba(210,230,255,0.2), 0 0 14px rgba(255,196,170,0.12);
               }
               50% {
-                opacity: 1;
-                box-shadow: 0 0 34px rgba(255,255,255,0.72), 0 0 78px rgba(215,235,255,0.44), 0 0 62px rgba(255,208,182,0.24);
+                opacity: 0.96;
+                box-shadow: 0 0 14px rgba(255,255,255,0.52), 0 0 30px rgba(215,235,255,0.3), 0 0 22px rgba(255,208,182,0.2);
               }
             }
             @keyframes pcw-aura-breathe {
               0%, 100% {
-                opacity: 0.3;
-                transform: scale(0.994);
+                opacity: 0.5;
+                transform: scale(0.998);
               }
               50% {
-                opacity: 0.74;
-                transform: scale(1.012);
+                opacity: 0.88;
+                transform: scale(1.004);
               }
             }
             @keyframes pcw-sheen-drift {
@@ -1220,7 +1322,9 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                       lastScaffoldRef.current = mockRes as any;
                                       storyRef.current = mockRes.story;
                                       setPlan(mockRes.plan);
-                                      runAssets(mockRes as any).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+                                      const rid = activeRunIdRef.current || Date.now();
+                                      if (!activeRunIdRef.current) activeRunIdRef.current = rid;
+                                      runAssets(mockRes as any, rid).catch((e) => setError(e instanceof Error ? e.message : String(e)));
                                     }}
                                     className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white/70 text-[11px] font-black uppercase tracking-widest hover:bg-white/10"
                                   >
@@ -1715,35 +1819,51 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                 </div>
                               </div>
                             )}
-                            <div className={`pointer-events-none absolute -inset-3 rounded-[40px] blur-3xl transition duration-700 ${
-                              isPreflightOpen
-                                ? 'bg-[radial-gradient(circle_at_20%_50%,rgba(145,190,255,0.25),transparent_48%),radial-gradient(circle_at_80%_50%,rgba(255,138,92,0.2),transparent_44%)] opacity-80'
-                                : isSharedInputFocused
-                                  ? 'bg-white/10 opacity-0'
-                                  : 'bg-white/8 opacity-55 group-hover:opacity-70'
-                            }`}></div>
-                            <div className={`absolute -inset-[4px] rounded-[38px] overflow-hidden pointer-events-none transition-opacity duration-500 ${
-                              isSharedInputSelected ? 'opacity-0' : 'opacity-95 group-hover:opacity-100'
+                            <div
+                              className={`pointer-events-none absolute -inset-[2px] rounded-[34px] transition duration-700 ${
+                                isPreflightOpen ? 'opacity-88' : isSharedInputFocused ? 'opacity-66' : 'opacity-52 group-hover:opacity-64'
+                              }`}
+                              style={{
+                                animation: 'pcw-aura-breathe 3.2s cubic-bezier(0.4,0,0.2,1) infinite',
+                                boxShadow: sharedInputAuraShadow,
+                                filter: 'blur(3px)',
+                              }}
+                            ></div>
+                            <div
+                              className={`pointer-events-none absolute inset-0 rounded-[32px] border border-white/20 transition-opacity duration-500 ${
+                                isSharedInputSelected ? 'opacity-40' : 'opacity-28'
+                              }`}
+                              style={{
+                                animation: 'pcw-aura-breathe 3.2s cubic-bezier(0.4,0,0.2,1) infinite',
+                                boxShadow: '0 0 8px rgba(255,255,255,0.22)',
+                              }}
+                            />
+                            <div className={`absolute inset-0 rounded-[32px] overflow-hidden pointer-events-none transition-opacity duration-500 ${
+                              isSharedInputSelected ? 'opacity-70' : 'opacity-95 group-hover:opacity-100'
                             }`}>
                               <div
-                                className="absolute -inset-[2px] rounded-[40px] blur-xl bg-[radial-gradient(circle_at_15%_50%,rgba(188,220,255,0.58),transparent_48%),radial-gradient(circle_at_50%_50%,rgba(255,255,255,0.24),transparent_62%),radial-gradient(circle_at_85%_50%,rgba(255,182,142,0.52),transparent_48%)]"
-                                style={{ animation: 'pcw-aura-breathe 3.2s cubic-bezier(0.4,0,0.2,1) infinite' }}
-                              />
-                              <div
-                                className="absolute inset-[3px] rounded-[34px] border-[0.2px] border-slate-100/40 bg-transparent"
+                                className="absolute inset-[1px] rounded-[31px] border-[0.6px] border-slate-100/40 bg-transparent"
                                 style={{ animation: 'pcw-border-breathe 3.2s cubic-bezier(0.4,0,0.2,1) infinite' }}
                               />
-                              <div
-                                className="absolute inset-[3px] rounded-[34px] bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.6)_48%,transparent_100%)] mix-blend-screen blur-[1px]"
-                                style={{ animation: 'pcw-sheen-drift 4.2s ease-in-out infinite' }}
-                              />
                             </div>
-                            <div className={`relative z-10 rounded-[32px] flex items-center px-6 py-2 shadow-2xl transition-all duration-700 bg-[#050505] backdrop-blur-[18px] ${
+                            <div className={`relative z-10 rounded-[32px] overflow-hidden flex items-center px-6 py-2 shadow-2xl transition-all duration-700 bg-[#050505] backdrop-blur-[18px] ${
                               isSharedInputSelected
                                 ? 'shadow-[0_0_0_1px_rgba(255,255,255,0.22),0_24px_62px_rgba(0,0,0,0.58)]'
                                 : 'shadow-[0_20px_52px_rgba(0,0,0,0.5)]'
                             }`}>
-	                              <div className="relative w-10 h-10 mr-2">
+                              <div
+                                className={`pointer-events-none absolute inset-[1px] rounded-[31px] border border-slate-100/35 ${
+                                  isSharedInputSelected ? 'opacity-92' : 'opacity-72'
+                                }`}
+                                style={{ animation: 'pcw-border-breathe 3.2s cubic-bezier(0.4,0,0.2,1) infinite' }}
+                              />
+                              <div
+                                className={`pointer-events-none absolute inset-[1px] rounded-[31px] ${
+                                  isSharedInputSelected ? 'opacity-44' : 'opacity-30'
+                                }`}
+                                style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.22), 0 0 16px rgba(255,255,255,0.12)' }}
+                              />
+		                              <div className="relative w-10 h-10 mr-2">
                                 <button
                                   type="button"
                                   onClick={() => preflightFileRef.current?.click()}
@@ -1782,6 +1902,11 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                 onKeyDown={(e) => {
                                   if (e.key !== 'Enter' || e.shiftKey) return;
                                   e.preventDefault();
+                                  if (isPreflightOpen && workflowMode !== 'interaction') {
+                                    setIsPreflightOpen(false);
+                                    handleGenerate().catch(() => {});
+                                    return;
+                                  }
                                   if (isPreflightOpen) {
                                     if (isPreflightThinking) return;
                                     if (!preflightInput.trim() && pendingAttachments.length === 0) {
@@ -1805,6 +1930,11 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                     : !hasIntent || isProcessing
                                 }
                                 onClick={() => {
+                                  if (isPreflightOpen && workflowMode !== 'interaction') {
+                                    setIsPreflightOpen(false);
+                                    handleGenerate().catch(() => {});
+                                    return;
+                                  }
                                   if (isPreflightOpen) {
                                     if (!preflightInput.trim() && pendingAttachments.length === 0) {
                                       handleForceStart();

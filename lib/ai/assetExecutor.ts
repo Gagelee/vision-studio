@@ -23,6 +23,7 @@ export type AssetJob =
 
 export type AssetJobEvent =
   | { type: 'start'; job: AssetJob; done: number; total: number }
+  | { type: 'task'; job: AssetJob; done: number; total: number; taskId: string; statusUrl?: string }
   | { type: 'success'; job: AssetJob; done: number; total: number; imageUrl: string; debug?: any; meta?: any }
   | { type: 'error'; job: AssetJob; done: number; total: number; error: string }
   | { type: 'blocked'; job: AssetJob; done: number; total: number; reason: string };
@@ -87,16 +88,23 @@ const resolveShotSequenceId = (story: Story, requestedSequenceId: string, shotId
 
 export const applyAssetStart = (story: Story, job: AssetJob): Story => {
   const now = Date.now();
+  const runningPatch = {
+    status: 'running',
+    lastAttemptAt: now,
+    pipelineTaskId: '',
+    pipelineStatusUrl: '',
+    pipelineUpdatedAt: now,
+  };
 
   if (job.kind === 'masterkv') {
-    return { ...story, masterKvState: bumpState((story as any).masterKvState, { status: 'running', lastAttemptAt: now }) };
+    return { ...story, masterKvState: bumpState((story as any).masterKvState, runningPatch) };
   }
 
   if (job.kind === 'location') {
     return {
       ...story,
       locations: (story.locations || []).map((l) =>
-        l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, { status: 'running', lastAttemptAt: now }) } : l,
+        l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, runningPatch) } : l,
       ),
     };
   }
@@ -105,7 +113,7 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
     return {
       ...story,
       characters: (story.characters || []).map((c) =>
-        c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, { status: 'running', lastAttemptAt: now }) } : c,
+        c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, runningPatch) } : c,
       ),
     };
   }
@@ -118,7 +126,7 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
         return {
           ...c,
           looks: (c.looks || []).map((lk) =>
-            lk.id === job.lookId ? { ...lk, assetState: bumpState((lk as any).assetState, { status: 'running', lastAttemptAt: now }) } : lk,
+            lk.id === job.lookId ? { ...lk, assetState: bumpState((lk as any).assetState, runningPatch) } : lk,
           ),
         };
       }),
@@ -136,7 +144,7 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
         ...seq,
         shots: seq.shots.map((s) =>
           s.id === job.shot.id
-            ? { ...s, aiState: 'rendering', aiPrompt: 'AUTO', assetState: bumpState((s as any).assetState, { status: 'running', lastAttemptAt: now }) }
+            ? { ...s, aiState: 'rendering', aiPrompt: 'AUTO', assetState: bumpState((s as any).assetState, runningPatch) }
             : s,
         ),
       };
@@ -145,7 +153,12 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
 };
 
 export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
-  const patch = { status: 'queued' };
+  const patch = {
+    status: 'queued',
+    pipelineTaskId: '',
+    pipelineStatusUrl: '',
+    pipelineUpdatedAt: Date.now(),
+  };
 
   if (job.kind === 'masterkv') {
     return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
@@ -199,9 +212,139 @@ export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
   });
 };
 
+export const applyAssetTaskBinding = (story: Story, job: AssetJob, task: { taskId: string; statusUrl?: string }): Story => {
+  const now = Date.now();
+  const taskId = String(task?.taskId || '').trim();
+  if (!taskId) return story;
+  const patch = {
+    pipelineTaskId: taskId,
+    pipelineStatusUrl: String(task?.statusUrl || '').trim(),
+    pipelineUpdatedAt: now,
+  };
+
+  if (job.kind === 'masterkv') {
+    return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
+  }
+
+  if (job.kind === 'location') {
+    return {
+      ...story,
+      locations: (story.locations || []).map((l) =>
+        l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, patch) } : l,
+      ),
+    };
+  }
+
+  if (job.kind === 'character') {
+    return {
+      ...story,
+      characters: (story.characters || []).map((c) =>
+        c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, patch) } : c,
+      ),
+    };
+  }
+
+  if (job.kind === 'look') {
+    return {
+      ...story,
+      characters: (story.characters || []).map((c) => {
+        if (c.id !== job.characterId) return c;
+        return {
+          ...c,
+          looks: (c.looks || []).map((lk) =>
+            lk.id === job.lookId ? { ...lk, assetState: bumpState((lk as any).assetState, patch) } : lk,
+          ),
+        };
+      }),
+    };
+  }
+
+  const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
+  if (!targetSeqId) return story;
+  return normalizeStorySceneModel({
+    ...story,
+    sequences: story.sequences.map((seq) => {
+      if (seq.id !== targetSeqId) return seq;
+      return {
+        ...seq,
+        shots: seq.shots.map((s) =>
+          s.id === job.shot.id ? { ...s, assetState: bumpState((s as any).assetState, patch) } : s,
+        ),
+      };
+    }),
+  });
+};
+
+export const clearAssetTaskBinding = (story: Story, job: AssetJob): Story => {
+  const patch = {
+    pipelineTaskId: '',
+    pipelineStatusUrl: '',
+    pipelineUpdatedAt: Date.now(),
+  };
+
+  if (job.kind === 'masterkv') {
+    return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
+  }
+
+  if (job.kind === 'location') {
+    return {
+      ...story,
+      locations: (story.locations || []).map((l) =>
+        l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, patch) } : l,
+      ),
+    };
+  }
+
+  if (job.kind === 'character') {
+    return {
+      ...story,
+      characters: (story.characters || []).map((c) =>
+        c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, patch) } : c,
+      ),
+    };
+  }
+
+  if (job.kind === 'look') {
+    return {
+      ...story,
+      characters: (story.characters || []).map((c) => {
+        if (c.id !== job.characterId) return c;
+        return {
+          ...c,
+          looks: (c.looks || []).map((lk) =>
+            lk.id === job.lookId ? { ...lk, assetState: bumpState((lk as any).assetState, patch) } : lk,
+          ),
+        };
+      }),
+    };
+  }
+
+  const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
+  if (!targetSeqId) return story;
+  return normalizeStorySceneModel({
+    ...story,
+    sequences: story.sequences.map((seq) => {
+      if (seq.id !== targetSeqId) return seq;
+      return {
+        ...seq,
+        shots: seq.shots.map((s) =>
+          s.id === job.shot.id ? { ...s, assetState: bumpState((s as any).assetState, patch) } : s,
+        ),
+      };
+    }),
+  });
+};
+
 export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): Story => {
   const now = Date.now();
-  const patch = { status: 'blocked', lastError: reason, lastAttemptAt: now };
+  const patch = {
+    status: 'blocked',
+    lastError: reason,
+    lastAttemptAt: now,
+    pipelineTaskId: '',
+    pipelineStatusUrl: '',
+    pipelineUpdatedAt: now,
+  };
 
   if (job.kind === 'masterkv') return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
   if (job.kind === 'location') {
@@ -246,7 +389,12 @@ export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): 
 
 export const applyAssetError = (story: Story, job: AssetJob, error: string): Story => {
   const now = Date.now();
-  const patch = { status: 'error', lastError: error, lastAttemptAt: now };
+  const patch = {
+    status: 'error',
+    lastError: error,
+    lastAttemptAt: now,
+    pipelineUpdatedAt: now,
+  };
 
   if (job.kind === 'masterkv') return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
   if (job.kind === 'location') {
@@ -329,7 +477,13 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
       keyVisualUrl: imageUrl,
       keyVisualVersions: versions as any,
       activeKeyVisualVersionId: id as any,
-      masterKvState: bumpState((story as any).masterKvState, { status: 'done', lastError: '' }),
+      masterKvState: bumpState((story as any).masterKvState, {
+        status: 'done',
+        lastError: '',
+        pipelineTaskId: '',
+        pipelineStatusUrl: '',
+        pipelineUpdatedAt: now,
+      }),
     };
   }
 
@@ -362,7 +516,13 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
                   activePreviewVersionId: id,
                 };
               })(),
-              assetState: bumpState((l as any).assetState, { status: 'done', lastError: '' }),
+              assetState: bumpState((l as any).assetState, {
+                status: 'done',
+                lastError: '',
+                pipelineTaskId: '',
+                pipelineStatusUrl: '',
+                pipelineUpdatedAt: now,
+              }),
             }
           : l,
       ),
@@ -397,7 +557,17 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
           const versions = Array.isArray((lk as any).previewVersions) ? (lk as any).previewVersions : [];
           const match = versions.find((v: any) => String(v?.metadata?.sourceAvatarVersionId || '') === String(newId));
           if (!match) {
-            return { ...lk, previewUrl: '', previewVersions: versions, activePreviewVersionId: '' as any };
+            return {
+              ...lk,
+              previewUrl: '',
+              previewVersions: versions,
+              activePreviewVersionId: '' as any,
+              assetState: bumpState((lk as any).assetState, {
+                status: 'blocked',
+                lastError: 'Look is not bound to the latest avatar. Regenerate look variants.',
+                lastAttemptAt: now,
+              }),
+            };
           }
           return {
             ...lk,
@@ -412,7 +582,13 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
           avatarVersions: nextVersions,
           activeAvatarVersionId: newId,
           looks: nextLooks,
-          assetState: bumpState((c as any).assetState, { status: 'done', lastError: '' }),
+          assetState: bumpState((c as any).assetState, {
+            status: 'done',
+            lastError: '',
+            pipelineTaskId: '',
+            pipelineStatusUrl: '',
+            pipelineUpdatedAt: now,
+          }),
         };
       }),
     };
@@ -468,7 +644,13 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
                   activePreviewVersionId: id,
                     };
                   })(),
-                  assetState: bumpState((lk as any).assetState, { status: 'done', lastError: '' }),
+                  assetState: bumpState((lk as any).assetState, {
+                    status: 'done',
+                    lastError: '',
+                    pipelineTaskId: '',
+                    pipelineStatusUrl: '',
+                    pipelineUpdatedAt: now,
+                  }),
                 }
               : lk,
           ),
@@ -502,7 +684,13 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
               thumbnailUrl: imageUrl,
               aiState: 'idle',
               aiPrompt: '',
-              assetState: bumpState((s as any).assetState, { status: 'done', lastError: '' }),
+              assetState: bumpState((s as any).assetState, {
+                status: 'done',
+                lastError: '',
+                pipelineTaskId: '',
+                pipelineStatusUrl: '',
+                pipelineUpdatedAt: now,
+              }),
             };
           }
 
@@ -516,7 +704,13 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
             thumbnailUrl: imageUrl,
             aiState: 'idle',
             aiPrompt: '',
-            assetState: bumpState((s as any).assetState, { status: 'done', lastError: '' }),
+            assetState: bumpState((s as any).assetState, {
+              status: 'done',
+              lastError: '',
+              pipelineTaskId: '',
+              pipelineStatusUrl: '',
+              pipelineUpdatedAt: now,
+            }),
           };
         }),
       };
@@ -551,6 +745,19 @@ export const executeAssetJobs = async (args: {
   const total = args.jobs.length;
   let done = 0;
   let errors = 0;
+  const emitEvent = (event: AssetJobEvent) => {
+    if (!args.onEvent) return;
+    try {
+      args.onEvent(event);
+    } catch (e) {
+      // Event consumers must never be able to flip a completed backend task into an executor failure.
+      console.error('[assetExecutor] onEvent handler failed', {
+        type: event.type,
+        kind: event.job.kind,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
 
   const resolveShotFromStory = (story: Story, sequenceId: string, shotId: string): Shot | null => {
     const seq = (story.sequences || []).find((s) => s.id === sequenceId);
@@ -626,7 +833,7 @@ export const executeAssetJobs = async (args: {
       const idx = phaseIndexOf(getJobKind(job));
       if (idx <= stopAt) continue;
       done += 1;
-      args.onEvent?.({ type: 'blocked', job, done, total, reason });
+      emitEvent({ type: 'blocked', job, done, total, reason });
     }
   };
 
@@ -756,21 +963,21 @@ export const executeAssetJobs = async (args: {
   const worker = async (job: AssetJob) => {
     if (args.shouldCancelJob?.(job)) {
       done += 1;
-      args.onEvent?.({ type: 'blocked', job, done, total, reason: 'cancelled' });
+      emitEvent({ type: 'blocked', job, done, total, reason: 'cancelled' });
       return;
     }
-    args.onEvent?.({ type: 'start', job, done, total });
+    emitEvent({ type: 'start', job, done, total });
     try {
       const snapshot = args.getStoryForRefs?.() || null;
       if (args.shouldCancelJob?.(job)) {
         done += 1;
-        args.onEvent?.({ type: 'blocked', job, done, total, reason: 'cancelled' });
+        emitEvent({ type: 'blocked', job, done, total, reason: 'cancelled' });
         return;
       }
       const blocked = checkBlocked(job, snapshot);
       if (blocked) {
         done += 1;
-        args.onEvent?.({ type: 'blocked', job, done, total, reason: blocked });
+        emitEvent({ type: 'blocked', job, done, total, reason: blocked });
         return;
       }
 
@@ -780,6 +987,35 @@ export const executeAssetJobs = async (args: {
       const attemptOnce = async () => {
         const signal = args.getSignalForJob?.(job);
         if (signal?.aborted || args.shouldCancelJob?.(job)) throw new DOMException('Aborted', 'AbortError');
+        const withTaskBinding = <T extends Record<string, any>>(payload: T): T => {
+          return {
+            ...payload,
+            onTaskAccepted: (task: { taskId: string; statusUrl: string }) => {
+              const taskId = String(task?.taskId || '').trim();
+              if (!taskId) return;
+              emitEvent({
+                type: 'task',
+                job,
+                done,
+                total,
+                taskId,
+                statusUrl: String(task?.statusUrl || '').trim() || undefined,
+              });
+            },
+          };
+        };
+        const withTaskMeta = (meta: any, debug: any) => {
+          const taskId = String(debug?.taskId || '').trim();
+          const statusUrl = String(debug?.statusUrl || '').trim();
+          if (!taskId && !statusUrl) return meta;
+          return {
+            ...meta,
+            pipeline: {
+              taskId,
+              statusUrl,
+            },
+          };
+        };
         if (job.kind === 'masterkv') {
           const story = args.getStoryForRefs?.() || null;
           const refsRaw = Array.isArray((story as any)?.referenceImages) ? (story as any).referenceImages : [];
@@ -790,7 +1026,8 @@ export const executeAssetJobs = async (args: {
                 .map((r: any) => ({ url: String(r?.url || ''), label: r?.name ? String(r.name) : 'master kv reference' }))
                 .filter((r: any) => r.url)
             : [];
-          const out = await generateImageFromPrompt({
+          const out = await generateImageFromPrompt(
+            withTaskBinding({
             prompt: job.prompt,
             settings: args.settings,
             aspectRatio: args.aspectRatio,
@@ -798,13 +1035,15 @@ export const executeAssetJobs = async (args: {
             signal,
             strict: true,
             requireAllReferences: false,
-          });
-          const meta = {
+            async: true,
+            }),
+          );
+          const meta = withTaskMeta({
             prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
             references: references.map((r) => ({ url: r.url, label: r.label })),
             settings: { provider: args.settings.provider, model: args.settings.model, temperature: args.settings.temperature },
             aspectRatio: args.aspectRatio,
-          };
+          }, out.debug);
           return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }
 
@@ -855,7 +1094,8 @@ export const executeAssetJobs = async (args: {
               emphasizeNarrativeComposition: true,
             },
           };
-          const out = await generateImageFromPrompt({
+          const out = await generateImageFromPrompt(
+            withTaskBinding({
             prompt: buildShotPromptWithContext(story, shot),
             settings: args.settings,
             aspectRatio: args.aspectRatio,
@@ -866,8 +1106,10 @@ export const executeAssetJobs = async (args: {
             composeSettings: { model: String((args as any)?.promptComposerModel || '') || 'gemini-3-pro-preview', temperature: 0.2, maxOutputTokens: 512 },
             strict: true,
             requireAllReferences: references.length > 0,
-          });
-          const meta = {
+            async: true,
+            }),
+          );
+          const meta = withTaskMeta({
             prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || buildShotPromptWithContext(story, shot) || '').trim(),
             references: references.map((r) => ({ url: r.url, label: r.label })),
             settings: {
@@ -876,7 +1118,7 @@ export const executeAssetJobs = async (args: {
               temperature: args.settings.temperature,
             },
             aspectRatio: args.aspectRatio,
-          };
+          }, out.debug);
           return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }
 
@@ -895,7 +1137,8 @@ export const executeAssetJobs = async (args: {
           if (!references.length && kvUrl && !isLikelyPlaceholderImageUrl(kvUrl)) {
             references.push({ url: kvUrl, label: 'master kv reference' });
           }
-          const out = await generateImageFromPrompt({
+          const out = await generateImageFromPrompt(
+            withTaskBinding({
             prompt: job.prompt,
             settings: args.settings,
             aspectRatio: args.aspectRatio,
@@ -903,13 +1146,15 @@ export const executeAssetJobs = async (args: {
             signal,
             strict: true,
             requireAllReferences: false,
-          });
-          const meta = {
+            async: true,
+            }),
+          );
+          const meta = withTaskMeta({
             prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
             references: references.map((r) => ({ url: r.url, label: r.label })),
             settings: { provider: args.settings.provider, model: args.settings.model, temperature: args.settings.temperature },
             aspectRatio: args.aspectRatio,
-          };
+          }, out.debug);
           return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }
 
@@ -924,7 +1169,8 @@ export const executeAssetJobs = async (args: {
                 .map((r: any) => ({ url: String(r?.url || ''), label: r?.name ? String(r.name) : 'character reference' }))
                 .filter((r: any) => r.url)
             : [];
-          const out = await generateImageFromPrompt({
+          const out = await generateImageFromPrompt(
+            withTaskBinding({
             prompt: job.prompt,
             settings: args.settings,
             aspectRatio: '1:1',
@@ -932,13 +1178,15 @@ export const executeAssetJobs = async (args: {
             signal,
             strict: true,
             requireAllReferences: false,
-          });
-          const meta = {
+            async: true,
+            }),
+          );
+          const meta = withTaskMeta({
             prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
             references: references.map((r) => ({ url: r.url, label: r.label })),
             settings: { provider: args.settings.provider, model: args.settings.model, temperature: args.settings.temperature },
             aspectRatio: '1:1',
-          };
+          }, out.debug);
           return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }
 
@@ -949,7 +1197,8 @@ export const executeAssetJobs = async (args: {
 	        const avatarUrl =
 	          desiredAvatarUrl || (ch && isDone((ch as any)?.assetState) ? getCharacterActiveAvatarUrl(ch, { activeOnly: true }) : '');
 	        const refs = avatarUrl ? [{ url: avatarUrl, label: `character base: ${ch?.name || job.characterId}` }] : [];
-		        const out = await generateImageFromPrompt({
+		        const out = await generateImageFromPrompt(
+              withTaskBinding({
 		          prompt: job.prompt,
 		          settings: args.settings,
 		          aspectRatio: '1:1',
@@ -957,13 +1206,15 @@ export const executeAssetJobs = async (args: {
               signal,
 		          strict: true,
 		          requireAllReferences: refs.length > 0,
-		        });
-          const meta = {
+              async: true,
+		        }),
+            );
+          const meta = withTaskMeta({
             prompt: String(out.debug?.promptUsed || out.debug?.promptUsedPreview || job.prompt || '').trim(),
             references: refs.map((r) => ({ url: r.url, label: r.label })),
             settings: { provider: args.settings.provider, model: args.settings.model, temperature: args.settings.temperature },
             aspectRatio: '1:1',
-          };
+          }, out.debug);
 	        return { imageUrl: out.imageUrl, debug: out.debug, meta };
 	      };
 
@@ -972,12 +1223,12 @@ export const executeAssetJobs = async (args: {
           if (args.shouldCancelJob?.(job)) throw new DOMException('Aborted', 'AbortError');
           const out = await attemptOnce();
           done += 1;
-          args.onEvent?.({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug, meta: out.meta });
+          emitEvent({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug, meta: out.meta });
           return;
         } catch (e) {
           if (isAbortLikeError(e) || args.shouldCancelJob?.(job)) {
             done += 1;
-            args.onEvent?.({ type: 'blocked', job, done, total, reason: 'cancelled' });
+            emitEvent({ type: 'blocked', job, done, total, reason: 'cancelled' });
             return;
           }
           lastErr = e;
@@ -992,7 +1243,7 @@ export const executeAssetJobs = async (args: {
     } catch (e) {
       done += 1;
       errors += 1;
-      args.onEvent?.({ type: 'error', job, done, total, error: e instanceof Error ? e.message : String(e) });
+      emitEvent({ type: 'error', job, done, total, error: e instanceof Error ? e.message : String(e) });
     }
   };
 

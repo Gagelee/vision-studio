@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyAssetResult, applyAssetStart, type AssetJob } from './assetExecutor';
+import { applyAssetError, applyAssetResult, applyAssetStart, applyAssetTaskBinding, clearAssetTaskBinding, type AssetJob } from './assetExecutor';
 
 const UNSPLASH_PLACEHOLDER =
   'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=123';
@@ -106,5 +106,42 @@ describe('assetExecutor shot state sync', () => {
     expect(seqShotA.assetState?.status).toBe('done');
     expect(sceneShotA.thumbnailUrl).toBe(realUrl);
     expect(sceneShotA.assetState?.status).toBe('done');
+  });
+
+  it('preserves task binding on transient error and clears it on terminal reconciliation', () => {
+    const shotA = makeShot('shot-a', 1);
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [],
+      characters: [],
+      sequences: [
+        {
+          id: 'seq-1',
+          title: 'S1',
+          context: '',
+          scenes: [{ id: 'scene-1', title: 'Scene 1', shots: [shotA] }],
+          shots: [shotA],
+        },
+      ],
+    };
+
+    const job: AssetJob = { kind: 'shot', sequenceId: 'seq-1', shot: { id: 'shot-a' } as any };
+    const started = applyAssetStart(story, job) as any;
+    const linked = applyAssetTaskBinding(started, job, { taskId: 'task-123', statusUrl: '/api/pipeline/tasks/task-123' }) as any;
+    const errored = applyAssetError(linked, job, 'Task status fetch failed (HTTP 502)') as any;
+    const shotAfterError = errored.sequences[0].shots[0];
+    expect(shotAfterError.assetState?.status).toBe('error');
+    expect(shotAfterError.assetState?.pipelineTaskId).toBe('task-123');
+
+    const cleared = clearAssetTaskBinding(errored, job) as any;
+    const shotAfterClear = cleared.sequences[0].shots[0];
+    expect(shotAfterClear.assetState?.pipelineTaskId).toBe('');
+    expect(shotAfterClear.assetState?.pipelineStatusUrl).toBe('');
   });
 });

@@ -49,8 +49,27 @@ const splitPerformanceBeats = (text: string, max = 6): string[] => {
   return src
     .split(/\n|[.;!?。！？；]/g)
     .map((s) => s.trim().replace(/\s+/g, ' '))
-    .filter(Boolean)
+    .filter((s) => {
+      if (!s) return false;
+      if (/^(INT|EXT)\.?$/i.test(s)) return false;
+      if (/^(INT|EXT)\b/i.test(s)) return false;
+      if (/^(DAY|NIGHT|MORNING|EVENING|DUSK|DAWN)\b/i.test(s)) return false;
+      if (/^[A-Z][A-Z0-9 _-]{1,24}:/.test(s)) return false;
+      return true;
+    })
     .slice(0, max);
+};
+
+const motionCueForAmplitude = (amp: 'micro' | 'medium' | 'large') => {
+  if (amp === 'large') return 'full-body displacement with acceleration and clear follow-through';
+  if (amp === 'medium') return 'visible torso shift, step timing, and committed arm path';
+  return 'micro-expression, breath rhythm, and subtle gaze/finger tension';
+};
+
+const pacingCueForIndex = (idx: number, total: number) => {
+  if (idx === 0) return 'opening setup, establish intention before movement';
+  if (idx >= total - 1) return 'release/resolve, hold reaction for a readable tail';
+  return 'escalation beat, make cause and effect legible';
 };
 
 const inferActingAmplitude = (beat: string): 'micro' | 'medium' | 'large' => {
@@ -76,27 +95,30 @@ export const buildActingDirection = (args: {
   shotDescription: string;
   sequenceContext: string;
   dialogue: string[];
+  sourceKind?: VideoSourceKind;
+  referenceFrames?: VideoSourceFrame[];
 }): string => {
-  const beats = splitPerformanceBeats(args.script || args.shotDescription || args.frameDescription, 4);
+  const frameBeats = (Array.isArray(args.referenceFrames) ? args.referenceFrames : [])
+    .map((f) => String(f?.description || '').trim())
+    .filter(Boolean)
+    .slice(0, 9);
+  const textBeats = splitPerformanceBeats(args.script || args.shotDescription || args.frameDescription, 6);
+  const beats = uniq([...(args.sourceKind === 'stack' ? frameBeats : []), ...textBeats]).slice(0, 6);
   const lines: string[] = [];
-  lines.push('Acting objective: make emotional transitions explicit through behavior, not abstract adjectives.');
-  if (args.sequenceContext) lines.push(`Narrative pressure: ${clamp(String(args.sequenceContext), 240)}`);
   if (!beats.length) {
-    lines.push('Beat 1: Start contained. Escalate through breath rhythm, eye focus, and micro-expression.');
+    lines.push('Beat 1: establish intent through controlled stillness, breath cue, and focused eye-line.');
+    lines.push('Beat 2: clear trigger -> decisive body-weight transfer -> committed gesture path.');
+    lines.push('Beat 3: readable reaction tail with residual tension and controlled settle.');
   } else {
     beats.forEach((beat, idx) => {
       const amp = inferActingAmplitude(beat);
       const emotion = inferEmotionCue(beat);
+      const motionCue = motionCueForAmplitude(amp);
+      const pacingCue = pacingCueForIndex(idx, beats.length);
       lines.push(
-        `Beat ${idx + 1}: ${clamp(beat, 180)}. Movement amplitude: ${amp}. Emotion target: ${emotion}. Body cue: timed weight-shift and gesture commitment.`,
+        `Beat ${idx + 1}: ${clamp(beat, 180)}. Intent: ${emotion}. Motion detail: ${motionCue}. Pacing: ${pacingCue}.`,
       );
     });
-  }
-  if (args.dialogue.length) {
-    lines.push(`Dialogue delivery: ${args.dialogue.map((d, i) => `${i + 1}) "${clamp(d, 120)}"`).join(' ')}`);
-    lines.push('Per line: intention before speech, lip-sync timing, and post-line reaction beat.');
-  } else {
-    lines.push('Non-verbal performance: use gaze, breathing, hand tension, and stillness breaks to carry the arc.');
   }
   return lines.join('\n');
 };
@@ -153,53 +175,52 @@ export const composeStructuredVideoPrompt = (args: {
   constraints?: string[];
   maxChars?: number;
 }) => {
+  const styleLockHint = uniq(
+    [String(args.style || '').trim(), String(args.styleTranslation || '').trim()]
+      .filter(Boolean)
+      .map((s) => clamp(s, 180)),
+  )
+    .slice(0, 1)
+    .join(' ');
+
+  const gridRhythm = (() => {
+    if (args.sourceKind !== 'stack') return '';
+    const frames = Array.isArray(args.referenceFrames) ? args.referenceFrames : [];
+    if (!frames.length) return '';
+    const lines = frames.slice(0, 9).map((f, i) => {
+      const idx = Number.isFinite(Number(f?.panelIndex)) ? Number(f.panelIndex) + 1 : i + 1;
+      const d = clamp(String(f?.description || '').trim(), 140);
+      return `Beat ${idx}: ${d || 'follow visual continuity from this frame.'}`;
+    });
+    return lines.join('\n');
+  })();
+
+  const cameraGridAware = (() => {
+    const base = clamp(String(args.cameraPrompt || '').trim(), 700);
+    if (!base) return '';
+    if (args.sourceKind !== 'stack') return base;
+    return `${base}\nUse grid frame progression as primary staging reference; do not force a single static shot plan across all beats.`;
+  })();
+
   const sections: Array<{ id: string; title: string; body: string; required: boolean }> = [
-    {
-      id: 'objective',
-      title: 'Objective',
-      body: 'Image-to-video. Keep identity and environment continuity from the source frame.',
-      required: true,
-    },
+    { id: 'acting', title: 'Action & Performance Beats', body: clamp(String(args.actingDirection || '').trim(), 1800), required: true },
     {
       id: 'frame',
       title: 'Current Frame',
-      body: clamp(String(args.frameDescription || '').trim() || 'N/A', 520),
-      required: true,
-    },
-    {
-      id: 'references',
-      title: 'Reference Bundle',
-      body:
-        args.sourceKind === 'stack'
-          ? clamp(
-              `${(args.referenceFrames || []).length} grouped frames as continuity context: ` +
-                (args.referenceFrames || [])
-                  .slice(0, 8)
-                  .map((f, i) => {
-                    const idx = Number.isFinite(Number(f?.panelIndex)) ? `#${Number(f.panelIndex) + 1}` : `#${i + 1}`;
-                    const d = String(f?.description || '').trim();
-                    return d ? `${idx} ${clamp(d, 120)}` : idx;
-                  })
-                  .join(' | '),
-              1200,
-            )
-          : '',
+      body: args.sourceKind === 'single' ? clamp(String(args.frameDescription || '').trim() || 'N/A', 520) : '',
       required: false,
     },
-    { id: 'story', title: 'Story Context', body: clamp(String(args.storyContext || '').trim(), 700), required: false },
-    { id: 'acting', title: 'Acting Direction', body: clamp(String(args.actingDirection || '').trim(), 1400), required: true },
-    { id: 'camera', title: 'Cameraman Direction', body: clamp(String(args.cameraPrompt || '').trim(), 500), required: true },
-    { id: 'lighting', title: 'Lighting Direction', body: clamp(String(args.lightingPrompt || '').trim(), 420), required: false },
-    { id: 'audio', title: 'Audio / Mood', body: clamp(String(args.audioPrompt || '').trim(), 320), required: false },
-    { id: 'style', title: 'Style', body: clamp(String(args.style || '').trim(), 700), required: true },
-    { id: 'style_hints', title: 'Style Translation Hints', body: clamp(String(args.styleTranslation || '').trim(), 400), required: false },
+    { id: 'grid', title: 'Grid Beat Continuity', body: gridRhythm, required: false },
+    { id: 'camera', title: 'Camera Movement Plan', body: cameraGridAware, required: true },
+    { id: 'lighting', title: 'Lighting Continuity', body: clamp(String(args.lightingPrompt || '').trim(), 280), required: false },
     {
-      id: 'dialogue',
-      title: 'Dialogue',
-      body: Array.isArray(args.dialogue) && args.dialogue.length ? args.dialogue.map((d, i) => `${i + 1}. "${clamp(String(d || ''), 140)}"`).join('\n') : '',
+      id: 'style_lock',
+      title: 'Look Lock (Minimal)',
+      body: styleLockHint
+        ? `Use source image look as lock; do not restyle. Optional tone hint: ${styleLockHint}`
+        : 'Use source image look as lock; do not restyle.',
       required: false,
     },
-    { id: 'director_notes', title: 'Director Notes', body: clamp(String(args.directorNotes || '').trim(), 700), required: false },
     {
       id: 'quality',
       title: 'Quality Constraints',
@@ -227,7 +248,7 @@ export const composeStructuredVideoPrompt = (args: {
   const maxChars = Math.max(1800, Number(args.maxChars || 7200));
   let prompt = render(active);
   const dropped: string[] = [];
-  const dropOrder = ['director_notes', 'audio', 'lighting', 'story', 'style_hints', 'references', 'dialogue'];
+  const dropOrder = ['lighting', 'style_lock', 'grid', 'frame'];
   for (const id of dropOrder) {
     if (prompt.length <= maxChars) break;
     const idx = active.findIndex((s) => s.id === id && !s.required);
@@ -241,4 +262,3 @@ export const composeStructuredVideoPrompt = (args: {
   }
   return { prompt, sectionsUsed: active.map((s) => s.id), droppedSections: dropped };
 };
-

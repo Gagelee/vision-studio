@@ -57,6 +57,27 @@ const collectPanelHints = (shot: Shot, panelCount: 4 | 9, explicitHints?: string
   return uniqueList([...providedHints, ...metadataHints, ...scriptBeats, ...descBeats]).slice(0, panelCount);
 };
 
+const compressVisualStyleLock = (raw: string, maxItems = 4) => {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  const parts = text
+    .split(/\n|[.;!?。！？；]/g)
+    .map((s) => s.trim().replace(/\s+/g, ' '))
+    .filter(Boolean);
+  const visualHint =
+    /(style|visual|look|palette|color|grade|lighting|camera|lens|texture|material|contrast|tone|cinematic|film|realism|photoreal|medium|构图|镜头|光|色|风格|质感|材质|写实|电影|景深|调色)/i;
+  const narrativeNoise =
+    /(logline|intent|story|plot|synopsis|sequence|scene|shot|character|dialogue|剧情|故事|角色|对白|台词|分镜|序列|场景)/i;
+  const picked = parts
+    .filter((x) => visualHint.test(x) && !narrativeNoise.test(x))
+    .slice(0, Math.max(1, Math.min(6, Number(maxItems || 4))));
+  const fallback = parts
+    .filter((x) => !narrativeNoise.test(x))
+    .slice(0, 1);
+  const out = uniqueList((picked.length ? picked : fallback).map((x) => clampText(x, 88))).slice(0, maxItems);
+  return out.join('; ');
+};
+
 export const buildShotKeyframePrompt = (args: {
   shot: Shot;
   styleGuide?: string;
@@ -67,6 +88,7 @@ export const buildShotKeyframePrompt = (args: {
 }) => {
   const shot = args.shot;
   const styleGuide = clampText(String(args.styleGuide || '').trim(), 900);
+  const compactStyleGuide = compressVisualStyleLock(styleGuide, 4);
   const envName = clampText(String(args.environmentName || '').trim(), 96);
   const envStyle = clampText(String(args.environmentStyle || '').trim(), 320);
   const castNames = Array.isArray(args.castNames)
@@ -82,9 +104,10 @@ export const buildShotKeyframePrompt = (args: {
   const audio = clampText(String((shot.elements as any)?.AUDIO?.prompt || '').trim(), 160);
 
   const styleTranslation = buildStylePromptTranslation({
-    texts: [styleGuide, String(shot.description || ''), camera, lighting],
-    maxItems: 6,
+    texts: [compactStyleGuide || styleGuide, envStyle, camera, lighting],
+    maxItems: 3,
   });
+  const compactStyleLock = uniqueList([compactStyleGuide, styleTranslation].filter(Boolean)).join('; ');
 
   const sceneInput = [
     `Scene: ${clampText(String(shot.description || '').trim(), 420) || 'N/A'}`,
@@ -130,8 +153,7 @@ export const buildShotKeyframePrompt = (args: {
       `${panelGuidance}\n` +
       `Follow these beats when present; otherwise infer a coherent visual progression from the scene.\n\n` +
       `PROJECT STYLE LOCK\n` +
-      `- Style guide: ${styleGuide || 'N/A'}\n` +
-      `- Style translation hints: ${styleTranslation || 'N/A'}\n` +
+      `- Keep references as the primary lock. Supplemental visual lock: ${compactStyleLock || 'cinematic realism; controlled contrast; natural texture'}\n` +
       `- Avoid accidental style drift into generic CGI look unless explicitly requested.\n\n` +
       `SCENE INPUT\n` +
       `- ${sceneInput}\n\n` +
@@ -150,6 +172,7 @@ export const buildShotSingleFramePrompt = (args: {
 }) => {
   const shot = args.shot;
   const styleGuide = String(args.styleGuide || '').trim();
+  const compactStyleGuide = compressVisualStyleLock(styleGuide, 4);
   const envName = String(args.environmentName || '').trim();
   const envStyle = String(args.environmentStyle || '').trim();
   const castNames = Array.isArray(args.castNames) ? args.castNames.map((s) => String(s || '').trim()).filter(Boolean) : [];
@@ -161,9 +184,10 @@ export const buildShotSingleFramePrompt = (args: {
   const audio = String((shot.elements as any)?.AUDIO?.prompt || '').trim();
 
   const styleTranslation = buildStylePromptTranslation({
-    texts: [styleGuide, String(shot.description || ''), camera, lighting],
-    maxItems: 6,
+    texts: [compactStyleGuide || styleGuide, envStyle, camera, lighting],
+    maxItems: 3,
   });
+  const compactStyleLock = uniqueList([compactStyleGuide, styleTranslation].filter(Boolean)).join('; ');
 
   const sceneInput = [
     `Scene: ${String(shot.description || '').trim() || 'N/A'}`,
@@ -200,8 +224,7 @@ export const buildShotSingleFramePrompt = (args: {
 	  `- Photoreal cinematic still, filmic contrast, controlled highlights, natural texture.\n` +
     `- Plausible lens choice and depth of field.\n\n` +
     `PROJECT STYLE LOCK\n` +
-    `- Style guide (hard lock when provided): ${styleGuide || 'N/A'}\n` +
-    `- Style translation hints: ${styleTranslation || 'N/A'}\n\n` +
+    `- Keep references as the primary lock. Supplemental visual lock: ${compactStyleLock || 'cinematic realism; controlled contrast; natural texture'}\n\n` +
     `SCENE INPUT:\n` +
     `- ${sceneInput}\n\n` +
     `OUTPUT\n` +

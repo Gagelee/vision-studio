@@ -78,7 +78,9 @@ export const scaffoldProjectStream = async (
   };
 
   const controller = new AbortController();
-  const timeoutMs = 10 * 60_000;
+  // Multi-agent scaffold can run for many minutes on complex prompts.
+  // Keep stream alive longer, and fall back to non-stream if needed.
+  const timeoutMs = 18 * 60_000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -161,6 +163,24 @@ export const scaffoldProjectStream = async (
     }
 
     throw new Error('Stream ended without done');
+  } catch (e) {
+    if (isAgentApiError(e)) throw e;
+    const msg = e instanceof Error ? e.message : String(e);
+    const shouldFallback =
+      /timeout after/i.test(msg) ||
+      /stream ended without done/i.test(msg) ||
+      /fetch failed/i.test(msg) ||
+      /network/i.test(msg) ||
+      /aborted/i.test(msg);
+    if (!shouldFallback) throw e;
+
+    addDebugEvent({
+      level: 'warn',
+      scope: 'agent.scaffold',
+      message: 'Stream interrupted, fallback to non-stream scaffold',
+      data: { endpoint, error: msg },
+    });
+    return scaffoldProject(req);
   } finally {
     clearTimeout(timeout);
   }
@@ -291,7 +311,7 @@ export const scaffoldProject = async (req: ScaffoldProjectRequest): Promise<Scaf
             }
           : undefined,
       },
-      180_000
+      18 * 60_000
     );
 
     if (!isUsefulScaffold((res as any)?.story) || !(res as any)?.plan) {
