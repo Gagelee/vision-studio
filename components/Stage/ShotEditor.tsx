@@ -16,6 +16,7 @@ import {
 import { openLightbox } from '../../lib/ui/lightboxStore';
 import { addDebugEvent } from '../../lib/debug/eventLog';
 import { computeGridPanelBBoxes } from '../../lib/ui/gridSplit';
+import { getVisionUserRequestHeaders } from '../../lib/userSession';
 
 interface ShotEditorProps {
   shot: Shot;
@@ -144,7 +145,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const storeImageDataUrl = async (dataUrl: string, filenameHint: string) => {
     const resp = await fetch('/api/asset/image/store', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({ dataUrl, filenameHint }),
     });
     if (!resp.ok) {

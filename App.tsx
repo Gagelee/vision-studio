@@ -29,6 +29,8 @@ import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult,
 import { generateVideoFromImage } from './lib/ai/video/generate';
 import { buildStylePromptTranslation } from './lib/ai/styleIntent';
 import { buildActingDirection, composeStructuredVideoPrompt, extractDialogueLines, resolveVideoSourceBundle } from './lib/ai/videoPromptComposer';
+import { getOrCreateVisionUserId, getVisionUserRequestHeaders } from './lib/userSession';
+import { appendProjectTransferLog, buildProjectExportEnvelope, parseProjectImportText } from './lib/projectTransfer';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -1020,6 +1022,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
 };
 
 export default function App() {
+  const currentUserIdRef = useRef<string>(getOrCreateVisionUserId());
+  const currentUserId = currentUserIdRef.current;
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
@@ -1032,13 +1036,13 @@ export default function App() {
   >(null);
   const [pendingDirectorSingleFallbackArmed, setPendingDirectorSingleFallbackArmed] = useState(false);
 
-  const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace());
+  const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace(currentUserId));
   const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
-  const [screen, setScreen] = useState<Screen>(() => (loadWorkspace().activeProjectId ? 'project' : 'library'));
+  const [screen, setScreen] = useState<Screen>(() => (loadWorkspace(currentUserId).activeProjectId ? 'project' : 'library'));
 
   const [selection, setSelection] = useState<SelectionState>(() => ({
     type: 'story',
-    id: loadWorkspace().activeProjectId || '',
+    id: loadWorkspace(currentUserId).activeProjectId || '',
   }));
 
   const [agentHistoryByProject, setAgentHistoryByProject] = useState<Record<string, AgentLogEntry[]>>({});
@@ -1055,6 +1059,7 @@ export default function App() {
   }>(null);
   const [pendingInteractionGeneration, setPendingInteractionGeneration] = useState<PendingInteractionGeneration | null>(null);
   const staleRecoveryDoneRef = useRef(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const cancelledAssetJobKeysRef = useRef<Set<string>>(new Set());
   const assetJobAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const shotProductionAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -1227,9 +1232,9 @@ export default function App() {
     const unique = Array.from(new Set((urls || []).map((u) => String(u || '').trim()).filter(Boolean)));
     if (!unique.length) return { deleted: 0, missing: 0, rejected: 0 };
     try {
-      const res = await fetch('/api/local-assets/delete', {
+    const res = await fetch('/api/local-assets/delete', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
         body: JSON.stringify({ urls: unique }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1324,13 +1329,15 @@ export default function App() {
     dup.createdAt = now;
     dup.updatedAt = now;
     dup.lastOpenedAt = now;
+    dup.ownerUserId = currentUserId;
+    dup.source = { type: 'local' };
 
     setWorkspace((prev) => ({ ...prev, projects: [dup, ...prev.projects] }));
     addToast('Project duplicated', 'success');
   };
 
   const handleCreateDemoProject = () => {
-    const demo = createDemoProject();
+    const demo = createDemoProject(currentUserId);
     setWorkspace((prev) => ({
       ...prev,
       projects: [demo, ...prev.projects],
@@ -1339,6 +1346,86 @@ export default function App() {
     setSelection({ type: 'story', id: demo.id });
     setScreen('project');
     addToast('Demo project created', 'success');
+  };
+
+  const handleExportProject = (projectId: string) => {
+    const existing = workspace.projects.find((p) => p.id === projectId);
+    if (!existing) return;
+    const envelope = buildProjectExportEnvelope(existing, currentUserId);
+    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
+    const safeTitle = String(existing.title || 'project').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 48) || 'project';
+    const fileName = `${safeTitle}-${new Date().toISOString().slice(0, 10)}.vision-project.json`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    appendProjectTransferLog(currentUserId, {
+      id: `transfer-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      kind: 'export',
+      at: Date.now(),
+      projectId: existing.id,
+      projectTitle: existing.title,
+      fileName,
+      exportedByUserId: currentUserId,
+    });
+    addToast(`Project exported: ${fileName}`, 'success');
+  };
+
+  const handleImportProjects = async (files: FileList | File[]) => {
+    const picked = Array.from(files || []).slice(0, 8);
+    if (!picked.length) return;
+    const importedStories: Story[] = [];
+    for (const file of picked) {
+      try {
+        const text = await file.text();
+        const parsed = parseProjectImportText(text, { currentUserId, sourceFileName: file.name });
+        importedStories.push(...parsed);
+      } catch (e) {
+        addDebugEvent({
+          level: 'warn',
+          scope: 'project.import',
+          message: 'Failed to parse project import file',
+          data: { fileName: file.name, error: e instanceof Error ? e.message : String(e) },
+        });
+      }
+    }
+    if (!importedStories.length) {
+      addToast('Import failed: no valid project found', 'info');
+      return;
+    }
+    const now = Date.now();
+    const usedIds = new Set(workspace.projects.map((p) => p.id));
+    const incoming = importedStories.map((s, idx) => {
+      const next = cloneStory(s);
+      if (!next.id || usedIds.has(next.id)) next.id = `proj-${now}-${idx}-${Math.random().toString(16).slice(2, 6)}`;
+      usedIds.add(next.id);
+      next.ownerUserId = currentUserId;
+      next.source = { ...(next.source || {}), type: 'imported', importedByUserId: currentUserId, importedAt: Date.now() } as any;
+      return next;
+    });
+    setWorkspace((prev) => ({ ...prev, projects: [...incoming, ...prev.projects], activeProjectId: incoming[0]?.id || prev.activeProjectId }));
+    const first = incoming[0];
+    if (first?.id) {
+      setSelection({ type: 'story', id: first.id });
+      setScreen('project');
+    }
+    for (const s of incoming) {
+      appendProjectTransferLog(currentUserId, {
+        id: `transfer-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        kind: 'import',
+        at: Date.now(),
+        projectId: s.id,
+        projectTitle: s.title,
+        importedByUserId: currentUserId,
+        exportedByUserId: s.source?.exportedByUserId,
+        fileName: s.source?.sourceFileName,
+      });
+    }
+    addToast(`Imported ${importedStories.length} project(s)`, 'success');
   };
 
   const upsertWorkspaceProject = (project: Story) => {
@@ -1352,14 +1439,19 @@ export default function App() {
   };
 
   const handleCreationComplete = (project: Story, plan: AgentPlan, debug?: any) => {
+    const ownedProject = {
+      ...project,
+      ownerUserId: project.ownerUserId || currentUserId,
+      source: project.source || { type: 'local' },
+    } as Story;
     setWorkspace((prev) => {
-      const idx = prev.projects.findIndex((p) => p.id === project.id);
+      const idx = prev.projects.findIndex((p) => p.id === ownedProject.id);
       const projects = prev.projects.slice();
-      if (idx < 0) projects.unshift(project);
-      else projects[idx] = mergeIncomingStoryPreferRealPreviews(project, projects[idx]);
-      return { ...prev, projects, activeProjectId: project.id };
+      if (idx < 0) projects.unshift(ownedProject);
+      else projects[idx] = mergeIncomingStoryPreferRealPreviews(ownedProject, projects[idx]);
+      return { ...prev, projects, activeProjectId: ownedProject.id };
     });
-    setSelection({ type: 'story', id: project.id });
+    setSelection({ type: 'story', id: ownedProject.id });
     setScreen('project');
 
     const systemEntry: AgentLogEntry = {
@@ -1373,7 +1465,7 @@ export default function App() {
 
     setAgentHistoryByProject((prev) => ({
       ...prev,
-      [project.id]: [...(prev[project.id] || []), systemEntry],
+      [ownedProject.id]: [...(prev[ownedProject.id] || []), systemEntry],
     }));
 
     const fellBack = Boolean(debug?.error);
@@ -3446,6 +3538,7 @@ export default function App() {
       <>
         <ProjectLibrary
           projects={workspace.projects}
+          currentUserId={currentUserId}
           theme={theme}
           toggleTheme={toggleTheme}
           onOpenProject={openProject}
@@ -3454,8 +3547,22 @@ export default function App() {
           onRenameProject={handleRenameProject}
           onDuplicateProject={handleDuplicateProject}
           onDeleteProject={handleDeleteProject}
+          onExportProject={handleExportProject}
+          onImportProjects={() => importInputRef.current?.click()}
           onOpenAiSettings={() => setIsAiSettingsOpen(true)}
           onOpenDebug={() => setIsDebugOpen(true)}
+        />
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,.vision-project.json"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = e.target.files;
+            if (files?.length) handleImportProjects(files);
+            e.currentTarget.value = '';
+          }}
         />
 
         {isAiSettingsOpen && (

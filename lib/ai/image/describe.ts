@@ -1,4 +1,5 @@
 import { addDebugEvent } from '../../debug/eventLog';
+import { getVisionUserRequestHeaders } from '../../userSession';
 
 export type ImageDescribeResult = {
   description: string;
@@ -23,7 +24,7 @@ export const describeImageForRefine = async (args: { imageUrl: string; signal?: 
   });
   const res = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify({ imageUrl }),
     signal: args.signal,
   });
@@ -38,4 +39,3 @@ export const describeImageForRefine = async (args: { imageUrl: string; signal?: 
   addDebugEvent({ level: 'info', scope: 'asset.image', message: 'Describe response', data: { describe: out } });
   return out;
 };
-

@@ -1,5 +1,6 @@
 import { AspectRatio } from '../../../types';
 import { addDebugEvent } from '../../debug/eventLog';
+import { getVisionUserRequestHeaders } from '../../userSession';
 
 export interface GenerateVideoFromImageRequest {
   prompt: string;
@@ -71,7 +72,7 @@ export const generateVideoFromImage = async (
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({
         prompt: String(req.prompt || ''),
         imageUrl: String(req.imageUrl || ''),

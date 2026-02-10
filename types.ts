@@ -287,6 +287,14 @@ export interface Sequence {
 
 export interface Story {
   id: string;
+  ownerUserId?: string;
+  source?: {
+    type: 'local' | 'imported';
+    importedAt?: number;
+    importedByUserId?: string;
+    exportedByUserId?: string;
+    sourceFileName?: string;
+  };
   title: string;
   logline: string;
   // Textual style bible used to guide all asset generation (preferred over using KV image as a reference).

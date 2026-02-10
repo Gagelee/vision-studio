@@ -1,6 +1,7 @@
 import { AgentAction, AgentPlan, ElementType, ModelRuntimeSettings, SelectionState, Story } from '../../../types';
 import { addDebugEvent } from '../../debug/eventLog';
 import { AgentApiError, isAgentApiError, readErrorBody } from './apiError';
+import { getVisionUserRequestHeaders } from '../../userSession';
 
 export interface DirectorCommandRequest {
   message: string;
@@ -46,7 +47,7 @@ const postJson = async <T>(url: string, body: unknown, timeoutMs: number): Promi
     addDebugEvent({ level: 'info', scope: 'agent.direct', message: 'POST', data: { url, body } });
     const res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
         body: JSON.stringify(body),
         signal: controller.signal,
       }).catch((e) => {
@@ -543,7 +544,7 @@ export const runDirectorCommandStream = async (
   addDebugEvent({ level: 'info', scope: 'agent.direct', message: 'POST (stream)', data: { url: endpoint } });
   const res = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify({
       message: req.message,
       selection: req.selection,

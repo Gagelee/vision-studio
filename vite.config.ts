@@ -24,6 +24,8 @@ import { ProxyAgent } from 'undici';
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 const GENERATED_ASSETS_DIR = path.resolve(process.cwd(), '.vision-assets');
+const VISION_USER_ID_HEADER = 'x-vision-user-id';
+const USER_ID_RE = /^[a-z0-9][a-z0-9_-]{2,63}$/i;
 
 type GeminiResponseSchema = any;
 const schemaString = (): GeminiResponseSchema => ({ type: 'STRING' });
@@ -457,28 +459,67 @@ const getProxyDispatcher = (targetUrl: string, env: Record<string, string>) => {
   return g.__VISION_PROXY_CACHE__[proxyUrl];
 };
 
-const ensureGeneratedDir = () => {
+const normalizeUserId = (raw: unknown): string => {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s) return '';
+  const cleaned = s.replace(/[^a-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  return USER_ID_RE.test(cleaned) ? cleaned : '';
+};
+
+const getRequestUserId = (req: any): string => {
+  const direct = req?.headers?.[VISION_USER_ID_HEADER];
+  const lower = req?.headers?.[VISION_USER_ID_HEADER.toLowerCase()];
+  return normalizeUserId(direct || lower) || 'anon';
+};
+
+const userGeneratedAssetsDir = (userId: string) => {
+  const safeUserId = normalizeUserId(userId) || 'anon';
+  return path.join(GENERATED_ASSETS_DIR, safeUserId);
+};
+
+const ensureGeneratedDir = (userId: string) => {
   try {
-    fs.mkdirSync(GENERATED_ASSETS_DIR, { recursive: true });
+    fs.mkdirSync(userGeneratedAssetsDir(userId), { recursive: true });
   } catch {
     // ignore
   }
 };
 
-const safeGeneratedAssetPath = (urlPathname: string) => {
+const parseGeneratedAssetRequest = (urlPathname: string): { userId?: string; filename: string } | null => {
   const decoded = decodeURIComponent(String(urlPathname || ''));
-  // Accept either a full pathname (`/__generated__/file.png`) or a relative-ish path.
   let rel = decoded.split('?')[0].split('#')[0].replace(/^\/+/, '');
   if (!rel) return null;
-
-  // Map `/__generated__/file.png` -> `.vision-assets/file.png`
   if (rel === '__generated__') return null;
   if (rel.startsWith('__generated__/')) rel = rel.slice('__generated__/'.length);
+  if (!rel || rel.includes('..') || rel.includes('\\')) return null;
+  const parts = rel.split('/').filter(Boolean);
+  if (parts.length === 1) return { filename: parts[0] };
+  if (parts.length === 2) {
+    const userId = normalizeUserId(parts[0]);
+    if (!userId) return null;
+    return { userId, filename: parts[1] };
+  }
+  return null;
+};
 
-  // Hardening: only allow a single filename (no subdirs).
-  if (!rel) return null;
-  if (rel.includes('..') || rel.includes('\\') || rel.includes('/')) return null;
-  return path.join(GENERATED_ASSETS_DIR, rel);
+const safeGeneratedAssetPaths = (urlPathname: string, fallbackUserId?: string): string[] => {
+  const parsed = parseGeneratedAssetRequest(urlPathname);
+  if (!parsed?.filename || parsed.filename.includes('/')) return [];
+  const out = new Set<string>();
+  if (parsed.userId) {
+    out.add(path.join(userGeneratedAssetsDir(parsed.userId), parsed.filename));
+    return Array.from(out);
+  }
+  const normalizedFallback = normalizeUserId(fallbackUserId || '') || 'anon';
+  out.add(path.join(userGeneratedAssetsDir(normalizedFallback), parsed.filename));
+  // Legacy compatibility: historical assets without user segment lived directly under .vision-assets.
+  out.add(path.join(GENERATED_ASSETS_DIR, parsed.filename));
+  return Array.from(out);
+};
+
+const buildGeneratedAssetUrl = (userId: string, filename: string) => {
+  const safeUserId = normalizeUserId(userId) || 'anon';
+  return `/__generated__/${safeUserId}/${filename}`;
 };
 
 const mimeByExt = (ext: string) => {
@@ -1425,17 +1466,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	    middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
 	      const pathname = String(req?.url || '').split('?')[0];
-	      const filePath = safeGeneratedAssetPath(pathname);
-	      if (!filePath) {
+        const userId = getRequestUserId(req);
+	      const fileCandidates = safeGeneratedAssetPaths(pathname, userId);
+	      if (!fileCandidates.length) {
 	        res.statusCode = 400;
 	        return res.end('Bad path');
 	      }
 	      try {
-	        const stat = fs.statSync(filePath);
-	        if (!stat.isFile()) {
-	          res.statusCode = 404;
-	          return res.end('Not found');
-	        }
+          let filePath = '';
+          let stat: fs.Stats | null = null;
+          for (const p of fileCandidates) {
+            try {
+              const s = fs.statSync(p);
+              if (s.isFile()) {
+                filePath = p;
+                stat = s;
+                break;
+              }
+            } catch {
+              // try next
+            }
+          }
+          if (!filePath || !stat) {
+            res.statusCode = 404;
+            return res.end('Not found');
+          }
 	        const size = Number(stat.size || 0);
 	        const contentType = mimeByExt(path.extname(filePath));
 	        res.setHeader('content-type', contentType);
@@ -1479,6 +1534,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
       middlewares.use('/api/local-assets/delete', async (req: any, res: any, next: any) => {
         if (req.method !== 'POST') return next();
+        const userId = getRequestUserId(req);
         const body = await readJsonBody(req);
         const rawUrls = Array.isArray(body?.urls) ? body.urls : [];
         const urls = Array.from(
@@ -1495,21 +1551,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const errors: string[] = [];
 
         for (const u of urls) {
-          const p = safeGeneratedAssetPath(u);
-          if (!p) {
+          const candidates = safeGeneratedAssetPaths(u, userId);
+          if (!candidates.length) {
             rejected += 1;
             continue;
           }
-          try {
-            await fs.promises.unlink(p);
-            deleted += 1;
-          } catch (e: any) {
-            const code = String(e?.code || '');
-            if (code === 'ENOENT') {
-              missing += 1;
-              continue;
+          let removed = false;
+          let missingCount = 0;
+          for (const p of candidates) {
+            try {
+              await fs.promises.unlink(p);
+              deleted += 1;
+              removed = true;
+              break;
+            } catch (e: any) {
+              const code = String(e?.code || '');
+              if (code === 'ENOENT') {
+                missingCount += 1;
+                continue;
+              }
+              errors.push(`${path.basename(p)}:${code || 'ERR'}`);
+              break;
             }
-            errors.push(`${path.basename(p)}:${code || 'ERR'}`);
+          }
+          if (!removed && missingCount === candidates.length) {
+            missing += 1;
           }
         }
 
@@ -1525,6 +1591,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
 	    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'POST') return next();
+        const userId = getRequestUserId(req);
 	      const body = await readJsonBody(req);
 
       const prompt = String(body?.prompt || '').trim();
@@ -1619,10 +1686,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         if (u.startsWith('/__generated__/')) {
           const clean = u.split('?')[0].split('#')[0];
-          const filePath = safeGeneratedAssetPath(clean);
-          if (!filePath) return null;
-          const bytes = await fs.promises.readFile(filePath);
-          return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+          const fileCandidates = safeGeneratedAssetPaths(clean, userId);
+          for (const filePath of fileCandidates) {
+            try {
+              const bytes = await fs.promises.readFile(filePath);
+              return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+            } catch {
+              // try next candidate
+            }
+          }
+          return null;
         }
 
         if (u.startsWith('data:image/')) {
@@ -1849,7 +1922,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const loaded = await loadImage(imageUrl);
         if (!loaded) return sendJson(res, 400, { ok: false, error: 'Unable to load source image' });
 
-        ensureGeneratedDir();
+        ensureGeneratedDir(userId);
         let predictRes: any = null;
         let model = modelCandidates[0];
         let predictParamsUsed: Record<string, any> = {};
@@ -2055,9 +2128,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             .digest('hex')
             .slice(0, 16);
           const filename = `${Date.now()}-${hash}.mp4`;
-          fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), videoBytes);
+          ensureGeneratedDir(userId);
+          fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), videoBytes);
           return sendJson(res, 200, {
-            videoUrl: `/__generated__/${filename}`,
+            videoUrl: buildGeneratedAssetUrl(userId, filename),
             operationName,
             debug: {
               transport: 'http',
@@ -2171,6 +2245,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	    // This keeps ShotVersion.imageUrl small (`/__generated__/...`) instead of embedding huge data URLs.
 	    middlewares.use('/api/asset/image/store', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'POST') return next();
+        const userId = getRequestUserId(req);
 	      const body = await readJsonBody(req);
 	      const dataUrl = String(body?.dataUrl || '').trim();
 	      const filenameHint = String(body?.filenameHint || '').trim();
@@ -2193,16 +2268,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	        mimeType === 'image/jpeg' ? '.jpg' :
 	          mimeType === 'image/webp' ? '.webp' :
 	            '.png';
-	      ensureGeneratedDir();
+	      ensureGeneratedDir(userId);
 	      const hash = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
 	      const safeHint = filenameHint.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 48);
 	      const filename = `${Date.now()}-${safeHint ? `${safeHint}-` : ''}${hash}${ext}`;
-	      fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), bytes);
-	      return sendJson(res, 200, { ok: true, imageUrl: `/__generated__/${filename}`, mimeType, bytes: bytes.length });
+	      fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), bytes);
+	      return sendJson(res, 200, { ok: true, imageUrl: buildGeneratedAssetUrl(userId, filename), mimeType, bytes: bytes.length });
 	    });
 
 	    middlewares.use('/api/asset/image/describe', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'POST') return next();
+        const userId = getRequestUserId(req);
 	      const body = await readJsonBody(req);
 	      const imageUrl = String(body?.imageUrl || '').trim();
 	      if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
@@ -2216,10 +2292,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	        if (!u) return null;
 	        if (u.startsWith('/__generated__/')) {
 	          const clean = u.split('?')[0].split('#')[0];
-	          const filePath = safeGeneratedAssetPath(clean);
-	          if (!filePath) return null;
-	          const bytes = await fs.promises.readFile(filePath);
-	          return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+            const fileCandidates = safeGeneratedAssetPaths(clean, userId);
+            for (const filePath of fileCandidates) {
+              try {
+                const bytes = await fs.promises.readFile(filePath);
+                return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+              } catch {
+                // try next candidate
+              }
+            }
+            return null;
 	        }
 	        if (u.startsWith('data:image/')) {
 	          const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(u);
@@ -2285,6 +2367,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
 			    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
 			      if (req.method !== 'POST') return next();
+            const userId = getRequestUserId(req);
 			        const body = await readJsonBody(req);
 
 		        const prompt = String(body?.prompt || '').trim();
@@ -2309,7 +2392,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		        try {
 		          if (provider === 'gemini') {
 		            const usedModel = normalizeGeminiImageModel(model);
-		            ensureGeneratedDir();
+		            ensureGeneratedDir(userId);
 
                 // Prompt composer is a text LLM call: prefer Compass gateway when configured.
 		            if (composePrompt && promptSpec && typeof promptSpec === 'object') {
@@ -2364,11 +2447,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              // Local generated assets: /__generated__/...
 	              if (u.startsWith('/__generated__/')) {
 	                const clean = u.split('?')[0].split('#')[0];
-	                const filePath = safeGeneratedAssetPath(clean);
-	                if (!filePath) return null;
-	                const bytes = await fs.promises.readFile(filePath);
-	                const mimeType = mimeByExt(path.extname(filePath));
-	                return { mimeType, bytes };
+                  const fileCandidates = safeGeneratedAssetPaths(clean, userId);
+                  for (const filePath of fileCandidates) {
+                    try {
+                      const bytes = await fs.promises.readFile(filePath);
+                      const mimeType = mimeByExt(path.extname(filePath));
+                      return { mimeType, bytes };
+                    } catch {
+                      // try next
+                    }
+                  }
+                  return null;
 	              }
 
               // data: URLs
@@ -2523,9 +2612,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              .digest('hex')
 	              .slice(0, 16);
             const filename = `${Date.now()}-${hash}.${ext}`;
-			            fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
+			            fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), out.bytes);
 			            return sendJson(res, 200, {
-			              imageUrl: `/__generated__/${filename}`,
+			              imageUrl: buildGeneratedAssetUrl(userId, filename),
 				              debug: {
 				                transport: 'http',
 				                provider,
