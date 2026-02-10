@@ -202,6 +202,9 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
         status: 'running',
         lastAttemptAt: now,
         attempts: ((prev as any).masterKvState?.attempts || 0) + 1,
+        pipelineTaskId: '',
+        pipelineStatusUrl: '',
+        pipelineUpdatedAt: now,
       },
     }));
 
@@ -251,6 +254,20 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
         references: refs,
         strict: true,
         requireAllReferences: false,
+        async: true,
+        onTaskAccepted: ({ taskId, statusUrl }) => {
+          const nowTs = Date.now();
+          onUpdateStory((prev) => ({
+            ...prev,
+            masterKvState: {
+              ...(prev as any).masterKvState,
+              status: 'queued',
+              pipelineTaskId: String(taskId || '').trim(),
+              pipelineStatusUrl: String(statusUrl || '').trim(),
+              pipelineUpdatedAt: nowTs,
+            },
+          }));
+        },
       });
 
       const refUrls = new Set(refs.map((r: any) => String(r?.url || '').trim()).filter(Boolean));
@@ -312,6 +329,9 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           status: 'done',
           lastError: '',
           lastAttemptAt: createdAt,
+          pipelineTaskId: '',
+          pipelineStatusUrl: '',
+          pipelineUpdatedAt: createdAt,
         },
       }));
       if (proposedStyleGuide) {
@@ -335,6 +355,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           status: 'error',
           lastError: msg,
           lastAttemptAt: Date.now(),
+          pipelineUpdatedAt: Date.now(),
         },
       }));
       onToast?.('Master KV generation failed', 'info');
