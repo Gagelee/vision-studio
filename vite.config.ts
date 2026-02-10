@@ -1502,6 +1502,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
     error?: string;
     waitMs?: number;
     durationMs?: number;
+    result?: any;
   };
   const pipelineTaskStateById = new Map<string, PipelineTaskState>();
   const pipelineTaskStateOrder: string[] = [];
@@ -1608,11 +1609,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
     pipelineQueueByUser.set(userId, queue);
   };
 
-  const beginPipelineTask = async (
+  const enqueuePipelineTask = (
     req: any,
     res: any,
     args: { kind: PipelineKind; route: string },
-  ): Promise<PipelineTaskToken | null> => {
+  ): { tokenBase: Omit<PipelineTaskToken, 'startedAt' | 'attempt'>; started: Promise<PipelineTaskToken> } | null => {
     const userId = getRequestUserId(req);
     const rate = takePipelineRateToken(userId, args.kind);
     if (!rate.allowed) {
@@ -1686,7 +1687,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
     });
     pipelineQueueByUser.set(userId, queue);
     pumpPipelineQueueForUser(userId);
-    const startedToken = await started;
+    return { tokenBase, started };
+  };
+
+  const markPipelineTaskStarted = (startedToken: PipelineTaskToken, args: { kind: PipelineKind; route: string }) => {
+    const userId = startedToken.userId;
     const prev = pipelineTaskStateById.get(startedToken.id);
     upsertPipelineTaskState({
       ...(prev as PipelineTaskState),
@@ -1710,6 +1715,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       queueLength: (pipelineQueueByUser.get(userId) || []).length,
       running: Number(pipelineRunningByUser.get(userId) || 0),
     });
+  };
+
+  const beginPipelineTask = async (
+    req: any,
+    res: any,
+    args: { kind: PipelineKind; route: string },
+  ): Promise<PipelineTaskToken | null> => {
+    const enqueued = enqueuePipelineTask(req, res, args);
+    if (!enqueued) return null;
+    const startedToken = await enqueued.started;
+    markPipelineTaskStarted(startedToken, args);
     return startedToken;
   };
 
@@ -1765,7 +1781,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           });
         }
         try {
-          return await args.run();
+          const out = await args.run();
+          endPipelineTask(token, { route: args.route, ok: true, statusCode: Number(res?.statusCode || 200) });
+          return out;
         } catch (e: any) {
           lastErr = e;
           const shouldRetry = attempt < pipelineMaxAttempts && isRetryableNetworkError(e);
@@ -1786,11 +1804,66 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         });
       }
       return null;
-    } finally {
-      if (lastErr == null) {
-        endPipelineTask(token, { route: args.route, ok: true, statusCode: Number(res?.statusCode || 200) });
-      }
     }
+  };
+
+  const submitPipelineTask = <T,>(
+    req: any,
+    res: any,
+    args: { kind: PipelineKind; route: string; run: () => Promise<T>; mapResult?: (out: T) => any },
+  ): { taskId: string; statusUrl: string } | null => {
+    const enqueued = enqueuePipelineTask(req, res, { kind: args.kind, route: args.route });
+    if (!enqueued) return null;
+    const taskId = enqueued.tokenBase.id;
+    enqueued.started
+      .then(async (token) => {
+        markPipelineTaskStarted(token, { kind: args.kind, route: args.route });
+        let lastErr: any = null;
+        try {
+          for (let attempt = 1; attempt <= pipelineMaxAttempts; attempt++) {
+            const prev = pipelineTaskStateById.get(token.id);
+            if (prev) {
+              upsertPipelineTaskState({
+                ...prev,
+                attempts: Math.max(Number(prev.attempts || 0), attempt),
+                status: 'running',
+              });
+            }
+            try {
+              const out = await args.run();
+              const prevDone = pipelineTaskStateById.get(token.id);
+              if (prevDone) {
+                upsertPipelineTaskState({
+                  ...prevDone,
+                  result: args.mapResult ? args.mapResult(out) : undefined,
+                });
+              }
+              endPipelineTask(token, { route: args.route, ok: true, statusCode: 200 });
+              return;
+            } catch (e: any) {
+              lastErr = e;
+              const shouldRetry = attempt < pipelineMaxAttempts && isRetryableNetworkError(e);
+              if (!shouldRetry) throw e;
+              await sleep(Math.min(3000, 300 * attempt + Math.floor(Math.random() * 150)));
+            }
+          }
+          throw lastErr;
+        } catch (e: any) {
+          endPipelineTask(token, { route: args.route, ok: false, statusCode: Number(e?.status || 500) || 500, error: e });
+        }
+      })
+      .catch((e) => {
+        const prev = pipelineTaskStateById.get(taskId);
+        if (prev) {
+          upsertPipelineTaskState({
+            ...prev,
+            status: 'failed',
+            endedAt: Date.now(),
+            error: formatFetchError(e),
+          });
+        }
+      });
+    return { taskId, statusUrl: `/api/pipeline/tasks/${encodeURIComponent(taskId)}` };
   };
 
 	  const applyRoutes = (middlewares: any) => {
@@ -1967,13 +2040,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
 	    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'POST') return next();
-        return withPipelineTask(req, res, {
-          kind: 'asset.video.generate',
-          route: '/api/asset/video/generate',
-          run: async () => {
         const userId = getRequestUserId(req);
 	      const body = await readJsonBody(req);
+        const reqUrl = new URL(String(req?.url || '/api/asset/video/generate'), 'http://127.0.0.1');
+        const bypassPipeline = String(reqUrl.searchParams.get('bypassPipeline') || '').trim() === '1';
+        const preferHeader = String(req?.headers?.prefer || req?.headers?.Prefer || '').toLowerCase();
+        const asyncRequested = !bypassPipeline && (Boolean(body?.async) || preferHeader.includes('respond-async'));
 
+      const runVideoGenerate = async () => {
       const prompt = String(body?.prompt || '').trim();
       const promptSpec = body?.promptSpec && typeof body.promptSpec === 'object' ? body.promptSpec : null;
       const imageUrl = String(body?.imageUrl || '').trim();
@@ -2619,8 +2693,54 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           },
         });
       }
+      };
+
+      if (asyncRequested) {
+        const submitted = submitPipelineTask(req, res, {
+          kind: 'asset.video.generate',
+          route: '/api/asset/video/generate',
+          run: async () => {
+            const internalBase = String(env.VISION_INTERNAL_BASE_URL || `http://127.0.0.1:${String(env.PORT || '3000')}`).replace(/\/$/, '');
+            const internalUrl = `${internalBase}/api/asset/video/generate?bypassPipeline=1`;
+            const resp = await fetch(internalUrl, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                [VISION_USER_ID_HEADER]: userId,
+                'x-vision-internal-pipeline': '1',
+              },
+              body: JSON.stringify({ ...body, async: false }),
+            });
+            const data = (await resp.json().catch(() => null)) as any;
+            if (!resp.ok) {
+              const err: any = new Error(String(data?.error || `HTTP ${resp.status}`));
+              err.status = resp.status;
+              err.debug = data?.debug;
+              throw err;
+            }
+            return data;
           },
+          mapResult: (out: any) => ({
+            ok: Boolean(out?.videoUrl),
+            videoUrl: String(out?.videoUrl || ''),
+            operationName: String(out?.operationName || ''),
+          }),
         });
+        if (!submitted) return;
+        return sendJson(res, 202, {
+          ok: true,
+          accepted: true,
+          taskId: submitted.taskId,
+          statusUrl: submitted.statusUrl,
+        });
+      }
+
+      if (bypassPipeline) return runVideoGenerate();
+      return withPipelineTask(req, res, {
+        kind: 'asset.video.generate',
+        route: '/api/asset/video/generate',
+        run: runVideoGenerate,
+      });
 	    });
 
 	    // Store client-generated (e.g. cropped) images into the local generated-assets directory.
