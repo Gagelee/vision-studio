@@ -123,8 +123,27 @@ export const generateImageFromPrompt = async (req: {
       const pollStartedAt = Date.now();
       let consecutivePollErrors = 0;
       const maxConsecutivePollErrors = 6;
+      const fetchTaskStatusOnce = async () => {
+        const statusRes = await fetch(statusUrl, {
+          method: 'GET',
+          headers: getVisionUserRequestHeaders(),
+        });
+        if (!statusRes.ok) return null;
+        const statusJson = (await statusRes.json().catch(() => null)) as any;
+        const task = statusJson?.task;
+        const status = String(task?.status || '').toLowerCase();
+        if (status !== 'success') return null;
+        const imageUrl = String(task?.result?.imageUrl || '').trim();
+        if (!imageUrl) return null;
+        return {
+          imageUrl,
+          debug: { ...(task?.result?.debug || {}), taskId, statusUrl, task, reconciledAfterPollError: true },
+        } as GenerateShotImageResponse;
+      };
       while (true) {
         if (Date.now() - pollStartedAt > pollTimeoutMs) {
+          const recovered = await fetchTaskStatusOnce().catch(() => null);
+          if (recovered) return recovered;
           const err: any = new Error(`Image task timeout after ${Math.round(pollTimeoutMs / 1000)}s`);
           err.taskId = taskId;
           err.statusUrl = statusUrl;
@@ -186,6 +205,8 @@ export const generateImageFromPrompt = async (req: {
           if (code === 'PIPELINE_TASK_NOT_FOUND') throw pollErr;
           consecutivePollErrors += 1;
           if (consecutivePollErrors >= maxConsecutivePollErrors) {
+            const recovered = await fetchTaskStatusOnce().catch(() => null);
+            if (recovered) return recovered;
             const err: any = new Error(
               `Image task status polling failed (${consecutivePollErrors} consecutive errors): ${String((pollErr as any)?.message || pollErr)}`,
             );

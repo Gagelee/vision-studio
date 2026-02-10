@@ -25,7 +25,20 @@ import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
 import { getCharacterActiveAvatarUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
-import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, applyAssetTaskBinding, buildAssetJobs, clearAssetTaskBinding, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
+import {
+  applyAssetBlocked,
+  applyAssetError,
+  applyAssetQueued,
+  applyAssetResult,
+  applyAssetStart,
+  applyAssetTaskBinding,
+  buildAssetJobs,
+  clearAssetTaskBinding,
+  clearAssetTaskLedgerByTaskId,
+  collectAssetTaskLedgerBindings,
+  executeAssetJobs,
+  type AssetJob,
+} from './lib/ai/assetExecutor';
 import { generateVideoFromImage } from './lib/ai/video/generate';
 import { buildActingDirection, composeStructuredVideoPrompt, extractDialogueLines, resolveVideoSourceBundle } from './lib/ai/videoPromptComposer';
 import { getOrCreateVisionUserId, getVisionUserRequestHeaders } from './lib/userSession';
@@ -301,6 +314,82 @@ const mergeIncomingStoryPreferRealPreviews = (incoming: Story, existing?: Story 
     }
     return Array.from(map.values()).sort((a: any, b: any) => Number(a?.createdAt || 0) - Number(b?.createdAt || 0));
   };
+  const mergePipelineTaskLedger = (nextLedger: any[], prevLedger: any[]) => {
+    const scoreStatus = (v: any) => {
+      const s = String(v?.status || '').toLowerCase();
+      if (s === 'resolved') return 2;
+      if (s === 'missing') return 1;
+      return 0;
+    };
+    const pickBetter = (a: any, b: any) => {
+      const ta = Number(a?.updatedAt || 0);
+      const tb = Number(b?.updatedAt || 0);
+      if (tb > ta) return b;
+      if (ta > tb) return a;
+      const sa = scoreStatus(a);
+      const sb = scoreStatus(b);
+      if (sb > sa) return b;
+      if (sa > sb) return a;
+      return a;
+    };
+    const byTask = new Map<string, any>();
+    for (const raw of [...(Array.isArray(nextLedger) ? nextLedger : []), ...(Array.isArray(prevLedger) ? prevLedger : [])]) {
+      if (!raw || typeof raw !== 'object') continue;
+      const taskId = String(raw.taskId || '').trim();
+      if (!taskId) continue;
+      const cur = byTask.get(taskId);
+      byTask.set(taskId, cur ? pickBetter(cur, raw) : raw);
+    }
+    return Array.from(byTask.values())
+      .sort((a, b) => Number(b?.updatedAt || 0) - Number(a?.updatedAt || 0))
+      .slice(0, 512);
+  };
+  const mergedMasterKvState = mergeAssetGenerationState((existing as any).masterKvState, (incoming as any).masterKvState);
+  const mergedKeyVisualVersions = mergeVersions((incoming as any).keyVisualVersions || [], (existing as any).keyVisualVersions || []);
+  const mergedKeyVisualUrl = pickUrl(String((incoming as any).keyVisualUrl || ''), String((existing as any).keyVisualUrl || ''));
+  const mergedActiveKvId = (() => {
+    const incomingId = String((incoming as any).activeKeyVisualVersionId || '').trim();
+    const existingId = String((existing as any).activeKeyVisualVersionId || '').trim();
+    const incomingHit = mergedKeyVisualVersions.find((v: any) => String(v?.id || '') === incomingId);
+    const existingHit = mergedKeyVisualVersions.find((v: any) => String(v?.id || '') === existingId);
+    const incomingReal = Boolean(incomingHit?.imageUrl) && !isLikelyPlaceholderImageUrl(String(incomingHit.imageUrl));
+    const existingReal = Boolean(existingHit?.imageUrl) && !isLikelyPlaceholderImageUrl(String(existingHit.imageUrl));
+    if (incomingReal || !existingReal) return incomingId || existingId;
+    return existingId || incomingId;
+  })();
+  const nextLocations = (incoming.locations || []).map((loc) => {
+    const prevLoc = (existing.locations || []).find((x) => x.id === loc.id);
+    if (!prevLoc) return loc;
+    return {
+      ...loc,
+      previewUrl: pickUrl(String((loc as any).previewUrl || ''), String((prevLoc as any).previewUrl || '')),
+      previewVersions: mergeVersions((loc as any).previewVersions || [], (prevLoc as any).previewVersions || []),
+      activePreviewVersionId: String((loc as any).activePreviewVersionId || (prevLoc as any).activePreviewVersionId || ''),
+      assetState: mergeAssetGenerationState((prevLoc as any).assetState, (loc as any).assetState),
+    } as any;
+  });
+  const nextCharacters = (incoming.characters || []).map((ch) => {
+    const prevCh = (existing.characters || []).find((x) => x.id === ch.id);
+    if (!prevCh) return ch;
+    return {
+      ...ch,
+      avatarUrl: pickUrl(String((ch as any).avatarUrl || ''), String((prevCh as any).avatarUrl || '')),
+      avatarVersions: mergeVersions((ch as any).avatarVersions || [], (prevCh as any).avatarVersions || []),
+      activeAvatarVersionId: String((ch as any).activeAvatarVersionId || (prevCh as any).activeAvatarVersionId || ''),
+      assetState: mergeAssetGenerationState((prevCh as any).assetState, (ch as any).assetState),
+      looks: (ch.looks || []).map((lk) => {
+        const prevLk = (prevCh.looks || []).find((x) => x.id === lk.id);
+        if (!prevLk) return lk;
+        return {
+          ...lk,
+          previewUrl: pickUrl(String((lk as any).previewUrl || ''), String((prevLk as any).previewUrl || '')),
+          previewVersions: mergeVersions((lk as any).previewVersions || [], (prevLk as any).previewVersions || []),
+          activePreviewVersionId: String((lk as any).activePreviewVersionId || (prevLk as any).activePreviewVersionId || ''),
+          assetState: mergeAssetGenerationState((prevLk as any).assetState, (lk as any).assetState),
+        } as any;
+      }),
+    } as any;
+  });
   const nextSequences = (incoming.sequences || []).map((seq) => {
     const prevSeq = (existing.sequences || []).find((s) => s.id === seq.id);
     if (!prevSeq) return seq;
@@ -322,13 +411,22 @@ const mergeIncomingStoryPreferRealPreviews = (incoming: Story, existing?: Story 
           thumbnailUrl: nextThumb,
           versions: nextVersions,
           activeVersionId,
+          assetState: mergeAssetGenerationState((prevShot as any)?.assetState, (shot as any)?.assetState),
+          production: mergeShotProductionState((prevShot as any)?.production, (shot as any)?.production),
         } as any;
       }),
     };
   });
   return {
     ...incoming,
+    keyVisualUrl: mergedKeyVisualUrl,
+    keyVisualVersions: mergedKeyVisualVersions as any,
+    activeKeyVisualVersionId: mergedActiveKvId as any,
+    masterKvState: mergedMasterKvState,
+    locations: nextLocations,
+    characters: nextCharacters,
     sequences: nextSequences,
+    pipelineTaskLedger: mergePipelineTaskLedger((incoming as any)?.pipelineTaskLedger || [], (existing as any)?.pipelineTaskLedger || []) as any,
   };
 };
 
@@ -382,12 +480,13 @@ type ProductionTaskBinding = { taskId: string; statusUrl?: string; sequenceId: s
 
 const collectStoryPipelineBindings = (story: Story): { assets: AssetTaskBinding[]; productions: ProductionTaskBinding[] } => {
   const assets: AssetTaskBinding[] = [];
+  const assetByTaskId = new Map<string, AssetTaskBinding>();
   const productions: ProductionTaskBinding[] = [];
   const shouldTrackAsset = (state: any) => {
     const taskId = String(state?.pipelineTaskId || '').trim();
     if (!taskId) return false;
     const status = String(state?.status || '').toLowerCase();
-    return status === 'queued' || status === 'running' || status === 'error' || status === 'blocked';
+    return status === 'queued' || status === 'running' || status === 'error' || status === 'blocked' || status === 'done';
   };
   const shouldTrackProduction = (state: any) => {
     const taskId = String(state?.pipelineTaskId || '').trim();
@@ -398,7 +497,7 @@ const collectStoryPipelineBindings = (story: Story): { assets: AssetTaskBinding[
 
   const masterState = (story as any)?.masterKvState;
   if (shouldTrackAsset(masterState)) {
-    assets.push({
+    assetByTaskId.set(String(masterState?.pipelineTaskId || '').trim(), {
       taskId: String(masterState?.pipelineTaskId || '').trim(),
       statusUrl: String(masterState?.pipelineStatusUrl || '').trim() || undefined,
       job: { kind: 'masterkv', prompt: '' },
@@ -408,7 +507,7 @@ const collectStoryPipelineBindings = (story: Story): { assets: AssetTaskBinding[
   for (const loc of story.locations || []) {
     const st = (loc as any)?.assetState;
     if (!shouldTrackAsset(st)) continue;
-    assets.push({
+    assetByTaskId.set(String(st?.pipelineTaskId || '').trim(), {
       taskId: String(st?.pipelineTaskId || '').trim(),
       statusUrl: String(st?.pipelineStatusUrl || '').trim() || undefined,
       job: { kind: 'location', locationId: String(loc.id || ''), prompt: '' },
@@ -418,7 +517,7 @@ const collectStoryPipelineBindings = (story: Story): { assets: AssetTaskBinding[
   for (const ch of story.characters || []) {
     const st = (ch as any)?.assetState;
     if (shouldTrackAsset(st)) {
-      assets.push({
+      assetByTaskId.set(String(st?.pipelineTaskId || '').trim(), {
         taskId: String(st?.pipelineTaskId || '').trim(),
         statusUrl: String(st?.pipelineStatusUrl || '').trim() || undefined,
         job: { kind: 'character', characterId: String(ch.id || ''), prompt: '' },
@@ -427,7 +526,7 @@ const collectStoryPipelineBindings = (story: Story): { assets: AssetTaskBinding[
     for (const lk of ch.looks || []) {
       const lst = (lk as any)?.assetState;
       if (!shouldTrackAsset(lst)) continue;
-      assets.push({
+      assetByTaskId.set(String(lst?.pipelineTaskId || '').trim(), {
         taskId: String(lst?.pipelineTaskId || '').trim(),
         statusUrl: String(lst?.pipelineStatusUrl || '').trim() || undefined,
         job: {
@@ -445,7 +544,7 @@ const collectStoryPipelineBindings = (story: Story): { assets: AssetTaskBinding[
     for (const shot of seq.shots || []) {
       const st = (shot as any)?.assetState;
       if (shouldTrackAsset(st)) {
-        assets.push({
+        assetByTaskId.set(String(st?.pipelineTaskId || '').trim(), {
           taskId: String(st?.pipelineTaskId || '').trim(),
           statusUrl: String(st?.pipelineStatusUrl || '').trim() || undefined,
           job: { kind: 'shot', sequenceId: String(seq.id || ''), shot },
@@ -462,6 +561,18 @@ const collectStoryPipelineBindings = (story: Story): { assets: AssetTaskBinding[
     }
   }
 
+  for (const l of collectAssetTaskLedgerBindings(story)) {
+    if (!String(l?.taskId || '').trim()) continue;
+    if (assetByTaskId.has(String(l.taskId))) continue;
+    assetByTaskId.set(String(l.taskId), {
+      taskId: String(l.taskId),
+      statusUrl: String(l.statusUrl || '').trim() || undefined,
+      job: l.job,
+    });
+  }
+
+  assets.push(...Array.from(assetByTaskId.values()));
+
   return { assets, productions };
 };
 
@@ -471,24 +582,24 @@ const applyAssetPipelineTaskOutcome = (story: Story, binding: AssetTaskBinding, 
     const imageUrl = String(task?.result?.imageUrl || '').trim();
     if (!imageUrl) {
       const errored = applyAssetError(story, binding.job, 'Pipeline task succeeded without imageUrl');
-      return clearAssetTaskBinding(errored, binding.job);
+      return clearAssetTaskLedgerByTaskId(clearAssetTaskBinding(errored, binding.job), binding.taskId);
     }
-    return applyAssetResult(story, binding.job, imageUrl, {
+    return clearAssetTaskLedgerByTaskId(applyAssetResult(story, binding.job, imageUrl, {
       ...(task?.result?.debug && typeof task.result.debug === 'object' ? task.result.debug : {}),
       pipeline: { taskId: binding.taskId, statusUrl: binding.statusUrl || '' },
       reconciledFromTask: true,
-    });
+    }), binding.taskId);
   }
   if (status === 'failed') {
     const errored = applyAssetError(story, binding.job, String(task?.error || 'Pipeline task failed'));
-    return clearAssetTaskBinding(errored, binding.job);
+    return clearAssetTaskLedgerByTaskId(clearAssetTaskBinding(errored, binding.job), binding.taskId);
   }
   return story;
 };
 
 const applyAssetPipelineTaskMissing = (story: Story, binding: AssetTaskBinding): Story => {
   const errored = applyAssetError(story, binding.job, 'Pipeline task not found (expired or restarted). Please retry.');
-  return clearAssetTaskBinding(errored, binding.job);
+  return clearAssetTaskLedgerByTaskId(clearAssetTaskBinding(errored, binding.job), binding.taskId);
 };
 
 const applyProductionPipelineTaskOutcome = (story: Story, binding: ProductionTaskBinding, task: any): Story => {

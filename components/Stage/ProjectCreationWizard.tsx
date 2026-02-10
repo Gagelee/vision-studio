@@ -378,17 +378,24 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
       .join(' ');
   };
 
-  const finishCreation = (project: Story, planArg: AgentPlan, debug?: any) => {
+  const finishCreation = (
+    project: Story,
+    planArg: AgentPlan,
+    debug?: any,
+    opts?: { keepBackgroundAssetSync?: boolean },
+  ) => {
     if (completedRef.current) return;
     completedRef.current = true;
     stopUiUpdatesRef.current = true;
-    for (const key of Array.from(assetJobAbortControllersRef.current.keys())) {
-      assetCancelledJobKeysRef.current.add(key);
+    if (!opts?.keepBackgroundAssetSync) {
+      for (const key of Array.from(assetJobAbortControllersRef.current.keys())) {
+        assetCancelledJobKeysRef.current.add(key);
+      }
+      for (const ctrl of assetJobAbortControllersRef.current.values()) ctrl.abort();
+      assetJobAbortControllersRef.current.clear();
+      isScaffoldRunningRef.current = false;
+      activeRunIdRef.current = 0;
     }
-    for (const ctrl of assetJobAbortControllersRef.current.values()) ctrl.abort();
-    assetJobAbortControllersRef.current.clear();
-    isScaffoldRunningRef.current = false;
-    activeRunIdRef.current = 0;
     setIsProcessing(false);
     onComplete(project, planArg, debug);
   };
@@ -745,22 +752,13 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
           ]);
           if (activeRunIdRef.current !== runId) return;
 	          if (race === 'timeout') {
-              for (const job of jobs) {
-                const key = getAssetJobKey(res.story.id, job);
-                assetCancelledJobKeysRef.current.add(key);
-                assetJobAbortControllersRef.current.get(key)?.abort();
-              }
-              assetJobAbortControllersRef.current.clear();
-	            let partial = storyRef.current || res.story;
-              for (const job of jobs) {
-                if (isTerminalAssetJob(partial, job)) continue;
-                partial = applyAssetBlocked(partial, job, `Timed out after ${Math.round(ASSET_STAGE_TIMEOUT_MS / 1000)}s`);
-              }
-              storyRef.current = partial;
+              // UI timeout should not destroy task bindings.
+              // Let background polling continue so accepted pipeline tasks can still reconcile to success.
+	            const partial = storyRef.current || res.story;
 	            finishCreation(partial, res.plan, {
 	              ...res.debug,
 	              assets: { total, done, errors, timedOut: true, timeoutMs: ASSET_STAGE_TIMEOUT_MS },
-            });
+              }, { keepBackgroundAssetSync: true });
             return;
           }
 	      }
@@ -1496,7 +1494,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                       errors: assetErrors,
                                       skipped: true,
                                     },
-                                  });
+                                  }, { keepBackgroundAssetSync: true });
                                 }}
                                 className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/15 text-white/80 text-[10px] font-black uppercase tracking-widest hover:bg-white/15"
                               >

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { applyAssetError, applyAssetResult, applyAssetStart, applyAssetTaskBinding, clearAssetTaskBinding, type AssetJob } from './assetExecutor';
+import {
+  applyAssetError,
+  applyAssetResult,
+  applyAssetStart,
+  applyAssetTaskBinding,
+  clearAssetTaskBinding,
+  collectAssetTaskLedgerBindings,
+  type AssetJob,
+} from './assetExecutor';
 
 const UNSPLASH_PLACEHOLDER =
   'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=123';
@@ -143,5 +151,73 @@ describe('assetExecutor shot state sync', () => {
     const shotAfterClear = cleared.sequences[0].shots[0];
     expect(shotAfterClear.assetState?.pipelineTaskId).toBe('');
     expect(shotAfterClear.assetState?.pipelineStatusUrl).toBe('');
+  });
+
+  it('tracks task bindings in story-level ledger and clears them on success', () => {
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      keyVisualUrl: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [],
+      characters: [],
+      sequences: [],
+    };
+
+    const job: AssetJob = { kind: 'masterkv', prompt: 'kv' };
+    const linked = applyAssetTaskBinding(story, job, {
+      taskId: 'pipe-1',
+      statusUrl: '/api/pipeline/tasks/pipe-1',
+    }) as any;
+
+    const bindings = collectAssetTaskLedgerBindings(linked as any);
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.taskId).toBe('pipe-1');
+    expect(bindings[0]?.job?.kind).toBe('masterkv');
+
+    const done = applyAssetResult(linked as any, job, '/__generated__/kv.png') as any;
+    const after = collectAssetTaskLedgerBindings(done as any);
+    expect(after).toHaveLength(0);
+  });
+
+  it('rebuilds pending binding from ledger even when entity state taskId is missing', () => {
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [],
+      characters: [],
+      sequences: [
+        {
+          id: 'seq-1',
+          title: 'S1',
+          context: '',
+          scenes: [{ id: 'scene-1', title: 'Scene 1', shots: [] }],
+          shots: [],
+        },
+      ],
+      pipelineTaskLedger: [
+        {
+          scope: 'asset',
+          taskId: 'pipe-ledger',
+          statusUrl: '/api/pipeline/tasks/pipe-ledger',
+          status: 'active',
+          updatedAt: Date.now(),
+          job: { kind: 'masterkv' },
+        },
+      ],
+    };
+    const bindings = collectAssetTaskLedgerBindings(story as any);
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.taskId).toBe('pipe-ledger');
+    expect(bindings[0]?.job?.kind).toBe('masterkv');
   });
 });

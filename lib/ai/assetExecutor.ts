@@ -28,6 +28,148 @@ export type AssetJobEvent =
   | { type: 'error'; job: AssetJob; done: number; total: number; error: string }
   | { type: 'blocked'; job: AssetJob; done: number; total: number; reason: string };
 
+type AssetTaskLedgerJobRef =
+  | { kind: 'masterkv' }
+  | { kind: 'location'; locationId: string }
+  | { kind: 'character'; characterId: string }
+  | { kind: 'look'; characterId: string; lookId: string; avatarVersionId?: string }
+  | { kind: 'shot'; sequenceId: string; shotId: string };
+
+type AssetTaskLedgerEntry = {
+  scope: 'asset';
+  taskId: string;
+  statusUrl?: string;
+  status: 'active' | 'resolved' | 'missing';
+  updatedAt: number;
+  job: AssetTaskLedgerJobRef;
+};
+
+const listAssetTaskLedger = (story: Story): AssetTaskLedgerEntry[] => {
+  const raw = Array.isArray((story as any)?.pipelineTaskLedger) ? (story as any).pipelineTaskLedger : [];
+  return raw
+    .filter((e: any) => e && typeof e === 'object' && String(e.scope || '') === 'asset' && String(e.taskId || '').trim())
+    .map((e: any) => ({
+      scope: 'asset',
+      taskId: String(e.taskId || '').trim(),
+      statusUrl: String(e.statusUrl || '').trim() || undefined,
+      status: String(e.status || '').trim() === 'resolved' ? 'resolved' : String(e.status || '').trim() === 'missing' ? 'missing' : 'active',
+      updatedAt: Number(e.updatedAt || 0) || Date.now(),
+      job: e.job as AssetTaskLedgerJobRef,
+    }));
+};
+
+const writeAssetTaskLedger = (story: Story, entries: AssetTaskLedgerEntry[]): Story => {
+  const prev = Array.isArray((story as any)?.pipelineTaskLedger) ? (story as any).pipelineTaskLedger : [];
+  const nonAsset = prev.filter((e: any) => String(e?.scope || '') !== 'asset');
+  const compactAsset = entries
+    .slice()
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+    .slice(0, 512);
+  return {
+    ...story,
+    pipelineTaskLedger: [...nonAsset, ...compactAsset] as any,
+  } as Story;
+};
+
+const toAssetTaskLedgerJobRef = (job: AssetJob): AssetTaskLedgerJobRef => {
+  if (job.kind === 'masterkv') return { kind: 'masterkv' };
+  if (job.kind === 'location') return { kind: 'location', locationId: String(job.locationId || '') };
+  if (job.kind === 'character') return { kind: 'character', characterId: String(job.characterId || '') };
+  if (job.kind === 'look') {
+    return {
+      kind: 'look',
+      characterId: String(job.characterId || ''),
+      lookId: String(job.lookId || ''),
+      avatarVersionId: String(job.avatarVersionId || '').trim() || undefined,
+    };
+  }
+  return { kind: 'shot', sequenceId: String(job.sequenceId || ''), shotId: String(job.shot?.id || '') };
+};
+
+const fromAssetTaskLedgerJobRef = (ref: AssetTaskLedgerJobRef): AssetJob | null => {
+  if (!ref || typeof ref !== 'object') return null;
+  if (ref.kind === 'masterkv') return { kind: 'masterkv', prompt: '' };
+  if (ref.kind === 'location') return { kind: 'location', locationId: String(ref.locationId || ''), prompt: '' };
+  if (ref.kind === 'character') return { kind: 'character', characterId: String(ref.characterId || ''), prompt: '' };
+  if (ref.kind === 'look') {
+    return {
+      kind: 'look',
+      characterId: String(ref.characterId || ''),
+      lookId: String(ref.lookId || ''),
+      prompt: '',
+      avatarVersionId: String(ref.avatarVersionId || '').trim() || undefined,
+    };
+  }
+  if (ref.kind === 'shot') {
+    const shotId = String(ref.shotId || '').trim();
+    const sequenceId = String(ref.sequenceId || '').trim();
+    if (!shotId || !sequenceId) return null;
+    return { kind: 'shot', sequenceId, shot: { id: shotId } as Shot };
+  }
+  return null;
+};
+
+const assetJobRefKey = (ref: AssetTaskLedgerJobRef): string => {
+  if (ref.kind === 'masterkv') return 'masterkv';
+  if (ref.kind === 'location') return `location|${String(ref.locationId || '')}`;
+  if (ref.kind === 'character') return `character|${String(ref.characterId || '')}`;
+  if (ref.kind === 'look') return `look|${String(ref.characterId || '')}|${String(ref.lookId || '')}`;
+  return `shot|${String(ref.sequenceId || '')}|${String(ref.shotId || '')}`;
+};
+
+const clearAssetTaskLedgerByJob = (story: Story, job: AssetJob): Story => {
+  const ref = toAssetTaskLedgerJobRef(job);
+  const target = assetJobRefKey(ref);
+  const next = listAssetTaskLedger(story).filter((entry) => assetJobRefKey(entry.job) !== target);
+  return writeAssetTaskLedger(story, next);
+};
+
+const upsertAssetTaskLedger = (story: Story, job: AssetJob, task: { taskId: string; statusUrl?: string }): Story => {
+  const taskId = String(task?.taskId || '').trim();
+  if (!taskId) return story;
+  const now = Date.now();
+  const ref = toAssetTaskLedgerJobRef(job);
+  const byTask = new Map<string, AssetTaskLedgerEntry>();
+  for (const entry of listAssetTaskLedger(story)) {
+    if (assetJobRefKey(entry.job) === assetJobRefKey(ref) && entry.status === 'active') continue;
+    byTask.set(entry.taskId, entry);
+  }
+  byTask.set(taskId, {
+    scope: 'asset',
+    taskId,
+    statusUrl: String(task?.statusUrl || '').trim() || undefined,
+    status: 'active',
+    updatedAt: now,
+    job: ref,
+  });
+  return writeAssetTaskLedger(story, Array.from(byTask.values()));
+};
+
+export const clearAssetTaskLedgerByTaskId = (story: Story, taskIdRaw: string): Story => {
+  const taskId = String(taskIdRaw || '').trim();
+  if (!taskId) return story;
+  const next = listAssetTaskLedger(story).filter((entry) => entry.taskId !== taskId);
+  return writeAssetTaskLedger(story, next);
+};
+
+export const collectAssetTaskLedgerBindings = (
+  story: Story,
+): Array<{ taskId: string; statusUrl?: string; job: AssetJob; updatedAt: number }> => {
+  const out: Array<{ taskId: string; statusUrl?: string; job: AssetJob; updatedAt: number }> = [];
+  for (const entry of listAssetTaskLedger(story)) {
+    if (entry.status !== 'active') continue;
+    const job = fromAssetTaskLedgerJobRef(entry.job);
+    if (!job) continue;
+    out.push({
+      taskId: entry.taskId,
+      statusUrl: entry.statusUrl,
+      job,
+      updatedAt: Number(entry.updatedAt || 0) || 0,
+    });
+  }
+  return out;
+};
+
 export const buildAssetJobs = (story: Story, scope: AssetScope = 'all'): AssetJob[] => {
   const jobs: AssetJob[] = [];
   const wantMasterKV = scope === 'all' || scope === 'masterkv';
@@ -95,31 +237,32 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
     pipelineStatusUrl: '',
     pipelineUpdatedAt: now,
   };
+  const finalize = (next: Story) => clearAssetTaskLedgerByJob(next, job);
 
   if (job.kind === 'masterkv') {
-    return { ...story, masterKvState: bumpState((story as any).masterKvState, runningPatch) };
+    return finalize({ ...story, masterKvState: bumpState((story as any).masterKvState, runningPatch) });
   }
 
   if (job.kind === 'location') {
-    return {
+    return finalize({
       ...story,
       locations: (story.locations || []).map((l) =>
         l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, runningPatch) } : l,
       ),
-    };
+    });
   }
 
   if (job.kind === 'character') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) =>
         c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, runningPatch) } : c,
       ),
-    };
+    });
   }
 
   if (job.kind === 'look') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
@@ -130,13 +273,13 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
           ),
         };
       }),
-    };
+    });
   }
 
   // shot
   const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
   if (!targetSeqId) return story;
-  return normalizeStorySceneModel({
+  return finalize(normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== targetSeqId) return seq;
@@ -149,7 +292,7 @@ export const applyAssetStart = (story: Story, job: AssetJob): Story => {
         ),
       };
     }),
-  });
+  }));
 };
 
 export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
@@ -159,31 +302,32 @@ export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
     pipelineStatusUrl: '',
     pipelineUpdatedAt: Date.now(),
   };
+  const finalize = (next: Story) => clearAssetTaskLedgerByJob(next, job);
 
   if (job.kind === 'masterkv') {
-    return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
+    return finalize({ ...story, masterKvState: bumpState((story as any).masterKvState, patch) });
   }
 
   if (job.kind === 'location') {
-    return {
+    return finalize({
       ...story,
       locations: (story.locations || []).map((l) =>
         l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, patch) } : l,
       ),
-    };
+    });
   }
 
   if (job.kind === 'character') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) =>
         c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, patch) } : c,
       ),
-    };
+    });
   }
 
   if (job.kind === 'look') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
@@ -194,13 +338,13 @@ export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
           ),
         };
       }),
-    };
+    });
   }
 
   // shot
   const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
   if (!targetSeqId) return story;
-  return normalizeStorySceneModel({
+  return finalize(normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== targetSeqId) return seq;
@@ -209,7 +353,7 @@ export const applyAssetQueued = (story: Story, job: AssetJob): Story => {
         shots: seq.shots.map((s) => (s.id === job.shot.id ? { ...s, assetState: bumpState((s as any).assetState, patch) } : s)),
       };
     }),
-  });
+  }));
 };
 
 export const applyAssetTaskBinding = (story: Story, job: AssetJob, task: { taskId: string; statusUrl?: string }): Story => {
@@ -221,31 +365,32 @@ export const applyAssetTaskBinding = (story: Story, job: AssetJob, task: { taskI
     pipelineStatusUrl: String(task?.statusUrl || '').trim(),
     pipelineUpdatedAt: now,
   };
+  const finalize = (next: Story) => upsertAssetTaskLedger(next, job, { taskId, statusUrl: String(task?.statusUrl || '').trim() || undefined });
 
   if (job.kind === 'masterkv') {
-    return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
+    return finalize({ ...story, masterKvState: bumpState((story as any).masterKvState, patch) });
   }
 
   if (job.kind === 'location') {
-    return {
+    return finalize({
       ...story,
       locations: (story.locations || []).map((l) =>
         l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, patch) } : l,
       ),
-    };
+    });
   }
 
   if (job.kind === 'character') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) =>
         c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, patch) } : c,
       ),
-    };
+    });
   }
 
   if (job.kind === 'look') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
@@ -256,12 +401,12 @@ export const applyAssetTaskBinding = (story: Story, job: AssetJob, task: { taskI
           ),
         };
       }),
-    };
+    });
   }
 
   const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
   if (!targetSeqId) return story;
-  return normalizeStorySceneModel({
+  return finalize(normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== targetSeqId) return seq;
@@ -272,7 +417,7 @@ export const applyAssetTaskBinding = (story: Story, job: AssetJob, task: { taskI
         ),
       };
     }),
-  });
+  }));
 };
 
 export const clearAssetTaskBinding = (story: Story, job: AssetJob): Story => {
@@ -281,31 +426,32 @@ export const clearAssetTaskBinding = (story: Story, job: AssetJob): Story => {
     pipelineStatusUrl: '',
     pipelineUpdatedAt: Date.now(),
   };
+  const finalize = (next: Story) => clearAssetTaskLedgerByJob(next, job);
 
   if (job.kind === 'masterkv') {
-    return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
+    return finalize({ ...story, masterKvState: bumpState((story as any).masterKvState, patch) });
   }
 
   if (job.kind === 'location') {
-    return {
+    return finalize({
       ...story,
       locations: (story.locations || []).map((l) =>
         l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, patch) } : l,
       ),
-    };
+    });
   }
 
   if (job.kind === 'character') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) =>
         c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, patch) } : c,
       ),
-    };
+    });
   }
 
   if (job.kind === 'look') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
@@ -316,12 +462,12 @@ export const clearAssetTaskBinding = (story: Story, job: AssetJob): Story => {
           ),
         };
       }),
-    };
+    });
   }
 
   const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
   if (!targetSeqId) return story;
-  return normalizeStorySceneModel({
+  return finalize(normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== targetSeqId) return seq;
@@ -332,7 +478,7 @@ export const clearAssetTaskBinding = (story: Story, job: AssetJob): Story => {
         ),
       };
     }),
-  });
+  }));
 };
 
 export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): Story => {
@@ -345,22 +491,23 @@ export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): 
     pipelineStatusUrl: '',
     pipelineUpdatedAt: now,
   };
+  const finalize = (next: Story) => clearAssetTaskLedgerByJob(next, job);
 
-  if (job.kind === 'masterkv') return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
+  if (job.kind === 'masterkv') return finalize({ ...story, masterKvState: bumpState((story as any).masterKvState, patch) });
   if (job.kind === 'location') {
-    return {
+    return finalize({
       ...story,
       locations: (story.locations || []).map((l) => (l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, patch) } : l)),
-    };
+    });
   }
   if (job.kind === 'character') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => (c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, patch) } : c)),
-    };
+    });
   }
   if (job.kind === 'look') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
@@ -369,11 +516,11 @@ export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): 
           looks: (c.looks || []).map((lk) => (lk.id === job.lookId ? { ...lk, assetState: bumpState((lk as any).assetState, patch) } : lk)),
         };
       }),
-    };
+    });
   }
   const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
   if (!targetSeqId) return story;
-  return normalizeStorySceneModel({
+  return finalize(normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== targetSeqId) return seq;
@@ -384,7 +531,7 @@ export const applyAssetBlocked = (story: Story, job: AssetJob, reason: string): 
         ),
       };
     }),
-  });
+  }));
 };
 
 export const applyAssetError = (story: Story, job: AssetJob, error: string): Story => {
@@ -395,22 +542,23 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
     lastAttemptAt: now,
     pipelineUpdatedAt: now,
   };
+  const finalize = (next: Story) => clearAssetTaskLedgerByJob(next, job);
 
-  if (job.kind === 'masterkv') return { ...story, masterKvState: bumpState((story as any).masterKvState, patch) };
+  if (job.kind === 'masterkv') return finalize({ ...story, masterKvState: bumpState((story as any).masterKvState, patch) });
   if (job.kind === 'location') {
-    return {
+    return finalize({
       ...story,
       locations: (story.locations || []).map((l) => (l.id === job.locationId ? { ...l, assetState: bumpState((l as any).assetState, patch) } : l)),
-    };
+    });
   }
   if (job.kind === 'character') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => (c.id === job.characterId ? { ...c, assetState: bumpState((c as any).assetState, patch) } : c)),
-    };
+    });
   }
   if (job.kind === 'look') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
@@ -419,11 +567,11 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
           looks: (c.looks || []).map((lk) => (lk.id === job.lookId ? { ...lk, assetState: bumpState((lk as any).assetState, patch) } : lk)),
         };
       }),
-    };
+    });
   }
   const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
   if (!targetSeqId) return story;
-  return normalizeStorySceneModel({
+  return finalize(normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== targetSeqId) return seq;
@@ -434,7 +582,7 @@ export const applyAssetError = (story: Story, job: AssetJob, error: string): Sto
         ),
       };
     }),
-  });
+  }));
 };
 
 export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, meta?: any): Story => {
@@ -454,6 +602,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
   };
   const isNewPlaceholder = isLikelyPlaceholderUrl(imageUrl);
   const dropPlaceholders = (versions: any[]) => (Array.isArray(versions) ? versions.filter((v: any) => String(v?.type || '') !== 'placeholder') : []);
+  const finalize = (next: Story) => clearAssetTaskLedgerByJob(next, job);
 
   if (job.kind === 'masterkv') {
     const existing = Array.isArray((story as any).keyVisualVersions) ? (story as any).keyVisualVersions : [];
@@ -472,7 +621,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
     const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
     const id = `kv-${now}-${rand()}`;
     const versions = [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base', metadata: meta }];
-    return {
+    return finalize({
       ...story,
       keyVisualUrl: imageUrl,
       keyVisualVersions: versions as any,
@@ -484,11 +633,11 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
         pipelineStatusUrl: '',
         pipelineUpdatedAt: now,
       }),
-    };
+    });
   }
 
   if (job.kind === 'location') {
-    return {
+    return finalize({
       ...story,
       locations: (story.locations || []).map((l) =>
         l.id === job.locationId
@@ -526,11 +675,11 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
             }
           : l,
       ),
-    };
+    });
   }
 
   if (job.kind === 'character') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
@@ -591,11 +740,11 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
           }),
         };
       }),
-    };
+    });
   }
 
   if (job.kind === 'look') {
-    return {
+    return finalize({
       ...story,
       characters: (story.characters || []).map((c) => {
         if (c.id !== job.characterId) return c;
@@ -656,13 +805,13 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
           ),
         };
       }),
-    };
+    });
   }
 
   // shot
   const targetSeqId = resolveShotSequenceId(story, job.sequenceId, job.shot.id);
   if (!targetSeqId) return story;
-  return normalizeStorySceneModel({
+  return finalize(normalizeStorySceneModel({
     ...story,
     sequences: story.sequences.map((seq) => {
       if (seq.id !== targetSeqId) return seq;
@@ -715,7 +864,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
         }),
       };
     }),
-  });
+  }));
 };
 
 const runPool = async <T,>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) => {
