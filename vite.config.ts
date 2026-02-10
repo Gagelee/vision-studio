@@ -1462,7 +1462,231 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   // Back-compat helper (some asset debug payloads display this).
   const geminiBaseUrl = resolveGeminiBaseUrl(env);
 
+  type PipelineKind =
+    | 'agent.scaffold'
+    | 'agent.direct'
+    | 'asset.video.generate'
+    | 'asset.image.generate'
+    | 'asset.image.describe'
+    | 'asset.image.store';
+  type PipelineTaskToken = {
+    id: string;
+    userId: string;
+    kind: PipelineKind;
+    enqueuedAt: number;
+    startedAt: number;
+    attempt: number;
+  };
+  type QueuedTask = {
+    token: Omit<PipelineTaskToken, 'startedAt' | 'attempt'>;
+    start: (token: PipelineTaskToken) => void;
+  };
+  const pipelineConcurrencyPerUser = Math.max(1, Math.min(16, Number(env.VISION_PIPELINE_CONCURRENCY_PER_USER || 2)));
+  const pipelineMaxQueuePerUser = Math.max(1, Math.min(200, Number(env.VISION_PIPELINE_MAX_QUEUE_PER_USER || 24)));
+  const pipelineRateLimitPerMin = Math.max(1, Math.min(2000, Number(env.VISION_PIPELINE_RATE_LIMIT_PER_MINUTE || 120)));
+  const pipelineMaxAttempts = Math.max(1, Math.min(5, Number(env.VISION_PIPELINE_MAX_ATTEMPTS || 2)));
+  const pipelineAuditDir = path.resolve(process.cwd(), '.vision-audit');
+  const pipelineQueueByUser = new Map<string, QueuedTask[]>();
+  const pipelineRunningByUser = new Map<string, number>();
+  const pipelineRateWindows = new Map<string, { minute: number; count: number }>();
+
+  const appendPipelineAudit = (event: Record<string, any>) => {
+    try {
+      fs.mkdirSync(pipelineAuditDir, { recursive: true });
+      const now = new Date();
+      const yyyy = now.getUTCFullYear();
+      const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(now.getUTCDate()).padStart(2, '0');
+      const date = `${yyyy}-${mm}-${dd}`;
+      const line = `${JSON.stringify({ ts: Date.now(), ...event })}\n`;
+      fs.appendFileSync(path.join(pipelineAuditDir, `${date}.jsonl`), line);
+    } catch {
+      // ignore audit errors
+    }
+  };
+
+  const takePipelineRateToken = (userId: string, kind: PipelineKind) => {
+    const minute = Math.floor(Date.now() / 60_000);
+    const key = `${userId}|${kind}`;
+    const prev = pipelineRateWindows.get(key);
+    if (!prev || prev.minute !== minute) {
+      pipelineRateWindows.set(key, { minute, count: 1 });
+      return { allowed: true, remaining: pipelineRateLimitPerMin - 1 };
+    }
+    if (prev.count >= pipelineRateLimitPerMin) {
+      return { allowed: false, remaining: 0 };
+    }
+    prev.count += 1;
+    return { allowed: true, remaining: pipelineRateLimitPerMin - prev.count };
+  };
+
+  const pumpPipelineQueueForUser = (userId: string) => {
+    const queue = pipelineQueueByUser.get(userId) || [];
+    let running = Number(pipelineRunningByUser.get(userId) || 0);
+    while (running < pipelineConcurrencyPerUser && queue.length > 0) {
+      const task = queue.shift()!;
+      running += 1;
+      pipelineRunningByUser.set(userId, running);
+      task.start({
+        ...task.token,
+        startedAt: Date.now(),
+        attempt: 1,
+      });
+    }
+    pipelineQueueByUser.set(userId, queue);
+  };
+
+  const beginPipelineTask = async (
+    req: any,
+    res: any,
+    args: { kind: PipelineKind; route: string },
+  ): Promise<PipelineTaskToken | null> => {
+    const userId = getRequestUserId(req);
+    const rate = takePipelineRateToken(userId, args.kind);
+    if (!rate.allowed) {
+      appendPipelineAudit({
+        type: 'pipeline.rate_limited',
+        route: args.route,
+        kind: args.kind,
+        userId,
+      });
+      sendJson(res, 429, {
+        ok: false,
+        error: 'Rate limit exceeded',
+        code: 'PIPELINE_RATE_LIMITED',
+        retryAfterSeconds: 60,
+      });
+      return null;
+    }
+
+    const tokenBase = {
+      id: `pipe-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      userId,
+      kind: args.kind,
+      enqueuedAt: Date.now(),
+    };
+    const queue = pipelineQueueByUser.get(userId) || [];
+    if (queue.length >= pipelineMaxQueuePerUser) {
+      appendPipelineAudit({
+        type: 'pipeline.queue_rejected',
+        route: args.route,
+        kind: args.kind,
+        userId,
+        queueLength: queue.length,
+      });
+      sendJson(res, 503, {
+        ok: false,
+        error: 'Pipeline queue is full',
+        code: 'PIPELINE_QUEUE_FULL',
+        maxQueuePerUser: pipelineMaxQueuePerUser,
+      });
+      return null;
+    }
+
+    appendPipelineAudit({
+      type: 'pipeline.queued',
+      route: args.route,
+      kind: args.kind,
+      userId,
+      queueLength: queue.length + 1,
+      running: Number(pipelineRunningByUser.get(userId) || 0),
+    });
+
+    const started = new Promise<PipelineTaskToken>((resolve) => {
+      queue.push({
+        token: tokenBase,
+        start: resolve,
+      });
+    });
+    pipelineQueueByUser.set(userId, queue);
+    pumpPipelineQueueForUser(userId);
+    const startedToken = await started;
+    appendPipelineAudit({
+      type: 'pipeline.started',
+      route: args.route,
+      kind: args.kind,
+      userId,
+      taskId: startedToken.id,
+      waitMs: startedToken.startedAt - startedToken.enqueuedAt,
+      queueLength: (pipelineQueueByUser.get(userId) || []).length,
+      running: Number(pipelineRunningByUser.get(userId) || 0),
+    });
+    return startedToken;
+  };
+
+  const endPipelineTask = (token: PipelineTaskToken, args: { route: string; ok: boolean; statusCode?: number; error?: any }) => {
+    const running = Math.max(0, Number(pipelineRunningByUser.get(token.userId) || 0) - 1);
+    pipelineRunningByUser.set(token.userId, running);
+    appendPipelineAudit({
+      type: args.ok ? 'pipeline.finished' : 'pipeline.failed',
+      route: args.route,
+      kind: token.kind,
+      userId: token.userId,
+      taskId: token.id,
+      durationMs: Date.now() - token.startedAt,
+      statusCode: args.statusCode || 0,
+      error: args.error ? formatFetchError(args.error) : undefined,
+    });
+    pumpPipelineQueueForUser(token.userId);
+  };
+
+  const withPipelineTask = async <T,>(
+    req: any,
+    res: any,
+    args: { kind: PipelineKind; route: string; run: () => Promise<T> },
+  ) => {
+    const token = await beginPipelineTask(req, res, { kind: args.kind, route: args.route });
+    if (!token) return null;
+    let lastErr: any = null;
+    try {
+      for (let attempt = 1; attempt <= pipelineMaxAttempts; attempt++) {
+        try {
+          return await args.run();
+        } catch (e: any) {
+          lastErr = e;
+          const shouldRetry = attempt < pipelineMaxAttempts && isRetryableNetworkError(e);
+          if (!shouldRetry) throw e;
+          await sleep(Math.min(3000, 300 * attempt + Math.floor(Math.random() * 150)));
+        }
+      }
+      throw lastErr;
+    } catch (e) {
+      endPipelineTask(token, { route: args.route, ok: false, statusCode: Number(res?.statusCode || 500), error: e });
+      if (!res?.headersSent && !res?.writableEnded) {
+        sendJson(res, 502, {
+          ok: false,
+          error: formatFetchError(e),
+          code: 'PIPELINE_TASK_FAILED',
+          route: args.route,
+          kind: args.kind,
+        });
+      }
+      return null;
+    } finally {
+      if (lastErr == null) {
+        endPipelineTask(token, { route: args.route, ok: true, statusCode: Number(res?.statusCode || 200) });
+      }
+    }
+  };
+
 	  const applyRoutes = (middlewares: any) => {
+      middlewares.use('/api/pipeline/metrics', async (req: any, res: any, next: any) => {
+        if (req.method !== 'GET') return next();
+        const queueByUser = Array.from(pipelineQueueByUser.entries()).map(([userId, q]) => ({ userId, queued: q.length }));
+        const runningByUser = Array.from(pipelineRunningByUser.entries()).map(([userId, running]) => ({ userId, running }));
+        return sendJson(res, 200, {
+          ok: true,
+          limits: {
+            concurrencyPerUser: pipelineConcurrencyPerUser,
+            maxQueuePerUser: pipelineMaxQueuePerUser,
+            rateLimitPerMinute: pipelineRateLimitPerMin,
+            maxAttempts: pipelineMaxAttempts,
+          },
+          queueByUser,
+          runningByUser,
+        });
+      });
+
 	    middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
 	      const pathname = String(req?.url || '').split('?')[0];
@@ -1591,6 +1815,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
 	    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'POST') return next();
+        return withPipelineTask(req, res, {
+          kind: 'asset.video.generate',
+          route: '/api/asset/video/generate',
+          run: async () => {
         const userId = getRequestUserId(req);
 	      const body = await readJsonBody(req);
 
@@ -2239,12 +2467,18 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           },
         });
       }
+          },
+        });
 	    });
 
 	    // Store client-generated (e.g. cropped) images into the local generated-assets directory.
 	    // This keeps ShotVersion.imageUrl small (`/__generated__/...`) instead of embedding huge data URLs.
 	    middlewares.use('/api/asset/image/store', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'POST') return next();
+        return withPipelineTask(req, res, {
+          kind: 'asset.image.store',
+          route: '/api/asset/image/store',
+          run: async () => {
         const userId = getRequestUserId(req);
 	      const body = await readJsonBody(req);
 	      const dataUrl = String(body?.dataUrl || '').trim();
@@ -2274,10 +2508,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	      const filename = `${Date.now()}-${safeHint ? `${safeHint}-` : ''}${hash}${ext}`;
 	      fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), bytes);
 	      return sendJson(res, 200, { ok: true, imageUrl: buildGeneratedAssetUrl(userId, filename), mimeType, bytes: bytes.length });
+          },
+        });
 	    });
 
 	    middlewares.use('/api/asset/image/describe', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'POST') return next();
+        return withPipelineTask(req, res, {
+          kind: 'asset.image.describe',
+          route: '/api/asset/image/describe',
+          run: async () => {
         const userId = getRequestUserId(req);
 	      const body = await readJsonBody(req);
 	      const imageUrl = String(body?.imageUrl || '').trim();
@@ -2363,10 +2603,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	        const errText = formatFetchError(e);
 	        return sendJson(res, 502, { ok: false, error: errText });
 	      }
+          },
+        });
 	    });
 
 			    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
 			      if (req.method !== 'POST') return next();
+            return withPipelineTask(req, res, {
+              kind: 'asset.image.generate',
+              route: '/api/asset/image/generate',
+              run: async () => {
             const userId = getRequestUserId(req);
 			        const body = await readJsonBody(req);
 
@@ -2659,6 +2905,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           imageUrl: url,
           debug: { transport: 'mock', provider, model, promptPreview },
         });
+              },
+            });
       });
 
     const writeSseHeaders = (res: any) => {
@@ -3684,12 +3932,24 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
     };
 
     middlewares.use('/api/agent/scaffold/stream', async (req, res, next) => {
-      const handled = await handleScaffold(req, res, { stream: true });
+      if (req.method !== 'POST') return next();
+      const handled = await withPipelineTask(req, res, {
+        kind: 'agent.scaffold',
+        route: '/api/agent/scaffold/stream',
+        run: async () => handleScaffold(req, res, { stream: true }),
+      });
+      if (handled == null) return;
       if (!handled) return next();
     });
 
     middlewares.use('/api/agent/scaffold', async (req, res, next) => {
-      const handled = await handleScaffold(req, res, { stream: false });
+      if (req.method !== 'POST') return next();
+      const handled = await withPipelineTask(req, res, {
+        kind: 'agent.scaffold',
+        route: '/api/agent/scaffold',
+        run: async () => handleScaffold(req, res, { stream: false }),
+      });
+      if (handled == null) return;
       if (!handled) return next();
     });
 
@@ -3700,6 +3960,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
     middlewares.use('/api/agent/direct', async (req, res, next) => {
         if (req.method !== 'POST') return next();
+        return withPipelineTask(req, res, {
+          kind: 'agent.direct',
+          route: '/api/agent/direct',
+          run: async () => {
         const body = await readJsonBody(req);
 
         const message = String(body?.message || '').trim();
@@ -5331,6 +5595,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               error: lastError?.message || String(lastError || 'No provider keys configured'),
             },
           }, 200);
+          },
+        });
       });
   };
 
