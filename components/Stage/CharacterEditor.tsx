@@ -1,5 +1,5 @@
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Clock, Edit3, Film, Image as ImageIcon, Info, Lock, Plus, Save, Shirt, Sparkles, Trash2, Unlock, User, Wand2, ZoomIn, Upload, Loader2 } from 'lucide-react';
 import { Character, CharacterLook, ModelRuntimeSettings, Sequence, Shot } from '../../types';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
@@ -91,7 +91,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     } as any);
   };
 
-  const [draft, setDraft] = useState<Character>(() => normalizeDraft(character));
+  const normalizedCharacter = useMemo(() => normalizeDraft(character), [character]);
+  const [draft, setDraft] = useState<Character>(() => normalizedCharacter);
   const draftRef = useRef<Character>(draft);
   const lastCharacterIdRef = useRef<string>(String(character.id || ''));
   const [editingLook, setEditingLook] = useState<CharacterLook | null>(null);
@@ -111,12 +112,12 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     const changedCharacter = nextId !== prevId;
     lastCharacterIdRef.current = nextId;
     if (changedCharacter) {
-      setDraft(normalizeDraft(character));
+      setDraft(normalizedCharacter);
       return;
     }
-    const dirty = JSON.stringify(draftRef.current) !== JSON.stringify(character);
-    if (!dirty) setDraft(normalizeDraft(character));
-  }, [character]);
+    const dirty = JSON.stringify(draftRef.current) !== JSON.stringify(normalizedCharacter);
+    if (!dirty) setDraft(normalizedCharacter);
+  }, [character, normalizedCharacter]);
 
   useEffect(() => {
     setDraft((prev) => {
@@ -132,7 +133,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     character.looks,
   ]);
 
-  const isDirty = JSON.stringify(draft) !== JSON.stringify(character);
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(normalizedCharacter);
   const isLocked = draft.status === 'locked';
   const canGenerate = Boolean(imageSettings && imageSettings.provider !== 'mock');
   const avatarStatus = draft.assetState?.status || character.assetState?.status;

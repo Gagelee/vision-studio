@@ -1,5 +1,6 @@
 import { INITIAL_STORY } from '../constants';
 import { Story, WorkspaceState } from '../types';
+import { normalizeStorySceneModel } from './story/sceneModel';
 
 const WORKSPACE_STORAGE_KEY = 'vision-studio.workspace.v1';
 
@@ -17,7 +18,10 @@ export const loadWorkspace = (): WorkspaceState => {
     if (!raw) return getEmptyWorkspace();
     const parsed = JSON.parse(raw) as WorkspaceState;
     if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.projects)) return getEmptyWorkspace();
-    return parsed;
+    return {
+      ...parsed,
+      projects: parsed.projects.map((p) => normalizeStorySceneModel(p)),
+    };
   } catch {
     return getEmptyWorkspace();
   }
@@ -30,13 +34,12 @@ export const saveWorkspace = (workspace: WorkspaceState) => {
 export const createDemoProject = (): Story => {
   const now = Date.now();
   const demo = cloneStory(INITIAL_STORY);
-  return {
+  return normalizeStorySceneModel({
     ...demo,
     id: `demo-${now}`,
     title: `${demo.title} (Demo)`,
     createdAt: now,
     updatedAt: now,
     lastOpenedAt: now,
-  };
+  });
 };
-

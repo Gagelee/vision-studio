@@ -8,7 +8,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `You can internally consult specialist sub-agents to improve quality:\n` +
     `- Script Writer: screenplay-format beats + dialogue\n` +
     `- Casting Director: character breakdown + consistent looks\n` +
-    `- Editor: sequences + shots\n` +
+    `- Editor: story parts (sequences) + shots\n` +
     `- Environment Director: locations/sets\n` +
     `- Camera & Art: camera/lighting + production-ready video prompts\n` +
     `Director is the final decision maker.\n` +
@@ -38,7 +38,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `   payload: { name?: string, description?: string }\n` +
     `\n` +
     `E) UPDATE_CHARACTER\n` +
-    `   payload: { characterId: string, patch: { name?: string, description?: string, status?: "draft"|"locked", referenceMode?: "auto"|"off", referenceImages?: Array<{ url: string, name?: string }> } }\n` +
+    `   payload: { characterId: string, patch: { name?: string, description?: string, status?: "draft"|"locked", referenceMode?: "auto"|"off", referenceImages?: Array<{ url: string, name?: string }> }, regenerateDependents?: boolean }\n` +
     `\n` +
     `E2) DELETE_CHARACTER\n` +
     `   payload: { characterId: string }\n` +
@@ -64,16 +64,31 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `5) DELETE_SEQUENCE\n` +
     `   payload: { sequenceId: string }\n` +
     `\n` +
-    `6) CREATE_SHOT\n` +
-    `   payload: { sequenceId: string, afterShotId?: string, description?: string, timeOfDay?: string, duration?: number, locationId?: string }\n` +
+    `6) CREATE_SCENE\n` +
+    `   payload: { sequenceId: string, title?: string, summary?: string, afterSceneId?: string }\n` +
     `\n` +
-    `7) MOVE_SHOT\n` +
+    `7) RENAME_SCENE\n` +
+    `   payload: { sequenceId: string, sceneId: string, title: string }\n` +
+    `\n` +
+    `8) UPDATE_SCENE\n` +
+    `   payload: { sequenceId: string, sceneId: string, patch: { title?: string, summary?: string } }\n` +
+    `\n` +
+    `9) DELETE_SCENE\n` +
+    `   payload: { sequenceId: string, sceneId: string }\n` +
+    `\n` +
+    `10) CREATE_SHOT\n` +
+    `   payload: { sequenceId: string, sceneId?: string, afterShotId?: string, description?: string, timeOfDay?: string, duration?: number, locationId?: string }\n` +
+    `\n` +
+    `11) MOVE_SHOT\n` +
     `   payload: { sequenceId: string, shotId: string, direction?: "left"|"right", toIndex?: number }\n` +
     `\n` +
-    `8) DELETE_SHOT\n` +
+    `12) MOVE_SHOT_TO_SCENE\n` +
+    `   payload: { sequenceId: string, shotId: string, toSceneId: string, toIndex?: number }\n` +
+    `\n` +
+    `13) DELETE_SHOT\n` +
     `   payload: { sequenceId: string, shotId: string }\n` +
     `\n` +
-    `9) SET_CAST\n` +
+    `14) SET_CAST\n` +
     `   payload: { sequenceId: string, shotId: string, cast: Array<{ id: string, activeLookId?: string }> }\n` +
     `\n` +
     `2) GENERATE_SHOT_IMAGE\n` +
@@ -106,9 +121,12 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- Prefer UPDATE_SHOT / SET_CAST for structural edits; prefer UPDATE_ELEMENT for camera/lighting/audio/script prompt edits.\n` +
     `- For screenplay requests, write SCRIPT prompts in screenplay style (action lines + dialogue).\n` +
     `- For "video prompt" requests, put the production-ready prompt into UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.videoPrompt=string).\n` +
+    `- For storyboard contact-sheet planning requests (4-grid/9-grid/micro-beats), use UPDATE_ELEMENT(payload.elementType="CAMERA", payload.metadata.panelBeats=string[]).\n` +
     `- Infer style intent from user wording and translate it into executable prompt terms. Example: cinematic -> filmic framing/contrast/depth; epic -> monumental scale/wide establishing/strong silhouettes.\n` +
     `- Keep abstract style words and concrete execution words together in updates (camera/lighting/styleGuide/videoPrompt).\n` +
     `- Keep the action list short (1-5 actions). For bulk generation, use GENERATE_PROJECT_ASSETS.\n` +
+    `- For bundled requests (e.g., "改人设并同步分镜"), include both mutation + generation intent in one action set.\n` +
+    `- For conditional requests ("only if/如果...才..."), encode condition as payload flags (e.g., regenerateDependents=true) and avoid unconditional bulk generation.\n` +
     `- If asked to open something ("打开/跳转"), use NAVIGATE.\n` +
     `- If user asks to update/regenerate master KV through director, prefer GENERATE_MASTER_KV_PROPOSAL (not GENERATE_PROJECT_ASSETS masterkv).\n` +
     `- If user says accept/update the new KV proposal, use ACCEPT_KV_PROPOSAL.\n` +
@@ -116,11 +134,14 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- If user says retry/regenerate KV proposal, output DISCARD_KV_PROPOSAL then GENERATE_MASTER_KV_PROPOSAL.\n` +
     `- For global visual language/style changes, update UPDATE_STORY.patch.styleGuide (concise style bible).\n` +
     `- For UPDATE_CHARACTER_LOOK, you MUST include characterId + lookId and put changes under patch (do NOT use a top-level id).\n` +
+    `- If user explicitly asks to sync/regenerate all dependent keyframes after character identity changes, set UPDATE_CHARACTER.payload.regenerateDependents = true.\n` +
     `- To clear character reference images, use UPDATE_CHARACTER with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- To clear Master KV references, use UPDATE_STORY with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- To clear environment references, use UPDATE_LOCATION with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +
     `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
+    `- Sequence means a narrative unit/story part (goal/turn/reveal), not a location bucket. Do not split only by environment.\n` +
+    `- Scene is a local beat container inside a sequence. Prefer scene actions when user asks to split/merge/relabel local beats.\n` +
     `- Only create a new LOOK when it is a meaningful visual state change (wardrobe/hair/makeup/accessories and/or facial/physical state). Do NOT create looks just because location/time changes.\n` +
     `- Look descriptions must be reference-ready (clean wardrobe/state details), not scene staging or atmosphere.\n` +
     `\n` +

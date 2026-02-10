@@ -3,30 +3,29 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Story, Shot } from '../../types';
 import { X, Play, Pause, Maximize2, SkipForward, Volume2, AlertCircle } from 'lucide-react';
 import { openLightbox } from '../../lib/ui/lightboxStore';
+import { resolveShotActiveVideo } from '../../lib/ai/assetRefs';
 
 interface MasterPlayerProps {
   story: Story;
+  shots?: Shot[];
   onClose: () => void;
 }
 
-export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, onClose }) => {
+export const MasterPlayer: React.FC<MasterPlayerProps> = ({ story, shots, onClose }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentShotIndex, setCurrentShotIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [imgError, setImgError] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Flatten shots from all sequences to create a linear timeline
-  const allShots = story.sequences.flatMap(s => s.shots);
+  // Flatten shots from all sequences to create a linear timeline.
+  // If a scoped list is provided (e.g. one scene), only play that subset.
+  const allShots = Array.isArray(shots) && shots.length > 0 ? shots : story.sequences.flatMap(s => s.shots);
   const currentShot = allShots[currentShotIndex];
   const currentVideoUrl = useMemo(() => {
     if (!currentShot) return '';
-    const variants = Array.isArray((currentShot as any)?.production?.variants)
-      ? ((currentShot as any).production.variants as any[])
-      : [];
-    const activeId = String((currentShot as any)?.production?.activeVariantId || '').trim();
-    const active = variants.find((v: any) => String(v?.id || '') === activeId) || variants[variants.length - 1];
-    return String(active?.videoUrl || (currentShot as any)?.production?.videoUrl || '').trim();
+    const resolved = resolveShotActiveVideo(currentShot, { allowLegacyUnboundFallback: true });
+    return String(resolved.videoUrl || '').trim();
   }, [currentShot]);
   
   // Reset error state when shot changes

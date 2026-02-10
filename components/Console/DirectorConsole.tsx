@@ -73,17 +73,22 @@ export const DirectorConsole: React.FC<DirectorConsoleProps> = ({
     switch (context.type) {
       case 'shot':
         return {
-          placeholder: "Adjust camera, lighting, or action...",
+          placeholder: "Adjust camera / lighting / panel beats...",
           accent: "text-indigo-500",
           borderAccent: "focus-within:border-indigo-500/50",
-          chips: ["Close up", "Warmer light", "Cyberpunk style", "Slow motion"]
+          chips: [
+            "9-grid contact sheet",
+            "4-grid contact sheet",
+            "panel beats: enter room, eye contact, draw blade",
+            "Close up",
+          ]
         };
       case 'sequence':
         return {
           placeholder: "Direct the scene's flow or mood...",
           accent: "text-emerald-500",
           borderAccent: "focus-within:border-emerald-500/50",
-          chips: ["Add establishing shot", "Dark & gritty", "Add tension", "Reorder shots"]
+          chips: ["Add establishing shot", "Add tension", "Scene 2 title: Silent Threat", "Reorder shots"]
         };
       default:
         return {

@@ -11,6 +11,31 @@
 - 图片资产支持点击放大（Lightbox）。
 - 可观测性增强：已加入 Agent registry + prompt version 标记 + LLM trace 基础（在 Debug 面板可视化）。
 - Prompt 仍统一存放在 `lib/ai/prompts/*`，当前 registry/版本信息维护在 `lib/ai/promptMeta.ts`。
+- 已发现稳定性问题（待治理）：
+  - Scaffold 偶发返回截断 JSON（`response was not valid JSON`），需要后端增加结构化 repair/retry 与输出长度治理（token budget + schema slimming）。
+  - 当前阶段流式事件（`trace`）只有状态元信息，缺少“每步可读摘要”；需要在每个 agent 完成时返回 `human_summary`，避免前端只能展示 JSON preview。
+  - 提前进入项目后，资产仍在后台生成但前端偶发回落到占位预览；需要在状态同步链路中加入“真实资产优先、占位不覆盖”的防回退策略，并补端到端回归用例。
+  - 3x3/2x2 contact-sheet 的细粒度 panel 信息未充分传递到 image2video：当前视频生成主要使用 shot-level prompt + source image，`panelBeats` 等分镜级结构未进入视频提示词编排，导致分镜丰富度利用不足。
+
+## 0.1 可选迭代：Grid 拆分为独立 Keyframe（Shot Source 扩展）
+- 目标：让 shot 的 keyframe source 同时支持两种输入形态：
+  - 单张完整图片（现有模式）
+  - 从 3x3 / 2x2 contact sheet 自动拆分出的单格图片（新模式）
+- 数据模型建议：
+  - 在 shot version metadata 记录 `sourceType: single | grid_panel`、`sourceGridId`、`panelIndex`、`panelBBox`、`panelCaption`。
+  - 保留父级 grid 图引用，支持“回到原图”与可追溯关系。
+- 处理流程建议：
+  - 上传/生成 grid 后执行自动切图（按 3x3/2x2 规则 + 容错边界）。
+  - 每个 panel 产出一个候选 keyframe version，继承父图公共描述（style/环境/角色约束）。
+  - 若 panel 缺少单独描写：调用模型做 panel 理解（vision caption）并结合现有 story/shot/casting 信息组装可用描述。
+  - 对每个 panel 生成 `video-ready prompt draft`，供 image2video 直接使用或轻编辑。
+- 交互建议：
+  - 在 Shot Editor 增加 “From Grid” 入口与 panel 选择器（多选导入）。
+  - 支持一键“将全部 panel 生成为 variants”，并可指定哪些 panel 进入生产队列。
+- 风险与约束：
+  - 面板裁切精度与边框干扰（需要 gutter/边框检测与裁切后质量检查）。
+  - 角色连续性约束（同一 grid 内多 panel 可能视角差异大，需避免误识别）。
+  - 计算开销增加（切图 + caption + prompt assemble），需队列化与并发上限。
 
 ## 1. Backend 形态（BFF / Agent Gateway）
 - 新建独立 Node 服务（可选：Express/Fastify/Hono），替代 `vite.config.ts` 的 API 中间件。

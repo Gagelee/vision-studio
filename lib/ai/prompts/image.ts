@@ -1,59 +1,147 @@
 import type { Shot } from '../../../types';
 import { buildStylePromptTranslation } from '../styleIntent';
 
+export const selectContactSheetPanelCount = (duration: number): 4 | 9 => {
+  const d = Number(duration || 0);
+  return d >= 8 ? 9 : 4;
+};
+
+const clampText = (s: string, n = 220) => {
+  const t = String(s || '').trim().replace(/\s+/g, ' ');
+  if (!t) return '';
+  return t.length > n ? `${t.slice(0, n - 1)}...` : t;
+};
+
+const uniqueList = (items: string[]) => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of items) {
+    const v = clampText(raw, 180);
+    const k = v.toLowerCase();
+    if (!v || seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+  }
+  return out;
+};
+
+const splitIntoBeats = (text: string) => {
+  const src = String(text || '').trim();
+  if (!src) return [];
+  return src
+    .split(/\n|[.;!?。！？；]/g)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 8 && !/^[A-Z][A-Z0-9 _-]{1,24}:/.test(s));
+};
+
+const collectPanelHints = (shot: Shot, panelCount: 4 | 9, explicitHints?: string[]) => {
+  const cameraMeta = ((shot.elements as any)?.CAMERA?.metadata || {}) as Record<string, any>;
+  const metadataHintsRaw = Array.isArray(cameraMeta?.panelBeats)
+    ? cameraMeta.panelBeats
+    : Array.isArray(cameraMeta?.keyframePanelHints)
+      ? cameraMeta.keyframePanelHints
+      : Array.isArray((shot as any)?.keyframePlan?.panelGuidance)
+        ? (shot as any).keyframePlan.panelGuidance
+        : [];
+  const metadataHints = metadataHintsRaw.map((x: any) => String(x || '').trim()).filter(Boolean);
+  const providedHints = Array.isArray(explicitHints) ? explicitHints.map((x) => String(x || '').trim()).filter(Boolean) : [];
+  const scriptBeats = splitIntoBeats(String((shot.elements as any)?.SCRIPT?.prompt || ''));
+  const descBeats = splitIntoBeats(String(shot.description || ''));
+  return uniqueList([...providedHints, ...metadataHints, ...scriptBeats, ...descBeats]).slice(0, panelCount);
+};
+
 export const buildShotKeyframePrompt = (args: {
   shot: Shot;
   styleGuide?: string;
   environmentName?: string;
   environmentStyle?: string;
   castNames?: string[];
+  panelHints?: string[];
 }) => {
   const shot = args.shot;
   const styleGuide = String(args.styleGuide || '').trim();
   const envName = String(args.environmentName || '').trim();
   const envStyle = String(args.environmentStyle || '').trim();
   const castNames = Array.isArray(args.castNames) ? args.castNames.map((s) => String(s || '').trim()).filter(Boolean) : [];
+  const panelCount = selectContactSheetPanelCount(Number(shot.duration || 0));
+  const gridLabel = panelCount === 9 ? '3x3' : '2x2';
+  const panelHints = collectPanelHints(shot, panelCount, args.panelHints);
 
   const camera = String(shot.elements?.CAMERA?.prompt || '').trim();
   const lighting = String(shot.elements?.LIGHTING?.prompt || '').trim();
+  const script = String((shot.elements as any)?.SCRIPT?.prompt || '').trim();
+  const audio = String((shot.elements as any)?.AUDIO?.prompt || '').trim();
 
-  const sceneBits = [
-    String(shot.description || '').trim(),
-    shot.timeOfDay ? `Time: ${shot.timeOfDay}` : '',
+  const styleTranslation = buildStylePromptTranslation({
+    texts: [styleGuide, String(shot.description || ''), camera, lighting],
+    maxItems: 6,
+  });
+
+  const sceneInput = [
+    `Scene: ${String(shot.description || '').trim() || 'N/A'}`,
+    shot.timeOfDay ? `Time of day: ${shot.timeOfDay}` : '',
     envName ? `Setting: ${envName}` : '',
     envStyle ? `Environment style: ${envStyle}` : '',
-    castNames.length ? `Cast in frame: ${castNames.join(', ')}` : '',
-  ].filter(Boolean);
+    castNames.length ? `Key subjects: ${castNames.join(', ')}` : '',
+    camera ? `Camera direction: ${camera}` : '',
+    lighting ? `Lighting direction: ${lighting}` : '',
+    script ? `Script beat: ${script}` : '',
+    audio ? `Audio mood cue: ${audio}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n- ');
 
-  const cinematographyBits = [
-    camera ? `Camera: ${camera}` : '',
-    lighting ? `Lighting: ${lighting}` : '',
-    'Compose like a narrative frame: clear subject, intentional framing, strong depth (foreground/mid/background), avoid awkward crops and dead-center staging.',
-    'Natural acting: avoid stiff front-facing poses; characters should not look directly into camera unless explicitly required by the shot.',
-    'Use concrete framing/camera intent. Prefer neutral, style-consistent lens behavior by default; only use shallow DOF/bokeh cues when explicitly requested.',
-  ].filter(Boolean);
+  const panelGuidance =
+    panelHints.length > 0
+      ? panelHints.map((b, i) => `${i + 1}. ${b}`).join('\n')
+      : 'No fixed micro-beats provided. Freely design a coherent progression that matches the scene input.';
 
-  const constraints = [
-    styleGuide ? `Style guide (must follow): ${styleGuide}` : '',
-    (() => {
-      const inferred = buildStylePromptTranslation({
-        texts: [styleGuide, String(shot.description || ''), camera, lighting],
-        maxItems: 5,
-      });
-      return inferred ? `Style translation hints: ${inferred}.` : '';
-    })(),
-    'This must look like a keyframe from a movie scene (mid-action), not a poster, not concept art, not a posed lineup.',
-    'Follow reference images strictly for identity + environment consistency.',
-    'Output format must be a single narrative frame. Even if references are model sheets/contact sheets/multi-panel boards (e.g., 2x2), extract identity cues only and DO NOT reproduce collage, split panels, grids, or tiled layouts.',
-    'Do not introduce generic CGI/3D-render aesthetics unless the style guide explicitly asks for it.',
-    'No text, subtitles, watermarks, or logos.',
-  ].filter(Boolean);
-
-  const sceneLine = sceneBits.join(' ');
-  const cineLine = cinematographyBits.join(' ');
-  const constraintLine = constraints.join(' ');
-
-  return [sceneLine, cineLine, constraintLine].map((s) => String(s || '').trim()).filter(Boolean).join('\n\n');
+  return (
+    `You are a professional cinematographer + storyboard artist.\n\n` +
+    `INPUTS\n` +
+    `- REFERENCE IMAGE(S): character/subject reference(s). Preserve identity exactly (face, body, proportions, costume, hair, accessories, materials, colors).\n` +
+    `- SCENE INPUT (text): scene description, setting, mood, actions, and any required props.\n\n` +
+    `TASK\n` +
+    `Create ONE photorealistic cinematic contact sheet as a strict ${gridLabel} grid (${panelCount} panels total) in 16:9 aspect ratio.\n` +
+    `All panels must feature the SAME key subjects in the SAME environment, with consistent wardrobe and cinematic lighting/color grade.\n` +
+    `Panels must form a coherent micro-sequence. Keep time-of-day and lighting direction stable.\n\n` +
+    `STEP 1 — ANALYZE\n` +
+    `Identify and lock all key subjects from references + scene input:\n` +
+    `- People/creatures: count, roles, defining features, clothing.\n` +
+    `- Vehicles/objects: type, distinguishing marks, materials, textures.\n` +
+    `- Spatial relationships: near/far, interaction, primary/secondary subjects.\n` +
+    `Do NOT introduce new key subjects. Do NOT remove key subjects.\n\n` +
+    `STEP 2 — CONTINUITY RULES (STRICT)\n` +
+    `- Same identities across all panels (no face/outfit/accessory changes).\n` +
+    `- Same environment and same time-of-day/weather.\n` +
+    `- Same cinematic lighting direction and same LUT/color grade (minor realistic shifts only).\n` +
+    `- Distinct composition per panel (no duplicated framing).\n` +
+    `- Realistic depth of field changes by shot scale.\n` +
+    `- Keep group continuity if subjects are a pair/group.\n` +
+    `- No text, subtitles, watermarks, logos, UI overlays, or panel labels.\n\n` +
+    `STEP 3 — PANEL MICRO-BEATS (OPTIONAL GUIDANCE)\n` +
+    `${panelGuidance}\n` +
+    `Use these beats when present. If guidance is sparse, infer cinematic transitions naturally.\n\n` +
+    `STEP 4 — GRID OUTPUT\n` +
+    `Render a clean ${gridLabel} contact sheet with uniform gutters/borders. Each panel is a photoreal film still (not illustration).\n\n` +
+    `CAMERA / FILM LOOK (CONSISTENT)\n` +
+    `- Photoreal cinematic still, filmic contrast, controlled highlights, natural texture.\n` +
+    `- Use realistic lens logic per framing (wide/mid/close) and plausible aperture.\n` +
+    `- Keep white balance and grade coherent across all panels.\n` +
+    `- Imply motion naturally; avoid excessive blur unless needed by action.\n\n` +
+    `COMPOSITION NOTES\n` +
+    `- Preserve left-right orientation and spatial continuity.\n` +
+    `- Ensure required key subjects stay present in every panel.\n` +
+    `- Avoid awkward cropping; use intentional LS/CU/ECU framing.\n\n` +
+    `PROJECT STYLE LOCK\n` +
+    `- Style guide (hard lock when provided): ${styleGuide || 'N/A'}\n` +
+    `- Style translation hints: ${styleTranslation || 'N/A'}\n` +
+    `- Avoid generic CGI/3D-render aesthetics unless explicitly required by the style guide.\n\n` +
+    `SCENE INPUT:\n` +
+    `- ${sceneInput}\n\n` +
+    `OUTPUT\n` +
+    `Generate the final image only: one ${gridLabel} storyboard/contact sheet image.`
+  );
 };
 
 export const buildShotImagePrompt = (shot: Shot) => {

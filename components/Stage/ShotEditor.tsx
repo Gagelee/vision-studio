@@ -3,8 +3,14 @@ import React, { useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
 import { buildShotKeyframePrompt } from '../../lib/ai/prompts';
+import { selectContactSheetPanelCount } from '../../lib/ai/prompts/image';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info, ChevronRight } from 'lucide-react';
-import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl } from '../../lib/ai/assetRefs';
+import {
+  getCharacterActiveAvatarUrl,
+  getLocationActivePreviewUrl,
+  getLookActivePreviewUrl,
+  resolveShotActiveVideo,
+} from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ShotEditorProps {
@@ -45,34 +51,9 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const isBusyGenerating = isGenerating || isBatchGenerating;
   const productionStatus = shot.production?.status;
   const isProducingVideo = productionStatus === 'running' || productionStatus === 'queued';
-  const productionVariants = Array.isArray(shot.production?.variants) ? shot.production?.variants : [];
-  const fallbackVariant =
-    shot.production?.videoUrl && !productionVariants.length
-      ? [
-          {
-            id: 'pv-legacy',
-            videoUrl: String(shot.production.videoUrl),
-            createdAt: Number(shot.production.lastCompletedAt || Date.now()),
-            durationSeconds: shot.production.durationSeconds,
-            resolution: shot.production.resolution,
-            operationName: shot.production.operationName,
-          },
-        ]
-      : [];
-  const displayVideoVariants = productionVariants.length ? productionVariants : fallbackVariant;
-  const activeKeyframeVersionId = String(activeVersion?.id || '').trim();
-  const scopedVideoVariants = displayVideoVariants.filter((v: any) => {
-    const byVersionId = String(v?.metadata?.sourceShotVersionId || '').trim();
-    if (byVersionId) return byVersionId === activeKeyframeVersionId;
-    const byImageUrl = String(v?.metadata?.sourceImageUrl || '').trim();
-    if (byImageUrl && String(activeVersion?.imageUrl || '').trim()) {
-      return byImageUrl === String(activeVersion?.imageUrl || '').trim();
-    }
-    return false;
-  });
-  const activeVideoVariant =
-    scopedVideoVariants.find((v) => v.id === shot.production?.activeVariantId) ||
-    scopedVideoVariants[scopedVideoVariants.length - 1];
+  const activeVideoState = resolveShotActiveVideo(shot, { allowLegacyUnboundFallback: true });
+  const scopedVideoVariants = activeVideoState.variants;
+  const activeVideoVariant = activeVideoState.activeVariant;
   const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
   const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
 
@@ -195,6 +176,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       }
 
       const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
+      const panelCount = selectContactSheetPanelCount(Number(shot.duration || 0));
       const castNames = (castArr || [])
         .map((c: any) => {
           const master = story?.characters?.find((x) => x.id === String(c?.id || ''));
@@ -222,6 +204,9 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
           kind: 'shot',
           styleGuide,
           aspectRatio,
+          keyframeMode: 'contact_sheet',
+          panelCount,
+          grid: panelCount === 9 ? '3x3' : '2x2',
           environment: loc ? { name: loc.name, description: loc.description, visualStyle: loc.visualStyle } : null,
           cast: castNames,
           shot: {

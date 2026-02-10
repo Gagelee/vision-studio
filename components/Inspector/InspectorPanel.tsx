@@ -208,6 +208,7 @@ interface InspectorPanelProps {
   contextLocation?: Location;
   availableLocations: Location[];
   availableCharacters: Character[];
+  sequences?: Sequence[];
   keyVisualUrl?: string; 
   masterStyle?: string;
   type: 'story' | 'location' | 'character' | 'sequence' | 'shot';
@@ -217,6 +218,8 @@ interface InspectorPanelProps {
   onScriptUpdate: (shotId: string, seqId: string, dialogue: DialogueLine[]) => void;
   onSequenceUpdate: (seq: Sequence) => void;
   onShotUpdate: (shot: Shot) => void;
+  onMoveShotToScene?: (sequenceId: string, shotId: string, toSceneId: string) => void;
+  onUpdateScene?: (sequenceId: string, sceneId: string, patch: { title?: string; summary?: string }) => void;
 }
 
 export const InspectorPanel: React.FC<InspectorPanelProps> = ({
@@ -225,6 +228,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   contextLocation,
   availableLocations,
   availableCharacters,
+  sequences = [],
   keyVisualUrl,
   masterStyle,
   type,
@@ -232,7 +236,9 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onCharacterPromptChange,
   onCastingUpdate,
   onSequenceUpdate,
-  onShotUpdate
+  onShotUpdate,
+  onMoveShotToScene,
+  onUpdateScene
 }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   
@@ -248,7 +254,13 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   // --- SHOT INSPECTOR ---
   if (type === 'shot') {
       const shot = selectedItem as Shot;
-      const sequenceId = selection.parentId || 'seq-1';
+      const inferredSequenceId =
+        (sequences || []).find((s) => (Array.isArray((s as any)?.shots) ? (s as any).shots : []).some((it: any) => it?.id === shot.id))?.id || '';
+      const sequenceId = selection.parentId || inferredSequenceId || 'seq-1';
+      const activeSequence = (sequences || []).find((s) => s.id === sequenceId);
+      const scenes = Array.isArray((activeSequence as any)?.scenes) ? ((activeSequence as any).scenes as any[]) : [];
+      const currentScene = scenes.find((sc: any) => (Array.isArray(sc?.shots) ? sc.shots : []).some((s: any) => s?.id === shot.id));
+      const editingScene = currentScene || scenes[0];
       
       const handleElementChange = (elType: ElementType, val: string) => {
           onShotUpdate({
@@ -543,6 +555,55 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                         </select>
                     </label>
                 </div>
+                {scenes.length > 0 && (
+                    <div className="mt-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-2.5 space-y-2">
+                        <div className="grid grid-cols-1 gap-2">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                                Scene
+                                <select
+                                    value={String(currentScene?.id || scenes[0]?.id || '')}
+                                    onChange={(e) => {
+                                      const nextId = String(e.target.value || '');
+                                      if (!nextId || nextId === String(currentScene?.id || '')) return;
+                                      onMoveShotToScene?.(sequenceId, shot.id, nextId);
+                                    }}
+                                    className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                >
+                                    {scenes.map((sc: any, idx: number) => (
+                                      <option key={String(sc?.id || idx)} value={String(sc?.id || '')}>
+                                        {String(sc?.title || `Scene ${idx + 1}`)}
+                                      </option>
+                                    ))}
+                                </select>
+                            </label>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                                Scene Title
+                                <input
+                                  value={String(editingScene?.title || '')}
+                                  onChange={(e) =>
+                                    editingScene &&
+                                    onUpdateScene?.(sequenceId, String(editingScene.id), { title: String(e.target.value || '') })
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                />
+                            </label>
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                                Scene Summary
+                                <textarea
+                                  value={String(editingScene?.summary || '')}
+                                  onChange={(e) =>
+                                    editingScene &&
+                                    onUpdateScene?.(sequenceId, String(editingScene.id), { summary: String(e.target.value || '') })
+                                  }
+                                  rows={2}
+                                  className="mt-1 w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-[11px] text-zinc-700 dark:text-zinc-200 p-2"
+                                />
+                            </label>
+                        </div>
+                    </div>
+                )}
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">

@@ -497,7 +497,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
                     className="flex items-center gap-3 px-8 py-5 bg-white/10 dark:bg-white/5 hover:bg-white/20 dark:hover:bg-white/10 text-zinc-900 dark:text-white border border-zinc-200 dark:border-white/10 rounded-2xl text-lg font-bold transition-all backdrop-blur-xl disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                     <Maximize className="w-5 h-5" />
-                    {firstSeqId ? 'Inspect Beats' : 'No Sequences'}
+                    {firstSeqId ? 'Inspect Beats' : 'No Story Parts'}
                 </button>
             </div>
         </div>
