@@ -221,39 +221,11 @@ const GEMINI_SCHEMA = {
     },
   }),
   scaffoldCameraArt: schemaObject({
-    required: ['sequences'],
-    propertyOrdering: ['sequences'],
+    propertyOrdering: ['shootingStyleSuggestion', 'shotGuidelines', 'equipmentChoices'],
     properties: {
-      sequences: schemaArray(
-        schemaObject({
-          required: ['title', 'scenes'],
-          propertyOrdering: ['title', 'scenes'],
-          properties: {
-            title: schemaString(),
-            scenes: schemaArray(
-              schemaObject({
-                required: ['title', 'shots'],
-                propertyOrdering: ['title', 'shots'],
-                properties: {
-                  title: schemaString(),
-                  shots: schemaArray(
-                    schemaObject({
-                      required: ['camera', 'lighting', 'audio'],
-                      propertyOrdering: ['camera', 'lighting', 'audio', 'videoPrompt'],
-                      properties: {
-                        camera: schemaString(),
-                        lighting: schemaString(),
-                        audio: schemaString(),
-                        videoPrompt: schemaString(),
-                      },
-                    }),
-                  ),
-                },
-              }),
-            ),
-          },
-        }),
-      ),
+      shootingStyleSuggestion: schemaString(),
+      shotGuidelines: schemaArray(schemaString()),
+      equipmentChoices: schemaArray(schemaString()),
     },
   }),
   scaffoldFinal: schemaObject({
@@ -324,9 +296,6 @@ const GEMINI_SCHEMA = {
                         'description',
                         'timeOfDay',
                         'duration',
-                        'camera',
-                        'lighting',
-                        'audio',
                         'locationName',
                         'castNames',
                         'script',
@@ -2049,7 +2018,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
       if (resolution !== '720p') return sendJson(res, 400, { ok: false, error: 'Only 720p is supported' });
       // Veo must call direct Gemini. Do NOT route through Compass gateway.
-      if (!geminiDirectApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+      if (!geminiApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
 
       const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any, refUrls: string[]): string => {
         const core = String(basePrompt || '').trim();
@@ -2062,7 +2031,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           parts.push(line);
         };
         const parts: string[] = [];
-        parts.push('Image-to-video: use the provided image as the starting frame; preserve subject identity and environment continuity.');
+        parts.push('Image-to-video: keep subject/environment from the source frame. Focus on detailed motion and performance beats.');
         if (core) parts.push(`Core direction: ${core}`);
         pushIfMissing(['current frame', 'frame description'], spec?.frameDescription ? `Current frame: ${String(spec.frameDescription).trim()}` : '');
         pushIfMissing(['story context', 'narrative context'], spec?.storyContext ? `Story context: ${String(spec.storyContext).trim()}` : '');
@@ -2074,15 +2043,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         pushIfMissing(['cameraman', 'camera plan'], spec?.cameraman ? `Cameraman plan: ${String(spec.cameraman).trim()}` : '');
         pushIfMissing(['camera motion', 'camera'], spec?.camera ? `Camera motion: ${String(spec.camera).trim()}` : '');
         pushIfMissing(['composition'], spec?.composition ? `Composition: ${String(spec.composition).trim()}` : '');
-        pushIfMissing(['lens/look', 'lens'], spec?.lensEffect ? `Lens/look: ${String(spec.lensEffect).trim()}` : '');
-        pushIfMissing(['lighting and mood', 'lighting', 'mood'], spec?.mood ? `Lighting and mood: ${String(spec.mood).trim()}` : '');
-        pushIfMissing(['visual style', 'style', 'style guide'], spec?.style ? `Visual style: ${String(spec.style).trim()}` : '');
-        const inferredStyle = String(spec?.styleTranslation || '').trim() ||
-          buildStylePromptTranslation({
-            texts: [core, String(spec?.style || ''), String(spec?.shotDescription || ''), String(spec?.camera || ''), String(spec?.mood || '')],
-            maxItems: 6,
-          });
-        pushIfMissing(['style translation hints', 'style intent'], inferredStyle ? `Style translation hints: ${inferredStyle}.` : '');
+        pushIfMissing(['lens/look', 'lens'], spec?.lensEffect ? `Lens behavior: ${String(spec.lensEffect).trim()}` : '');
+        pushIfMissing(['lighting and mood', 'lighting', 'mood'], spec?.mood ? `Lighting continuity: ${String(spec.mood).trim()}` : '');
+        parts.push('Look lock: keep the source image style and identity; do not introduce a new style treatment.');
         pushIfMissing(['audio intent', 'audio'], spec?.audio ? `Audio intent: ${String(spec.audio).trim()}` : '');
         if (Array.isArray(spec?.referenceFrames) && spec.referenceFrames.length) {
           const frameSummary = spec.referenceFrames
@@ -2103,8 +2066,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         }
         const constraints = Array.isArray(spec?.constraints) ? spec.constraints : [];
         pushIfMissing(['constraints'], constraints.length ? `Constraints: ${constraints.map((x: any) => String(x).trim()).filter(Boolean).join(' ')}` : '');
+        parts.push('Motion staging: one continuous shot, explicit cause->action->reaction per beat, readable transitions, no vague motion words.');
         if (!/motion quality\s*:/i.test(core)) {
-          parts.push('Motion quality: natural physics, coherent anatomy, stable geometry, no jitter/flicker, no abrupt style drift.');
+          parts.push('Motion quality: natural physics, coherent anatomy, stable geometry, no jitter/flicker.');
         }
         if (!/no text overlays|no subtitles|no watermark|no logos?/i.test(core)) {
           parts.push('No text overlays, subtitles, logos, or watermark.');
@@ -2168,7 +2132,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const queue = Array.from(candidates);
         for (let i = 0; i < queue.length; i++) {
           const c = queue[i];
-          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiDirectApiKey)}`;
+          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiApiKey)}`;
           for (const u of [c, withKey]) {
             try {
               const resp = await withRetries(
@@ -2176,7 +2140,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   const controller = new AbortController();
                   const timeout = setTimeout(() => controller.abort(), 90_000);
                   try {
-                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiDirectApiKey } };
+                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiApiKey } };
                     const dispatcher = getProxyDispatcher(u, env);
                     const runVideoFetch = async (useDispatcher: boolean) => {
                       const reqInit: any = { ...init };
@@ -2371,7 +2335,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         };
         for (const candidate of modelCandidates) {
           model = candidate;
-          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate, baseUrl: geminiDirectBaseUrl })}?key=${encodeURIComponent(geminiDirectApiKey)}`;
+          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate, baseUrl: geminiBaseUrl })}?key=${encodeURIComponent(geminiApiKey)}`;
           const predictDispatcher = getProxyDispatcher(predictUrl, env);
           const baseParams: Record<string, any> = {
             aspectRatio,
@@ -2471,7 +2435,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             throw new Error(`Gemini Video timeout after ${Math.round((Date.now() - pollStart) / 1000)}s`);
           }
           await sleep(pollIntervalMs);
-          const opUrl = `${buildGeminiOperationUrl({ env, operationName, baseUrl: geminiDirectBaseUrl })}?key=${encodeURIComponent(geminiDirectApiKey)}`;
+          const opUrl = `${buildGeminiOperationUrl({ env, operationName, baseUrl: geminiBaseUrl })}?key=${encodeURIComponent(geminiApiKey)}`;
           const opDispatcher = getProxyDispatcher(opUrl, env);
           opData = await withRetries(
             async () => {
@@ -3094,7 +3058,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 				                model: usedModel,
 				                    baseUrl: baseUrlUsed || geminiBaseUrl,
                         gateway,
-                        attemptedTransports: transports.map((t) => t.id),
+                        attemptedTransports: ['gemini-direct'],
                         usage,
 				                mimeType: out.mimeType,
 				                bytes: out.bytes.length,
@@ -3610,11 +3574,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                { id: mkId('step'), title: 'Casting Director: characters + looks', status: 'done' },
 	                { id: mkId('step'), title: 'Environment Director: locations/sets', status: 'done' },
 	                { id: mkId('step'), title: 'Editor: sequences & shots', status: 'done' },
-	                { id: mkId('step'), title: 'Camera & Art: shot settings + video prompts', status: 'done' },
+                { id: mkId('step'), title: 'Camera & Art: optional shooting advisory', status: 'done' },
 	              ],
 	              actions: [{ type: 'SCAFFOLD_PROJECT' }],
 	            },
-	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source, ...(usedProvider === 'gemini' ? { gateway: 'compass' } : {}), ...(debugExtra || {}) },
+	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source, ...(usedProvider === 'gemini' ? { gateway: 'gemini-direct' } : {}), ...(debugExtra || {}) },
 	            bindingAudit,
 	          };
 	        };
@@ -3651,8 +3615,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 				                try {
                           const runGemini = async (args: { promptText: string; temperature: number; maxTokens: number }) =>
                             callGeminiJson({
-                              apiKey: compassApiKey,
-                              baseUrl: compassBaseUrl || undefined,
+                              apiKey: geminiApiKey,
+                              baseUrl: geminiBaseUrl || undefined,
                               model: String(opts?.model || chosenModel),
                               temperature: args.temperature,
                               maxOutputTokens: args.maxTokens,
@@ -3692,7 +3656,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 				                    ms: Date.now() - started,
 				                    ok: true,
                             ...(retryUsed ? { retryUsed: 'compact-json' } : {}),
-                            gateway: 'compass',
+                            gateway: 'gemini-direct',
                             usage: outRes.usage,
 				                    promptId: meta?.id,
 				                    promptVersion: meta?.version,
@@ -3717,7 +3681,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 				                    ms: Date.now() - started,
 				                    ok: false,
 				                    error: formatFetchError(e),
-                            gateway: 'compass',
+                            gateway: 'gemini-direct',
 				                    promptId: meta?.id,
 				                    promptVersion: meta?.version,
 				                  };
@@ -3771,13 +3735,6 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }),
                   { model: workerModel, temperature: workerTemperature, maxOutputTokens: resolvedWorkerTokens, responseSchema: GEMINI_SCHEMA.scaffoldEditor },
                 );
-                const CAMERA_ART_BATCH_SIZE = 6;
-                const normalizeDurationForPanelCount = (v: any) => {
-                  const n = Number(v);
-                  if (n <= 5) return 4;
-                  if (n <= 7) return 6;
-                  return 8;
-                };
                 const buildCompactEditorForCameraArt = (editorLike: any) => {
                   const sequences = Array.isArray(editorLike?.sequences) ? editorLike.sequences : [];
                   return {
@@ -3790,7 +3747,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                         shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((shot: any) => ({
                           description: String(shot?.description || shot?.beat || '').slice(0, 260),
                           timeOfDay: String(shot?.timeOfDay || '').slice(0, 60),
-                          duration: normalizeDurationForPanelCount(shot?.duration),
+                          duration: Number(shot?.duration || 0),
                           locationName: String(shot?.locationName || '').slice(0, 100),
                           castNames: Array.isArray(shot?.castNames) ? shot.castNames.slice(0, 4).map((x: any) => String(x || '').slice(0, 48)) : [],
                           script: String(shot?.script || '').slice(0, 320),
@@ -3799,178 +3756,71 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     })),
                   };
                 };
-                const collectEditorShotRefs = (editorLike: any) => {
-                  const refs: Array<{ seqIdx: number; sceneIdx: number; shotIdx: number }> = [];
+                const countCompactEditorShots = (editorLike: any) => {
                   const seqs = Array.isArray(editorLike?.sequences) ? editorLike.sequences : [];
-                  for (let si = 0; si < seqs.length; si++) {
-                    const scenes = Array.isArray(seqs[si]?.scenes) ? seqs[si].scenes : [];
-                    for (let ci = 0; ci < scenes.length; ci++) {
-                      const shots = Array.isArray(scenes[ci]?.shots) ? scenes[ci].shots : [];
-                      for (let hi = 0; hi < shots.length; hi++) refs.push({ seqIdx: si, sceneIdx: ci, shotIdx: hi });
+                  let count = 0;
+                  for (const seq of seqs) {
+                    const scenes = Array.isArray(seq?.scenes) ? seq.scenes : [];
+                    for (const scene of scenes) {
+                      const shots = Array.isArray(scene?.shots) ? scene.shots : [];
+                      count += shots.length;
                     }
                   }
-                  return refs;
+                  return count;
                 };
-                const buildEditorChunkByRefs = (
-                  compactEditor: any,
-                  refs: Array<{ seqIdx: number; sceneIdx: number; shotIdx: number }>,
-                ) => {
-                  const keep = new Set(refs.map((r) => `${r.seqIdx}|${r.sceneIdx}|${r.shotIdx}`));
-                  const out = {
-                    sequences: (Array.isArray(compactEditor?.sequences) ? compactEditor.sequences : []).map((seq: any, seqIdx: number) => ({
-                      title: String(seq?.title || 'Sequence'),
-                      context: String(seq?.context || ''),
-                      scenes: (Array.isArray(seq?.scenes) ? seq.scenes : [])
-                        .map((scene: any, sceneIdx: number) => ({
-                          title: String(scene?.title || 'Scene'),
-                          summary: String(scene?.summary || ''),
-                          shots: (Array.isArray(scene?.shots) ? scene.shots : []).filter((_: any, shotIdx: number) =>
-                            keep.has(`${seqIdx}|${sceneIdx}|${shotIdx}`),
-                          ),
-                        }))
-                        .filter((sc: any) => Array.isArray(sc.shots) && sc.shots.length > 0),
-                    })),
-                  };
-                  out.sequences = out.sequences.filter((seq: any) => Array.isArray(seq.scenes) && seq.scenes.length > 0);
-                  return out;
-                };
-                const readCameraShotByPath = (cameraArtLike: any, seqIdx: number, sceneIdx: number, shotIdx: number) => {
-                  const seq = Array.isArray(cameraArtLike?.sequences) ? cameraArtLike.sequences[seqIdx] : null;
-                  const scene = seq && Array.isArray(seq?.scenes) ? seq.scenes[sceneIdx] : null;
-                  const shot = scene && Array.isArray(scene?.shots) ? scene.shots[shotIdx] : null;
-                  return shot || null;
-                };
-                const buildCameraArtFallbackSpec = (editorLike: any, briefLike: any, ar: string) => {
+                const buildCameraArtFallbackSpec = (briefLike: any, ar: string) => {
                   const styleBible = (briefLike && typeof briefLike === 'object' ? (briefLike as any).styleBible : {}) || {};
-                  const styleHeader = [
-                    styleBible.genre ? `genre=${String(styleBible.genre)}` : '',
-                    styleBible.tone ? `tone=${String(styleBible.tone)}` : '',
-                    styleBible.cameraLanguage ? `camera=${String(styleBible.cameraLanguage)}` : '',
-                    Array.isArray(styleBible.visualKeywords) && styleBible.visualKeywords.length
-                      ? `look=${styleBible.visualKeywords.slice(0, 4).join(', ')}`
-                      : '',
-                  ]
-                    .filter(Boolean)
-                    .join('; ');
-                  const rootSeq = Array.isArray((editorLike as any)?.sequences) ? (editorLike as any).sequences : [];
                   return {
-                    sequences: rootSeq.map((seq: any) => ({
-                      title: String(seq?.title || 'Sequence'),
-                      scenes: (Array.isArray(seq?.scenes) ? seq.scenes : []).map((scene: any) => ({
-                        title: String(scene?.title || 'Scene'),
-                        shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((shot: any) => {
-                          const shotDesc = String(shot?.description || shot?.beat || '').trim();
-                          const script = String(shot?.script || '').trim();
-                          const locationName = String(shot?.locationName || '').trim();
-                          const castNames = Array.isArray(shot?.castNames) ? shot.castNames.slice(0, 4).map((x: any) => String(x || '').trim()).filter(Boolean) : [];
-                          const timeOfDay = String(shot?.timeOfDay || '').trim();
-                          const duration = normalizeDurationForPanelCount(shot?.duration);
-                          const hasDialogue = /[:：]["“”'A-Za-z0-9\u4e00-\u9fa5]/.test(script) || /LIN|WEI|INT\.|EXT\./i.test(script);
-                          const camera = `Narrative ${ar} shot, motivated movement, composition focused on ${castNames[0] || 'the key subject'}.`;
-                          const lighting =
-                            timeOfDay
-                              ? `${timeOfDay} motivated cinematic lighting, soft contrast, practical highlights that support mood.`
-                              : 'Cinematic motivated lighting with controlled contrast and practical highlights.';
-                          const audio = hasDialogue
-                            ? 'Natural ambience plus clear dialogue focus; subtle score supports emotional beats.'
-                            : 'Natural ambience and subtle score; no distracting foreground noise.';
-                          const videoPrompt = [
-                            `STYLE: ${styleHeader || 'cinematic realism with controlled palette and emotional camera language'}.`,
-                            `SHOT: ${shotDesc || 'Character-driven dramatic beat'}${locationName ? ` at ${locationName}` : ''}.`,
-                            castNames.length ? `CAST: ${castNames.join(', ')}.` : '',
-                            `ACTION: Translate the scripted beat into clear physical performance with readable emotion shifts${script ? `; script context: ${script.slice(0, 220)}` : ''}.`,
-                            `CAMERA: ${camera}`,
-                            `LIGHTING: ${lighting}`,
-                            `AUDIO: ${audio}`,
-                            'CONSTRAINTS: preserve character identity/wardrobe continuity, avoid flicker/morphing artifacts, no text/watermark.',
-                          ]
-                            .filter(Boolean)
-                            .join(' ');
-                          return {
-                            camera,
-                            lighting,
-                            audio,
-                            videoPrompt,
-                            keyframePlan: {
-                              panelCount: duration === 8 ? 9 : 4,
-                              panelGuidance: duration === 8
-                                ? ['establish spatial relation', 'action escalation', 'emotional turn', 'resolve beat']
-                                : ['establish beat', 'emotional shift', 'end beat'],
-                            },
-                          };
-                        }),
-                      })),
-                    })),
+                    shootingStyleSuggestion: [
+                      'Advisory only.',
+                      `Maintain ${String(ar || '16:9')} cinematic continuity and motivated camera movement.`,
+                      styleBible.cameraLanguage ? `Camera language hint: ${String(styleBible.cameraLanguage).trim()}.` : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' '),
+                    shotGuidelines: [
+                      'Prioritize readable action transitions over decorative camera moves.',
+                      'Preserve actor eye-line and movement continuity between adjacent shots.',
+                      'Use movement only when it reveals story information.',
+                    ],
+                    equipmentChoices: ['24mm/35mm/50mm prime set', 'stabilized handheld or dolly', 'practical motivated lighting package'],
                   };
                 };
                 let cameraArtSpec: any;
                 try {
                   const compactEditor = buildCompactEditorForCameraArt(editorSpec);
-                  const allRefs = collectEditorShotRefs(compactEditor);
-                  if (!allRefs.length) {
-                    cameraArtSpec = { sequences: [] };
+                  const shotCount = countCompactEditorShots(compactEditor);
+                  if (!shotCount) {
+                    cameraArtSpec = {};
                   } else {
-                    const mergedByPath = new Map<string, any>();
-                    for (let i = 0; i < allRefs.length; i += CAMERA_ART_BATCH_SIZE) {
-                      const chunkRefs = allRefs.slice(i, i + CAMERA_ART_BATCH_SIZE);
-                      const chunkEditor = buildEditorChunkByRefs(compactEditor, chunkRefs);
-                      const chunkOut = await call(
-                        'camera_art',
-                        buildTeamScaffoldCameraArtPrompt({
-                          directorBriefJson,
-                          editorJson: JSON.stringify(chunkEditor),
-                          aspectRatio,
-                        }),
-                        {
-                          model: workerModel,
-                          temperature: workerTemperature,
-                          maxOutputTokens: resolvedWorkerTokens,
-                          responseSchema: GEMINI_SCHEMA.scaffoldCameraArt,
-                        },
-                      );
-                      // Map chunk output shots back by order to original editor path.
-                      const chunkInputRefs = collectEditorShotRefs(chunkEditor);
-                      const chunkOutputRefs = collectEditorShotRefs(chunkOut);
-                      const pairCount = Math.min(chunkInputRefs.length, chunkOutputRefs.length);
-                      for (let j = 0; j < pairCount; j++) {
-                        const src = chunkInputRefs[j];
-                        const out = chunkOutputRefs[j];
-                        const outShot = readCameraShotByPath(chunkOut, out.seqIdx, out.sceneIdx, out.shotIdx);
-                        if (!outShot) continue;
-                        mergedByPath.set(`${src.seqIdx}|${src.sceneIdx}|${src.shotIdx}`, outShot);
-                      }
-                    }
-                    const fallback = buildCameraArtFallbackSpec(compactEditor, directorBrief, String(aspectRatio || '16:9'));
-                    cameraArtSpec = {
-                      sequences: (Array.isArray(compactEditor?.sequences) ? compactEditor.sequences : []).map((seq: any, seqIdx: number) => ({
-                        title: String(seq?.title || 'Sequence'),
-                        scenes: (Array.isArray(seq?.scenes) ? seq.scenes : []).map((scene: any, sceneIdx: number) => ({
-                          title: String(scene?.title || 'Scene'),
-                          shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((_: any, shotIdx: number) => {
-                            const key = `${seqIdx}|${sceneIdx}|${shotIdx}`;
-                            const resolved = mergedByPath.get(key);
-                            if (resolved) return resolved;
-                            return (
-                              readCameraShotByPath(fallback, seqIdx, sceneIdx, shotIdx) || {
-                                camera: '',
-                                lighting: '',
-                                audio: '',
-                                videoPrompt: '',
-                                keyframePlan: { panelCount: 4, panelGuidance: [] },
-                              }
-                            );
-                          }),
-                        })),
-                      })),
-                    };
+                    const cameraArtPromise = call(
+                      'camera_art',
+                      buildTeamScaffoldCameraArtPrompt({
+                        directorBriefJson,
+                        editorJson: JSON.stringify(compactEditor),
+                        aspectRatio,
+                      }),
+                      {
+                        model: workerModel,
+                        temperature: workerTemperature,
+                        maxOutputTokens: Math.min(resolvedWorkerTokens, 4096),
+                        responseSchema: GEMINI_SCHEMA.scaffoldCameraArt,
+                      },
+                    );
+                    const timeoutMs = Math.max(25000, Math.min(60000, 20000 + shotCount * 1200));
+                    const timeoutError = new Error(`camera_art timeout (${timeoutMs}ms)`);
+                    cameraArtSpec = await Promise.race([
+                      cameraArtPromise,
+                      new Promise((_, reject) => setTimeout(() => reject(timeoutError), timeoutMs)),
+                    ]);
                   }
                 } catch (e: any) {
-                  cameraArtSpec = buildCameraArtFallbackSpec(buildCompactEditorForCameraArt(editorSpec), directorBrief, String(aspectRatio || '16:9'));
+                  cameraArtSpec = buildCameraArtFallbackSpec(directorBrief, String(aspectRatio || '16:9'));
                   teamMessages.push({
                     agent: 'camera_art',
                     ok: false,
                     degraded: true,
-                    error: `camera_art failed, used fallback template: ${formatFetchError(e)}`,
+                    error: `camera_art failed (non-blocking), used advisory fallback: ${formatFetchError(e)}`,
                   });
                 }
 
@@ -4012,8 +3862,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
 		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
 			                const specRes = await callGeminiJson({
-			                  apiKey: compassApiKey,
-                        baseUrl: compassBaseUrl || undefined,
+			                  apiKey: geminiApiKey,
+                        baseUrl: geminiBaseUrl || undefined,
 			                  model: chosenModel,
 			                  temperature: chosenTemperature,
 	                  maxOutputTokens: resolvedMergeTokens,
@@ -4028,7 +3878,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 				                  model: chosenModel,
 				                  ms: Date.now() - started,
 				                  ok: true,
-                          gateway: 'compass',
+                          gateway: 'gemini-direct',
                           usage: specRes.usage,
 				                  promptId: meta?.id,
 				                  promptVersion: meta?.version,
@@ -5237,7 +5087,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
-			          if (p === 'gemini' && compassApiKey && compassBaseUrl) {
+			          if (p === 'gemini' && geminiApiKey && geminiBaseUrl) {
 		              const teamTrace: any[] = [];
 		              const teamMessages: any[] = [];
 		              const traceId = crypto.randomUUID();
@@ -5247,8 +5097,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                emit?.('agent_start', { agent });
 	                try {
 	                  const outRes = await callGeminiJson({
-                      apiKey: compassApiKey,
-                      baseUrl: compassBaseUrl || undefined,
+                      apiKey: geminiApiKey,
+                      baseUrl: geminiBaseUrl || undefined,
                       model,
                       temperature,
                       maxOutputTokens: resolvedTokens,
@@ -5263,7 +5113,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    model,
 	                    ms: Date.now() - started,
 	                    ok: true,
-                      gateway: 'compass',
+                      gateway: 'gemini-direct',
                       usage: outRes.usage,
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
@@ -5313,8 +5163,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                      let toolOut: any;
 	                      try {
 	                        toolOut = await callGeminiToolCall({
-	                          apiKey: compassApiKey,
-                            baseUrl: compassBaseUrl || undefined,
+	                          apiKey: geminiApiKey,
+                            baseUrl: geminiBaseUrl || undefined,
 	                          model,
 	                          temperature,
 	                          maxOutputTokens: resolvedTokens,
@@ -5344,7 +5194,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                        model,
 	                        ms: Date.now() - started,
 	                        ok: true,
-                          gateway: 'compass',
+                          gateway: 'gemini-direct',
                           usage: toolOut?.usage,
 	                        promptId: meta?.id,
 	                        promptVersion: meta?.version,
@@ -5404,8 +5254,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                            let toolOut: any;
 	                            try {
 	                              toolOut = await callGeminiToolCall({
-	                                apiKey: compassApiKey,
-                                  baseUrl: compassBaseUrl || undefined,
+	                                apiKey: geminiApiKey,
+                                  baseUrl: geminiBaseUrl || undefined,
 	                                model,
 	                                temperature,
 	                                maxOutputTokens: resolvedTokens,
@@ -5424,7 +5274,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                              model,
 	                              ms: Date.now() - started,
 	                              ok: true,
-                                gateway: 'compass',
+                                gateway: 'gemini-direct',
                                 usage: toolOut?.usage,
 	                              promptId: meta?.id,
 	                              promptVersion: meta?.version,
@@ -5474,8 +5324,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                        let out: any;
 	                        try {
 	                          out = await callGeminiToolCall({
-	                            apiKey: compassApiKey,
-                              baseUrl: compassBaseUrl || undefined,
+	                            apiKey: geminiApiKey,
+                              baseUrl: geminiBaseUrl || undefined,
 	                            model,
 	                            temperature,
 	                            maxOutputTokens: resolvedMergeTokens,
@@ -5496,7 +5346,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                          model,
 	                          ms: Date.now() - started,
 	                          ok: true,
-                            gateway: 'compass',
+                            gateway: 'gemini-direct',
                             usage: out?.usage,
 	                          promptId: meta?.id,
 	                          promptVersion: meta?.version,
@@ -5543,7 +5393,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                        transport: 'http',
 	                        provider: p,
 	                        model,
-                          gateway: 'compass',
+                          gateway: 'gemini-direct',
 	                        teamTrace,
 	                        teamMessages,
 	                        traceId,
@@ -5583,8 +5433,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    try {
 	                      if (useFunctionCalling) {
                           const toolRes = await callGeminiToolCall({
-                            apiKey: compassApiKey,
-                            baseUrl: compassBaseUrl || undefined,
+                            apiKey: geminiApiKey,
+                            baseUrl: geminiBaseUrl || undefined,
                             model,
                             temperature,
                             maxOutputTokens: resolvedMergeTokens,
@@ -5599,8 +5449,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                           outputUsage = toolRes.usage;
                         } else {
                           const outRes = await callGeminiJson({
-                            apiKey: compassApiKey,
-                            baseUrl: compassBaseUrl || undefined,
+                            apiKey: geminiApiKey,
+                            baseUrl: geminiBaseUrl || undefined,
                             model,
                             temperature,
                             maxOutputTokens: resolvedMergeTokens,
@@ -5620,7 +5470,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                  model,
 	                  ms: Date.now() - started,
 	                  ok: true,
-                    gateway: 'compass',
+                    gateway: 'gemini-direct',
                     usage: outputUsage,
 	                  promptId: meta?.id,
 	                  promptVersion: meta?.version,
@@ -5659,7 +5509,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    transport: 'http',
 	                    provider: p,
 	                    model,
-                      gateway: 'compass',
+                      gateway: 'gemini-direct',
 	                    teamTrace,
 	                    teamMessages,
 	                    traceId,
@@ -5705,7 +5555,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    ms: Date.now() - started,
 	                    ok: false,
 	                    error: formatFetchError(e),
-                      gateway: 'compass',
+                      gateway: 'gemini-direct',
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });

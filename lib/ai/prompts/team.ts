@@ -183,31 +183,19 @@ export const buildTeamScaffoldCameraArtPrompt = (args: {
   return (
     `You are the CAMERA & ART DESIGN agent.\n` +
     `${jsonOnly()}\n` +
-    `For each shot, propose camera, lighting, audio. "videoPrompt" is optional and should be concise if provided.\n` +
+    `Provide OPTIONAL, WEAK-CONSTRAINT production guidance only. Do not rewrite story structure.\n` +
     `Output schema:\n` +
     `{\n` +
-    `  "sequences": Array<{\n` +
-    `    "title": string,\n` +
-    `    "scenes": Array<{\n` +
-    `      "title": string,\n` +
-    `      "shots": Array<{\n` +
-    `        "camera": string,\n` +
-    `        "lighting": string,\n` +
-    `        "audio": string,\n` +
-    `        "videoPrompt"?: string,\n` +
-    `        "keyframePlan"?: { "panelCount"?: 4|9, "panelGuidance"?: string[] }\n` +
-    `      }>\n` +
-    `    }>\n` +
-    `  }>\n` +
+    `  "shootingStyleSuggestion"?: string,\n` +
+    `  "shotGuidelines"?: string[],\n` +
+    `  "equipmentChoices"?: string[]\n` +
     `}\n` +
     `Rules:\n` +
-    `- Prefer high-quality camera/lighting/audio guidance. videoPrompt is optional because runtime will compose final prompt asynchronously.\n` +
+    `- This output is optional and advisory only; downstream may ignore it.\n` +
+    `- Keep it concise: 1 short paragraph + up to 6 bullet-like guideline lines + up to 6 equipment lines.\n` +
     `- Treat DirectorBrief style medium as HARD LOCK; do not swap to another medium.\n` +
-    `- Translate abstract user adjectives into executable visual terms (camera language, composition scale, lighting behavior, motion quality).\n` +
-    `- Include environment + cast + action + lens/camera + lighting cues.\n` +
-    `- If you provide "videoPrompt", start with a short STYLE header derived from director style bible (rendering style/medium, palette, lighting mood, camera language).\n` +
-    `- Also prepare optional keyframePlan for storyboard contact-sheet generation: panelCount by duration (8s -> 9 panels; 4/6s -> 4 panels).\n` +
-    `- keyframePlan.panelGuidance should only include important micro-beats; keep concise and optional.\n` +
+    `- Translate abstract adjectives into executable camera language (movement, framing discipline, focal behavior, continuity discipline).\n` +
+    `- Avoid per-shot verbose style writing; references and runtime prompt composition handle shot-level detail.\n` +
     `- No text/watermarks.\n` +
     `AspectRatio: ${aspectRatio}\n` +
     `DirectorBrief: ${brief}\n` +
@@ -241,7 +229,7 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `  "sequences": Array<{ "title": string, "context": string, "sceneDecision": { "split": boolean, "sceneCount": number, "rationale": string, "criteria"?: string[] }, "scenes": Array<{\n` +
     `     "title": string, "summary"?: string, "shots": Array<{\n` +
     `       "description": string, "timeOfDay": string, "duration": number,\n` +
-    `       "camera": string, "lighting": string, "audio": string,\n` +
+    `       "camera"?: string, "lighting"?: string, "audio"?: string,\n` +
     `       "locationName": string, "castNames": string[],\n` +
     `       "script": string,\n` +
     `       "videoPrompt"?: string,\n` +
@@ -249,12 +237,13 @@ export const buildTeamScaffoldDirectorMergePrompt = (args: {
     `  }> }> }>\n` +
     `}\n` +
     `Rules:\n` +
-    `- Ensure sequences/shots align across editor + camera&art (same counts and order).\n` +
+    `- Use editor output as the structural source of truth for sequence/scene/shot counts/order.\n` +
+    `- CameraArt is optional weak guidance; if absent, continue without blocking.\n` +
     `- Treat sequences as narrative units/story parts, not environment groupings.\n` +
     `- Preserve editor.sceneDecision for each sequence; if missing, infer and fill it (split optional but decision is required).\n` +
     `- Ensure characters/locations match names used in shots.\n` +
     `- Keep rendering medium/style consistent with DirectorBrief. If user intent specified medium explicitly, preserve it as hard lock.\n` +
-    `- Ensure final styleGuide and shot-level camera/lighting contain concrete, generation-ready style terms (not only abstract adjectives).\n` +
+    `- Prefer concise actionable shot fields. Do not inflate style prose in shot text.\n` +
     `- "styleGuide" must be a concise, production-ready style bible derived from DirectorBrief.styleBible (rendering style, palette, lighting, camera language, constraints).\n` +
     `DirectorBrief: ${brief}\n` +
     `Casting: ${casting}\n` +

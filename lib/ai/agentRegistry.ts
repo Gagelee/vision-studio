@@ -50,7 +50,7 @@ export const AGENT_REGISTRY: AgentSpec[] = [
   {
     id: 'camera_art',
     title: 'Camera & Art',
-    description: 'Produces camera/lighting/audio settings and production-ready video prompts.',
+    description: 'Provides optional shooting-style guidance, shot principles, and equipment suggestions.',
     promptIds: ['team.scaffold.cameraArt', 'team.direct.specialist'],
   },
   {
@@ -60,4 +60,3 @@ export const AGENT_REGISTRY: AgentSpec[] = [
     promptIds: ['asset.masterkv', 'asset.locationPreview', 'asset.characterAvatar', 'asset.characterLook', 'asset.shotImage', 'asset.image.generate'],
   },
 ];
-

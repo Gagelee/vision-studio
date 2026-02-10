@@ -27,7 +27,6 @@ import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPrev
 import { getCharacterActiveAvatarUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
 import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
 import { generateVideoFromImage } from './lib/ai/video/generate';
-import { buildStylePromptTranslation } from './lib/ai/styleIntent';
 import { buildActingDirection, composeStructuredVideoPrompt, extractDialogueLines, resolveVideoSourceBundle } from './lib/ai/videoPromptComposer';
 import { getOrCreateVisionUserId, getVisionUserRequestHeaders } from './lib/userSession';
 import { appendProjectTransferLog, buildProjectExportEnvelope, parseProjectImportText } from './lib/projectTransfer';
@@ -1533,34 +1532,15 @@ export default function App() {
 
   };
 
-  const hydrateShotVideoPromptFromKeyframe = (story: Story, sequenceId: string, shotId: string, nowTs?: number): Story => {
-    const seq =
-      (story.sequences || []).find((s) => s.id === sequenceId && (s.shots || []).some((x) => x.id === shotId)) ||
-      (story.sequences || []).find((s) => (s.shots || []).some((x) => x.id === shotId));
-    const shot = (seq?.shots || []).find((s) => s.id === shotId);
-    if (!seq || !shot) return story;
-
-    const activeVersion =
-      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
-      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
-    if (!activeVersion) return story;
-
-    const sourceBundle = resolveVideoSourceBundle(shot, activeVersion as any);
-    const sourceImageUrl = String(sourceBundle.sourceImageUrl || '').trim();
-    if (!sourceImageUrl) return story;
-
-    const cameraMeta = ((shot.elements as any)?.[ElementType.CAMERA]?.metadata || {}) as Record<string, any>;
-    const existingVideoPrompt = String(cameraMeta.videoPrompt || '').trim();
-    const runtimeGeneratedAt = Number(cameraMeta.runtimeVideoPromptGeneratedAt || 0);
-    const shouldHydrate = !existingVideoPrompt || runtimeGeneratedAt > 0;
-    if (!shouldHydrate) return story;
-
+  const composeRuntimeVideoPrompt = (args: { story: Story; seq: any; shot: any; sourceBundle: any; authoredPrompt?: string }) => {
+    const { story, seq, shot, sourceBundle } = args;
     const styleGuide = String((story as any)?.styleGuide || '').trim();
     const location = (story.locations || []).find((l) => l.id === shot.locationId);
     const shotAction = String((shot.elements as any)?.[ElementType.SCRIPT]?.prompt || '').trim();
     const cameraPrompt = String((shot.elements as any)?.[ElementType.CAMERA]?.prompt || '').trim();
     const lightingPrompt = String((shot.elements as any)?.[ElementType.LIGHTING]?.prompt || '').trim();
     const audioPrompt = String((shot.elements as any)?.[ElementType.AUDIO]?.prompt || '').trim();
+    const authoredPrompt = String(args.authoredPrompt || '').trim();
     const frameDescription = String(sourceBundle.frameDescription || shot.description || '').trim();
     const dialogue = extractDialogueLines(shotAction);
     const storyContext = [
@@ -1578,10 +1558,13 @@ export default function App() {
       sequenceContext: String(seq.context || '').trim(),
       dialogue,
     });
-    const inferredStyleTranslation = buildStylePromptTranslation({
-      texts: [story.intent, styleGuide, location?.visualStyle, cameraPrompt, lightingPrompt, shot.description],
-      maxItems: 6,
-    });
+    const minimalStyleLock =
+      String(location?.visualStyle || '').trim() ||
+      String(styleGuide || '')
+        .split(/\n|[。.!?]/)
+        .map((x) => x.trim())
+        .find(Boolean) ||
+      '';
     const { prompt: videoPrompt } = composeStructuredVideoPrompt({
       sourceKind: sourceBundle.sourceKind,
       referenceFrames: sourceBundle.referenceFrames,
@@ -1591,23 +1574,69 @@ export default function App() {
       cameraPrompt,
       lightingPrompt,
       audioPrompt,
-      style: styleGuide || String(location?.visualStyle || '').trim(),
-      styleTranslation: inferredStyleTranslation,
+      style: minimalStyleLock,
+      styleTranslation: '',
       dialogue,
-      directorNotes: existingVideoPrompt,
+      directorNotes: authoredPrompt,
       constraints: [
         'Preserve character identity and wardrobe continuity.',
         'Avoid flicker, morphing artifacts, and geometry instability.',
       ],
       maxChars: 7200,
     });
-    if (!String(videoPrompt || '').trim()) return story;
+    return {
+      videoPrompt: String(videoPrompt || '').trim(),
+      frameDescription,
+      storyContext,
+      actingDirection,
+      shotAction,
+      dialogue,
+      cameraPrompt,
+      lightingPrompt,
+      audioPrompt,
+      styleGuide,
+      locationStyle: String(location?.visualStyle || '').trim(),
+    };
+  };
+
+  const hydrateShotVideoPromptFromKeyframe = (story: Story, sequenceId: string, shotId: string, nowTs?: number): Story => {
+    const seq =
+      (story.sequences || []).find((s) => s.id === sequenceId && (s.shots || []).some((x) => x.id === shotId)) ||
+      (story.sequences || []).find((s) => (s.shots || []).some((x) => x.id === shotId));
+    const shot = (seq?.shots || []).find((s) => s.id === shotId);
+    if (!seq || !shot) return story;
+    const targetSequenceId = String(seq.id || sequenceId);
+
+    const activeVersion =
+      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
+      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
+    if (!activeVersion) return story;
+
+    const sourceBundle = resolveVideoSourceBundle(shot, activeVersion as any);
+    const sourceImageUrl = String(sourceBundle.sourceImageUrl || '').trim();
+    if (!sourceImageUrl) return story;
+
+    const cameraMeta = ((shot.elements as any)?.[ElementType.CAMERA]?.metadata || {}) as Record<string, any>;
+    const existingVideoPrompt = String(cameraMeta.videoPrompt || '').trim();
+    const previousSource = String(cameraMeta.videoPromptSourceImageUrl || '').trim();
+    const isReady = Boolean(cameraMeta.videoPromptReady);
+    const shouldHydrate = previousSource !== sourceImageUrl || !existingVideoPrompt || !isReady;
+    if (!shouldHydrate) return story;
+
+    const composed = composeRuntimeVideoPrompt({
+      story,
+      seq,
+      shot,
+      sourceBundle,
+      authoredPrompt: existingVideoPrompt,
+    });
+    if (!composed.videoPrompt) return story;
 
     const ts = nowTs || Date.now();
     return {
       ...story,
       sequences: (story.sequences || []).map((s) =>
-        s.id !== sequenceId
+        s.id !== targetSequenceId
           ? s
           : {
               ...s,
@@ -1622,7 +1651,11 @@ export default function App() {
                           ...x.elements[ElementType.CAMERA],
                           metadata: {
                             ...(x.elements?.[ElementType.CAMERA]?.metadata || {}),
-                            videoPrompt,
+                            videoPrompt: composed.videoPrompt,
+                            videoPromptReady: true,
+                            videoPromptReadyReason: 'keyframe-enriched',
+                            videoPromptSourceImageUrl: sourceImageUrl,
+                            videoPromptReadyAt: ts,
                             runtimeVideoPromptGeneratedAt: ts,
                           },
                         },
@@ -1656,54 +1689,53 @@ export default function App() {
       return;
     }
 
-    const styleGuide = String((storyNow as any)?.styleGuide || '').trim();
-    const location = storyNow.locations.find((l) => l.id === shot.locationId);
-    const shotAction = String((shot.elements as any)?.[ElementType.SCRIPT]?.prompt || '').trim();
-    const cameraPrompt = String(shot.elements?.[ElementType.CAMERA]?.prompt || '').trim();
-    const lightingPrompt = String(shot.elements?.[ElementType.LIGHTING]?.prompt || '').trim();
-    const audioPrompt = String(shot.elements?.[ElementType.AUDIO]?.prompt || '').trim();
-    const authoredVideoPrompt = String((shot.elements as any)?.[ElementType.CAMERA]?.metadata?.videoPrompt || '').trim();
-    const dialogue = extractDialogueLines(shotAction);
-    const frameDescription = String(sourceBundle.frameDescription || shot.description || '').trim();
-    const storyContext = [
-      storyNow.logline ? `Logline: ${String(storyNow.logline).trim()}` : '',
-      storyNow.intent ? `Intent: ${String(storyNow.intent).trim()}` : '',
-      seq.context ? `Sequence context: ${String(seq.context).trim()}` : '',
-      shot.description ? `Shot dramatic beat: ${String(shot.description).trim()}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
-    const actingDirection = buildActingDirection({
-      frameDescription,
-      script: shotAction,
-      shotDescription: String(shot.description || '').trim(),
-      sequenceContext: String(seq.context || '').trim(),
-      dialogue,
+    const cameraMeta = ((shot.elements as any)?.[ElementType.CAMERA]?.metadata || {}) as Record<string, any>;
+    const authoredVideoPrompt = String(cameraMeta.videoPrompt || '').trim();
+    const isPromptReady = Boolean(cameraMeta.videoPromptReady);
+    const readySourceImageUrl = String(cameraMeta.videoPromptSourceImageUrl || '').trim();
+    const needsLinearEnrich = !authoredVideoPrompt || !isPromptReady || readySourceImageUrl !== imageUrl;
+    const composed = composeRuntimeVideoPrompt({
+      story: storyNow,
+      seq,
+      shot,
+      sourceBundle,
+      authoredPrompt: authoredVideoPrompt,
     });
-    const inferredStyleTranslation = buildStylePromptTranslation({
-      texts: [storyNow.intent, styleGuide, location?.visualStyle, cameraPrompt, lightingPrompt, shot.description],
-      maxItems: 6,
-    });
-
-    const { prompt: videoPrompt } = composeStructuredVideoPrompt({
-      sourceKind: sourceBundle.sourceKind,
-      referenceFrames: sourceBundle.referenceFrames,
-      frameDescription,
-      storyContext,
-      actingDirection,
-      cameraPrompt,
-      lightingPrompt,
-      audioPrompt,
-      style: styleGuide || String(location?.visualStyle || '').trim(),
-      styleTranslation: inferredStyleTranslation,
-      dialogue,
-      directorNotes: authoredVideoPrompt,
-      constraints: [
-        'Preserve character identity and wardrobe continuity.',
-        'Avoid flicker, morphing artifacts, and geometry instability.',
-      ],
-      maxChars: 7200,
-    });
+    const videoPrompt = needsLinearEnrich ? composed.videoPrompt : authoredVideoPrompt;
+    if (!videoPrompt) {
+      addToast('Start Production blocked: video prompt not ready, regenerate keyframe or retry.', 'info');
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : {
+                        ...x,
+                        elements: {
+                          ...x.elements,
+                          [ElementType.CAMERA]: {
+                            ...x.elements[ElementType.CAMERA],
+                            metadata: {
+                              ...(x.elements?.[ElementType.CAMERA]?.metadata || {}),
+                              videoPromptReady: false,
+                              videoPromptReadyReason: 'blocked-missing-prompt',
+                              videoPromptSourceImageUrl: imageUrl,
+                              videoPromptReadyAt: now,
+                            },
+                          },
+                        },
+                      },
+                ),
+              },
+        ),
+      }));
+      return;
+    }
 
     const durationSeconds = normalizeShotDurationSeconds(shot.duration);
     const productionKey = `${storyNow.id}|${args.sequenceId}|${args.shotId}`;
@@ -1731,6 +1763,10 @@ export default function App() {
                           metadata: {
                             ...(x.elements?.[ElementType.CAMERA]?.metadata || {}),
                             videoPrompt,
+                            videoPromptReady: true,
+                            videoPromptReadyReason: needsLinearEnrich ? 'video-preflight-linear-enrich' : 'precomputed',
+                            videoPromptSourceImageUrl: imageUrl,
+                            videoPromptReadyAt: now,
                             runtimeVideoPromptGeneratedAt: now,
                           },
                         },
@@ -1760,20 +1796,20 @@ export default function App() {
         generateAudio: true,
         signal: productionController.signal,
         promptSpec: {
-          frameDescription,
+          frameDescription: composed.frameDescription,
           shotDescription: String(shot.description || '').trim(),
-          action: shotAction,
-          actingDirection,
-          storyContext,
-          dialogue,
-          cameraman: cameraPrompt,
+          action: composed.shotAction,
+          actingDirection: composed.actingDirection,
+          storyContext: composed.storyContext,
+          dialogue: composed.dialogue,
+          cameraman: composed.cameraPrompt,
           directorNotes: authoredVideoPrompt,
-          style: styleGuide || String(location?.visualStyle || '').trim(),
-          styleTranslation: inferredStyleTranslation,
-          camera: cameraPrompt,
+          style: composed.styleGuide || composed.locationStyle,
+          styleTranslation: '',
+          camera: composed.cameraPrompt,
           composition: `Aspect ratio ${aspectRatio}`,
-          mood: lightingPrompt,
-          audio: audioPrompt,
+          mood: composed.lightingPrompt,
+          audio: composed.audioPrompt,
           referenceFrames: sourceBundle.referenceFrames.slice(0, 9),
           constraints: [
             'Preserve character identity and wardrobe continuity.',
@@ -1806,13 +1842,13 @@ export default function App() {
                           operationName: out.operationName,
 	                          metadata: {
 	                            prompt: videoPrompt,
-	                            sourceImageUrl: imageUrl,
-	                            sourceShotVersionId: String(activeVersion?.id || ''),
+                              sourceImageUrl: imageUrl,
+                              sourceShotVersionId: String(activeVersion?.id || ''),
                               referenceImageUrls: sourceBundle.referenceImageUrls,
-                              frameDescription,
-                              actingDirection,
-	                          },
-	                        };
+                              frameDescription: composed.frameDescription,
+                              actingDirection: composed.actingDirection,
+                          },
+                        };
                         return {
                           ...x,
                           production: {
