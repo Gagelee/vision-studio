@@ -1,6 +1,7 @@
 import { ModelRuntimeSettings, Shot } from '../../../types';
 import { addDebugEvent } from '../../debug/eventLog';
 import { buildShotImagePrompt } from '../prompts';
+import { getVisionUserRequestHeaders } from '../../userSession';
 
 export interface ImageReference {
   url: string;
@@ -68,7 +69,7 @@ export const generateImageFromPrompt = async (req: {
     );
     const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({
         prompt: String(req.prompt || ''),
         promptSpec: req.promptSpec,

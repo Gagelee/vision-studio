@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ElementType, Sequence, Shot, Location, AspectRatio } from '../../types';
 import { ShotCard } from './ShotCard';
 import { Clock, Plus, Maximize2, Minimize2, Play, LayoutGrid, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2, List, ScrollText, Copy, Check, Pencil } from 'lucide-react';
+import { getShotPreviewImageUrl } from '../../lib/ai/assetRefs';
 
 interface StageViewProps {
   sequence: Sequence;
@@ -52,8 +53,16 @@ export const StageView: React.FC<StageViewProps> = ({
   }, [sequence.id, sequence.title]);
 
   const groupedScenes = useMemo(() => {
+    const canonicalShots = Array.isArray(sequence.shots) ? sequence.shots : [];
+    const byShotId = new Map(canonicalShots.map((s) => [String(s.id || ''), s]));
     const raw = Array.isArray((sequence as any)?.scenes) ? (sequence as any).scenes : [];
-    if (raw.length) return raw;
+    if (raw.length) {
+      return raw.map((scene: any) => {
+        const shotList = Array.isArray(scene?.shots) ? scene.shots : [];
+        const shots = shotList.map((shot: Shot) => byShotId.get(String(shot?.id || '')) || shot);
+        return { ...scene, shots };
+      });
+    }
     return [{ id: `${sequence.id}-scene-1`, title: 'Scene 1', shots: sequence.shots || [] }];
   }, [sequence]);
 
@@ -385,7 +394,7 @@ export const StageView: React.FC<StageViewProps> = ({
                         className="relative w-24 aspect-video rounded-lg overflow-hidden border-2 border-zinc-200 dark:border-zinc-800 cursor-pointer hover:border-zinc-500 dark:hover:border-zinc-500 group shrink-0 transition-all"
                       >
                       <img
-                        src={shot.thumbnailUrl}
+                        src={getShotPreviewImageUrl(shot)}
                         className="w-full h-full object-cover grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100 transition-all cursor-pointer"
                         onClick={(e) => {
                           e.stopPropagation();

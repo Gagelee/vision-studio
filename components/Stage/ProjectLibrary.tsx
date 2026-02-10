@@ -1,10 +1,11 @@
 import React from 'react';
-import { Plus, FolderOpen, Trash2, Copy, Pencil, Settings, Sun, Moon, Bug } from 'lucide-react';
+import { Plus, FolderOpen, Trash2, Copy, Pencil, Settings, Sun, Moon, Bug, Upload, Download } from 'lucide-react';
 import { Story } from '../../types';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 
 interface ProjectLibraryProps {
   projects: Story[];
+  currentUserId?: string;
   theme: 'dark' | 'light';
   toggleTheme: () => void;
   onOpenProject: (projectId: string) => void;
@@ -13,6 +14,8 @@ interface ProjectLibraryProps {
   onRenameProject: (projectId: string) => void;
   onDuplicateProject: (projectId: string) => void;
   onDeleteProject: (projectId: string) => void;
+  onExportProject: (projectId: string) => void;
+  onImportProjects: () => void;
   onOpenAiSettings: () => void;
   onOpenDebug: () => void;
 }
@@ -25,6 +28,7 @@ const formatDateTime = (ts?: number) => {
 
 export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
   projects,
+  currentUserId,
   theme,
   toggleTheme,
   onOpenProject,
@@ -33,6 +37,8 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
   onRenameProject,
   onDuplicateProject,
   onDeleteProject,
+  onExportProject,
+  onImportProjects,
   onOpenAiSettings,
   onOpenDebug,
 }) => {
@@ -49,16 +55,18 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
             <div className="leading-tight">
               <div className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400">Shopee Vision Studio</div>
               <div className="text-sm font-bold tracking-tight">Project Library</div>
+              <div className="text-[10px] font-mono tracking-wide text-zinc-400">User: {String(currentUserId || 'local')}</div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={onOpenDebug}
-              className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors text-zinc-600 dark:text-zinc-300"
+              className="px-2.5 py-2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors text-zinc-600 dark:text-zinc-300 inline-flex items-center gap-1.5"
               title="Debug (Cmd/Ctrl+Shift+D)"
             >
               <Bug className="w-4 h-4" />
+              <span className="hidden sm:inline text-[11px] font-bold tracking-wide">Debug</span>
             </button>
             <button
               onClick={onOpenAiSettings}
@@ -80,6 +88,14 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
             >
               <Plus className="w-4 h-4" />
               Start Project
+            </button>
+            <button
+              onClick={onImportProjects}
+              className="ml-1 flex items-center gap-2 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 text-zinc-700 dark:text-zinc-200 text-[11px] font-bold uppercase tracking-wider hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-all"
+              title="Import Project JSON"
+            >
+              <Upload className="w-4 h-4" />
+              Import
             </button>
           </div>
         </div>
@@ -184,6 +200,13 @@ export const ProjectLibrary: React.FC<ProjectLibraryProps> = ({
                           title="Delete"
                         >
                           <Trash2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => onExportProject(p.id)}
+                          className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-800 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
+                          title="Export"
+                        >
+                          <Download className="w-4 h-4" />
                         </button>
                       </div>
                     </div>

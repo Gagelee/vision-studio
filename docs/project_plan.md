@@ -22,9 +22,11 @@ Last Updated: 2026-02-04
 - 占位图不再作为 variants 展示（当有真实生成资产时）。
 - 资产流水线：严格生成顺序与阻断（KV → env → character → look → shot），下游只会引用已成功生成的上游资产（active variant）。
 - Shot 版本：Shot 版本列表与切换（真实写入 Story state）。
+- Storyboard 预览：Stage/mini-map 预览优先使用最后一个真实 keyframe（生成中不会回退到 placeholder）。
 - 主题与沉浸：Dark/Light、Cinema Mode（全屏）等展示能力。
 - 图片资产支持点击放大查看（Lightbox）。
-- 可观测性：Debug 面板支持 Event Log + LLM Trace（含 promptId/promptVersion）+ Agent/Prompt Registry。
+- 可观测性：Debug 面板支持 Event Log + LLM Trace（含 promptId/promptVersion/usage）+ Session Token 统计 + Agent/Prompt Registry。
+- 模型/网关策略（dev proxy）：文字 Agent（scaffold/direct）强制走 Compass；图片生成并发直连 Gemini + Compass 网关首个成功返回；Veo 视频生成强制直连 Gemini（不走 Compass）。
 - Multi-agent 失败不再静默 fallback：在 UI 中可选择 Retry 或显式 single-call fallback。
 
 ### 2.2 关键缺口（从 Demo → 可用产品必须补齐）
@@ -122,6 +124,7 @@ Last Updated: 2026-02-04
 ### Iteration 2：Scaffolding Agent（M1）
 - [x] 设计 API 协议（请求：intent/ratio/kv；响应：结构化 story + steps）
 - [x] Agent Plan UI：展示 steps、进度、失败重试
+- [x] Scene 切分结论：scaffold 为每个 story part 输出 `sceneDecision`（不强制切，但必须有结论与理由）。
 - [ ] Apply 机制：Plan → Preview → Apply（写入项目状态 + 记录 operation）
 
 ### Iteration 3：工作流可控与 CRUD（M2）

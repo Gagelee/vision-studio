@@ -3,6 +3,7 @@ import { AgentPlan, AiSettings, AspectRatio, ModelRuntimeSettings, Story } from 
 import { addDebugEvent } from '../../debug/eventLog';
 import { AgentApiError, isAgentApiError, readErrorBody } from './apiError';
 import { normalizeStorySceneModel } from '../../story/sceneModel';
+import { getVisionUserRequestHeaders } from '../../userSession';
 
 export interface ScaffoldProjectRequest {
   intent: string;
@@ -84,7 +85,7 @@ export const scaffoldProjectStream = async (
     addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'POST (stream)', data: { url: endpoint, body } });
     const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify(body),
       signal: controller.signal,
     }).catch((e) => {
@@ -180,7 +181,7 @@ const isUsefulScaffold = (story: Story | undefined | null) => {
 
 export const createLocalMockProject = (intent: string, aspectRatio: AspectRatio, keyVisualUrl?: string): ScaffoldProjectResponse => {
   const now = Date.now();
-  const id = `proj-${now}`;
+  const id = `proj-${now}-${Math.random().toString(16).slice(2, 8)}`;
   const title = intent.trim().split(/\s+/).slice(0, 4).join(' ') || 'New Masterpiece';
 
   const story: Story = {
@@ -230,7 +231,7 @@ const postJson = async <T>(url: string, body: unknown, timeoutMs: number): Promi
     addDebugEvent({ level: 'info', scope: 'agent.scaffold', message: 'POST', data: { url, body } });
     const res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
         body: JSON.stringify(body),
         signal: controller.signal,
       }).catch((e) => {

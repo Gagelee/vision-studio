@@ -28,6 +28,11 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   keyVisualUrl,
   styleGuide,
 }) => {
+  const persistDraftIfDirty = (nextDraft?: Character) => {
+    const current = nextDraft || draftRef.current;
+    if (JSON.stringify(current) === JSON.stringify(normalizedCharacter)) return;
+    onSave(current);
+  };
   const seedAvatarVersions = (c: Character) => {
     const existing = Array.isArray((c as any).avatarVersions) ? (c as any).avatarVersions : [];
     if (existing.length) return { versions: existing, activeId: (c as any).activeAvatarVersionId || existing[existing.length - 1]?.id || '' };
@@ -100,6 +105,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   const [generatingLookIds, setGeneratingLookIds] = useState<Record<string, boolean>>({});
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [pendingAvatarVariantId, setPendingAvatarVariantId] = useState<string | null>(null);
+  const prevActiveAvatarVersionIdRef = useRef<string>('');
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
   
   useEffect(() => {
@@ -113,6 +119,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     lastCharacterIdRef.current = nextId;
     if (changedCharacter) {
       setDraft(normalizedCharacter);
+      prevActiveAvatarVersionIdRef.current = String((normalizedCharacter as any)?.activeAvatarVersionId || '').trim();
       return;
     }
     const dirty = JSON.stringify(draftRef.current) !== JSON.stringify(normalizedCharacter);
@@ -132,6 +139,28 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
     (character as any)?.avatarVersions,
     character.looks,
   ]);
+
+  const isLookBoundToAvatar = (look: CharacterLook, avatarVersionId: string) => {
+    const activeId = String((look as any)?.activePreviewVersionId || '').trim();
+    if (!activeId || !avatarVersionId) return false;
+    const versions = Array.isArray((look as any)?.previewVersions) ? (look as any).previewVersions : [];
+    const active = versions.find((v: any) => String(v?.id || '') === activeId);
+    return String(active?.metadata?.sourceAvatarVersionId || '').trim() === String(avatarVersionId || '').trim();
+  };
+
+  useEffect(() => {
+    const currentAvatarVersionId = String((draft as any)?.activeAvatarVersionId || '').trim();
+    const prevAvatarVersionId = String(prevActiveAvatarVersionIdRef.current || '').trim();
+    if (!prevAvatarVersionId) {
+      prevActiveAvatarVersionIdRef.current = currentAvatarVersionId;
+      return;
+    }
+    if (!currentAvatarVersionId || currentAvatarVersionId === prevAvatarVersionId) return;
+    const looks = Array.isArray(draft.looks) ? draft.looks : [];
+    const hasUnboundLooks = looks.length > 0 && looks.some((lk) => !isLookBoundToAvatar(lk, currentAvatarVersionId));
+    if (hasUnboundLooks) setPendingAvatarVariantId(currentAvatarVersionId);
+    prevActiveAvatarVersionIdRef.current = currentAvatarVersionId;
+  }, [draft.activeAvatarVersionId, draft.looks]);
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(normalizedCharacter);
   const isLocked = draft.status === 'locked';
@@ -654,6 +683,22 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                             )}
 	                      </div>
                       <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6 space-y-5">
+                        {isLocked && (
+                          <div className="flex items-center justify-between gap-2 text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-2xl p-3">
+                            <span>Character is locked. Unlock to edit base identity.</span>
+                            <button
+                              type="button"
+                              className="px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-amber-400 text-black"
+                              onClick={() => {
+                                const next = { ...draft, status: 'draft' as const };
+                                setDraft(next);
+                                onSave(next);
+                              }}
+                            >
+                              Unlock now
+                            </button>
+                          </div>
+                        )}
                         <div>
                           <label className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400 mb-2">
                             <Wand2 className="w-4 h-4" /> Identity Constitution
@@ -662,6 +707,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                             disabled={isLocked}
                             value={draft.description}
                             onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                            onBlur={() => persistDraftIfDirty()}
                             className="w-full h-28 bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-sm text-zinc-200 leading-relaxed focus:outline-none focus:border-indigo-500/50 resize-none transition-all disabled:opacity-50"
                             placeholder="Describe permanent facial features, body type, and aura..."
                           />
@@ -953,6 +999,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                         disabled={isLocked}
                         value={draft.name}
                         onChange={(e) => setDraft({...draft, name: e.target.value})}
+                        onBlur={() => persistDraftIfDirty()}
                         className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white font-bold"
                     />
                 </div>
@@ -960,7 +1007,11 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
                 <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
                     <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3 block">Approval Status</label>
                     <button 
-                        onClick={() => setDraft({...draft, status: isLocked ? 'draft' : 'locked'})}
+                        onClick={() => {
+                          const next = { ...draft, status: (isLocked ? 'draft' : 'locked') as any };
+                          setDraft(next);
+                          onSave(next);
+                        }}
                         className={`w-full py-2.5 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all ${isLocked ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-zinc-800 text-zinc-400 border border-zinc-700'}`}
                     >
                         {isLocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}

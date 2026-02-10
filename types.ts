@@ -130,6 +130,75 @@ export interface ShotVersion {
       temperature?: number;
     };
     aspectRatio?: string;
+    keyframe?: {
+      mode?: 'contact_sheet' | 'single_frame';
+      panelCount?: 4 | 9;
+      grid?: '2x2' | '3x3';
+    };
+    refine?: {
+      prompt?: string;
+      describe?: {
+        description?: string;
+        keySubjects?: string[];
+        environment?: string;
+        composition?: string;
+        camera?: string;
+        lighting?: string;
+        style?: string;
+        constraints?: string[];
+      };
+    };
+    source?: {
+      sourceType?: 'single' | 'grid_panel_group' | 'grid_panel' | 'manual_group' | 'unknown';
+      sourceGridId?: string;
+      sourcePanelGroupId?: string;
+      mergedFromVersionIds?: string[];
+      originalImageUrl?: string;
+      refinedImageUrl?: string;
+      refinedAt?: number;
+      sourceDescription?: string;
+      refine?: {
+        describe?: {
+          description?: string;
+          keySubjects?: string[];
+          environment?: string;
+          composition?: string;
+          camera?: string;
+          lighting?: string;
+          style?: string;
+          constraints?: string[];
+        };
+      };
+      panelIndex?: number;
+      panelBBox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
+    };
+    panelGroup?: {
+      kind?: 'stack';
+      activeIndex?: number;
+      panels?: Array<{
+        index: number;
+        imageUrl: string;
+        originalImageUrl?: string;
+        refinedImageUrl?: string;
+        refinedAt?: number;
+        refine?: {
+          prompt?: string;
+          references?: Array<{ url: string; label?: string }>;
+          settings?: { provider?: string; model?: string; temperature?: number };
+          describe?: {
+            description?: string;
+            keySubjects?: string[];
+            environment?: string;
+            composition?: string;
+            camera?: string;
+            lighting?: string;
+            style?: string;
+            constraints?: string[];
+          };
+        };
+        bbox?: { x: number; y: number; w: number; h: number; unit: 'norm' };
+      }>;
+    };
   };
 }
 
@@ -144,6 +213,9 @@ export interface ShotProductionVariant {
     prompt?: string;
     sourceImageUrl?: string;
     sourceShotVersionId?: string;
+    referenceImageUrls?: string[];
+    frameDescription?: string;
+    actingDirection?: string;
   };
 }
 
@@ -200,6 +272,13 @@ export interface Sequence {
   // A sequence may contain multiple locations, and locations may intercut within it.
   title: string;
   context: string;
+  // Scaffold decision metadata: whether and why to split into multiple scenes.
+  sceneDecision?: {
+    split: boolean;
+    sceneCount: number;
+    rationale: string;
+    criteria?: string[];
+  };
   // Primary future structure.
   scenes: Scene[];
   // Flattened cache used by current UI modules; derived from scenes.
@@ -208,6 +287,14 @@ export interface Sequence {
 
 export interface Story {
   id: string;
+  ownerUserId?: string;
+  source?: {
+    type: 'local' | 'imported';
+    importedAt?: number;
+    importedByUserId?: string;
+    exportedByUserId?: string;
+    sourceFileName?: string;
+  };
   title: string;
   logline: string;
   // Textual style bible used to guide all asset generation (preferred over using KV image as a reference).

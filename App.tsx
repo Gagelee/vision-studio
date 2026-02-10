@@ -24,10 +24,13 @@ import { runDirectorCommand, runDirectorCommandStream, type DirectorCommandRespo
 import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
-import { isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
+import { getCharacterActiveAvatarUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
 import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, buildAssetJobs, executeAssetJobs, type AssetJob } from './lib/ai/assetExecutor';
 import { generateVideoFromImage } from './lib/ai/video/generate';
 import { buildStylePromptTranslation } from './lib/ai/styleIntent';
+import { buildActingDirection, composeStructuredVideoPrompt, extractDialogueLines, resolveVideoSourceBundle } from './lib/ai/videoPromptComposer';
+import { getOrCreateVisionUserId, getVisionUserRequestHeaders } from './lib/userSession';
+import { appendProjectTransferLog, buildProjectExportEnvelope, parseProjectImportText } from './lib/projectTransfer';
 import { IMAGES } from './constants';
 import {
   AgentAction,
@@ -67,8 +70,62 @@ interface PendingInteractionGeneration {
 }
 
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
-const STALE_GENERATION_MAX_AGE_MS = 5 * 60_000;
-const STALE_PRODUCTION_MAX_AGE_MS = 20 * 60_000;
+const STALE_GENERATION_MAX_AGE_MS = 30 * 60_000;
+const STALE_PRODUCTION_MAX_AGE_MS = 60 * 60_000;
+const GENERATED_PREFIX = '/__generated__/';
+
+const collectGeneratedAssetUrlsFromStory = (story: Story): string[] => {
+  const out = new Set<string>();
+  const push = (raw: unknown) => {
+    const v = String(raw || '').trim();
+    if (!v || !v.startsWith(GENERATED_PREFIX)) return;
+    out.add(v.split('?')[0].split('#')[0]);
+  };
+
+  push((story as any)?.keyVisualUrl);
+  for (const kv of (story as any)?.keyVisualVersions || []) push((kv as any)?.imageUrl);
+
+  for (const loc of story.locations || []) {
+    push((loc as any)?.previewUrl);
+    for (const v of (loc as any)?.previewVersions || []) push((v as any)?.imageUrl);
+  }
+
+  for (const ch of story.characters || []) {
+    push((ch as any)?.avatarUrl);
+    for (const v of (ch as any)?.avatarVersions || []) push((v as any)?.imageUrl);
+    for (const lk of ch.looks || []) {
+      push((lk as any)?.previewUrl);
+      for (const v of (lk as any)?.previewVersions || []) push((v as any)?.imageUrl);
+    }
+  }
+
+  for (const seq of story.sequences || []) {
+    for (const sh of seq.shots || []) {
+      push((sh as any)?.thumbnailUrl);
+      for (const v of (sh as any)?.versions || []) {
+        push((v as any)?.imageUrl);
+        const meta: any = (v as any)?.metadata || {};
+        for (const r of meta?.references || []) push((r as any)?.url);
+        push(meta?.source?.originalImageUrl);
+        push(meta?.source?.refinedImageUrl);
+        for (const p of meta?.panelGroup?.panels || []) {
+          push((p as any)?.imageUrl);
+          push((p as any)?.originalImageUrl);
+          push((p as any)?.refinedImageUrl);
+          for (const r of (p as any)?.refine?.references || []) push((r as any)?.url);
+        }
+      }
+      for (const pv of (sh as any)?.production?.variants || []) {
+        push((pv as any)?.videoUrl);
+        push((pv as any)?.metadata?.sourceImageUrl);
+        for (const r of (pv as any)?.metadata?.referenceImageUrls || []) push(r);
+      }
+      push((sh as any)?.production?.videoUrl);
+    }
+  }
+
+  return Array.from(out);
+};
 
 const assetJobKey = (projectId: string, job: AssetJob): string => {
   if (job.kind === 'masterkv') return `${projectId}|masterkv`;
@@ -112,26 +169,43 @@ const recoverProductionStateIfStale = (production: any, now: number, fallbackTs:
   };
 };
 
-const recoverStoryStaleGenerationStates = (story: Story, now: number): { next: Story; fixedCount: number } => {
+const recoverStoryStaleGenerationStates = (
+  story: Story,
+  now: number,
+  opts?: { activeAssetKeys?: Set<string>; activeProductionKeys?: Set<string> },
+): { next: Story; fixedCount: number } => {
   const fallbackTs =
     (typeof story.updatedAt === 'number' && story.updatedAt) ||
     (typeof story.createdAt === 'number' && story.createdAt) ||
     now;
+  const activeAssetKeys = opts?.activeAssetKeys || new Set<string>();
+  const activeProductionKeys = opts?.activeProductionKeys || new Set<string>();
+  const storyId = String(story.id || '');
   let fixedCount = 0;
 
-  const master = recoverAssetStateIfStale((story as any).masterKvState, now, fallbackTs);
+  const master = activeAssetKeys.has(`${storyId}|masterkv`)
+    ? { next: (story as any).masterKvState, fixed: false }
+    : recoverAssetStateIfStale((story as any).masterKvState, now, fallbackTs);
   if (master.fixed) fixedCount += 1;
 
   const locations = (story.locations || []).map((loc) => {
+    const locKey = `${storyId}|location|${String((loc as any)?.id || '')}`;
+    if (activeAssetKeys.has(locKey)) return loc;
     const rec = recoverAssetStateIfStale((loc as any).assetState, now, fallbackTs);
     if (rec.fixed) fixedCount += 1;
     return rec.fixed ? { ...loc, assetState: rec.next } : loc;
   });
 
   const characters = (story.characters || []).map((ch) => {
-    const rec = recoverAssetStateIfStale((ch as any).assetState, now, fallbackTs);
+    const charId = String((ch as any)?.id || '');
+    const charKey = `${storyId}|character|${charId}`;
+    const rec = activeAssetKeys.has(charKey)
+      ? { next: (ch as any).assetState, fixed: false }
+      : recoverAssetStateIfStale((ch as any).assetState, now, fallbackTs);
     if (rec.fixed) fixedCount += 1;
     const looks = (ch.looks || []).map((lk) => {
+      const lookKey = `${storyId}|look|${charId}|${String((lk as any)?.id || '')}`;
+      if (activeAssetKeys.has(lookKey)) return lk;
       const lookRec = recoverAssetStateIfStale((lk as any).assetState, now, fallbackTs);
       if (lookRec.fixed) fixedCount += 1;
       return lookRec.fixed ? { ...lk, assetState: lookRec.next } : lk;
@@ -142,12 +216,20 @@ const recoverStoryStaleGenerationStates = (story: Story, now: number): { next: S
 
   const sequences = (story.sequences || []).map((seq) => {
     const shots = (seq.shots || []).map((shot) => {
-      const rec = recoverAssetStateIfStale((shot as any).assetState, now, fallbackTs);
-      const prodRec = recoverProductionStateIfStale((shot as any).production, now, fallbackTs);
+      const shotKey = `${storyId}|shot|${String((seq as any)?.id || '')}|${String((shot as any)?.id || '')}`;
+      const productionKey = `${storyId}|${String((seq as any)?.id || '')}|${String((shot as any)?.id || '')}`;
+      const rec = activeAssetKeys.has(shotKey)
+        ? { next: (shot as any).assetState, fixed: false }
+        : recoverAssetStateIfStale((shot as any).assetState, now, fallbackTs);
+      const prodRec = activeProductionKeys.has(productionKey)
+        ? { next: (shot as any).production, fixed: false }
+        : recoverProductionStateIfStale((shot as any).production, now, fallbackTs);
       const shotTs =
         (typeof (shot as any)?.assetState?.lastAttemptAt === 'number' && (shot as any).assetState.lastAttemptAt) || fallbackTs;
       const staleAi =
-        (shot.aiState === 'rendering' || shot.aiState === 'thinking') && now - shotTs >= STALE_GENERATION_MAX_AGE_MS;
+        !activeAssetKeys.has(shotKey) &&
+        (shot.aiState === 'rendering' || shot.aiState === 'thinking') &&
+        now - shotTs >= STALE_GENERATION_MAX_AGE_MS;
       if (rec.fixed || staleAi || prodRec.fixed) {
         if (rec.fixed) fixedCount += 1;
         if (staleAi) fixedCount += 1;
@@ -191,15 +273,32 @@ const mergeIncomingStoryPreferRealPreviews = (incoming: Story, existing?: Story 
     return n || p;
   };
   const mergeVersions = (nextVersions: any[], prevVersions: any[]) => {
-    const out: any[] = [];
-    const seen = new Set<string>();
-    for (const v of [...(Array.isArray(nextVersions) ? nextVersions : []), ...(Array.isArray(prevVersions) ? prevVersions : [])]) {
+    const rank = (v: any) => {
+      const type = String(v?.type || '').trim();
+      const url = String(v?.imageUrl || '').trim();
+      const nonPlaceholderType = type !== 'placeholder';
+      const realUrl = Boolean(url) && !isLikelyPlaceholderImageUrl(url);
+      return (realUrl ? 2 : 0) + (nonPlaceholderType ? 1 : 0);
+    };
+    const pickBetter = (a: any, b: any) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      if (rb > ra) return b;
+      if (ra > rb) return a;
+      const ta = Number(a?.createdAt || 0);
+      const tb = Number(b?.createdAt || 0);
+      if (tb > ta) return b;
+      return a;
+    };
+    const map = new Map<string, any>();
+    const all = [...(Array.isArray(nextVersions) ? nextVersions : []), ...(Array.isArray(prevVersions) ? prevVersions : [])];
+    for (const v of all) {
       const key = String(v?.id || '') || String(v?.imageUrl || '');
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      out.push(v);
+      if (!key) continue;
+      const cur = map.get(key);
+      map.set(key, cur ? pickBetter(cur, v) : v);
     }
-    return out;
+    return Array.from(map.values()).sort((a: any, b: any) => Number(a?.createdAt || 0) - Number(b?.createdAt || 0));
   };
   const nextSequences = (incoming.sequences || []).map((seq) => {
     const prevSeq = (existing.sequences || []).find((s) => s.id === seq.id);
@@ -965,6 +1064,8 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
 };
 
 export default function App() {
+  const currentUserIdRef = useRef<string>(getOrCreateVisionUserId());
+  const currentUserId = currentUserIdRef.current;
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
@@ -977,13 +1078,13 @@ export default function App() {
   >(null);
   const [pendingDirectorSingleFallbackArmed, setPendingDirectorSingleFallbackArmed] = useState(false);
 
-  const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace());
+  const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace(currentUserId));
   const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
-  const [screen, setScreen] = useState<Screen>(() => (loadWorkspace().activeProjectId ? 'project' : 'library'));
+  const [screen, setScreen] = useState<Screen>(() => (loadWorkspace(currentUserId).activeProjectId ? 'project' : 'library'));
 
   const [selection, setSelection] = useState<SelectionState>(() => ({
     type: 'story',
-    id: loadWorkspace().activeProjectId || '',
+    id: loadWorkspace(currentUserId).activeProjectId || '',
   }));
 
   const [agentHistoryByProject, setAgentHistoryByProject] = useState<Record<string, AgentLogEntry[]>>({});
@@ -999,7 +1100,12 @@ export default function App() {
     steps: Array<{ agent: string; ok?: boolean; ms?: number; error?: string; status?: string }>;
   }>(null);
   const [pendingInteractionGeneration, setPendingInteractionGeneration] = useState<PendingInteractionGeneration | null>(null);
+  const [viewport, setViewport] = useState<{ width: number; height: number }>(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1440,
+    height: typeof window !== 'undefined' ? window.innerHeight : 900,
+  }));
   const staleRecoveryDoneRef = useRef(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const cancelledAssetJobKeysRef = useRef<Set<string>>(new Set());
   const assetJobAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const shotProductionAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -1032,6 +1138,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
     return () => {
       for (const ctrl of assetJobAbortControllersRef.current.values()) ctrl.abort();
       assetJobAbortControllersRef.current.clear();
@@ -1054,10 +1166,12 @@ export default function App() {
     staleRecoveryDoneRef.current = true;
     if (!Array.isArray(workspace.projects) || workspace.projects.length === 0) return;
     const now = Date.now();
+    const activeAssetKeys = new Set(Array.from(assetJobAbortControllersRef.current.keys()));
+    const activeProductionKeys = new Set(Array.from(shotProductionAbortControllersRef.current.keys()));
     let recovered = 0;
     let changed = false;
     const nextProjects = workspace.projects.map((p) => {
-      const r = recoverStoryStaleGenerationStates(p, now);
+      const r = recoverStoryStaleGenerationStates(p, now, { activeAssetKeys, activeProductionKeys });
       if (r.fixedCount > 0) {
         changed = true;
         recovered += r.fixedCount;
@@ -1075,12 +1189,14 @@ export default function App() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
+      const activeAssetKeys = new Set(Array.from(assetJobAbortControllersRef.current.keys()));
+      const activeProductionKeys = new Set(Array.from(shotProductionAbortControllersRef.current.keys()));
       setWorkspace((prev) => {
         if (!Array.isArray(prev.projects) || prev.projects.length === 0) return prev;
         const now = Date.now();
         let changed = false;
         const projects = prev.projects.map((p) => {
-          const r = recoverStoryStaleGenerationStates(p, now);
+          const r = recoverStoryStaleGenerationStates(p, now, { activeAssetKeys, activeProductionKeys });
           if (r.fixedCount > 0) {
             changed = true;
             return r.next;
@@ -1145,7 +1261,7 @@ export default function App() {
   };
 
   const cancelAssetJobs = (matcher: (key: string) => boolean) => {
-    for (const key of Array.from(assetJobAbortControllersRef.current.keys())) {
+    for (const key of Array.from(assetJobAbortControllersRef.current.keys()) as string[]) {
       if (!matcher(key)) continue;
       cancelledAssetJobKeysRef.current.add(key);
       const ctrl = assetJobAbortControllersRef.current.get(key);
@@ -1155,7 +1271,7 @@ export default function App() {
   };
 
   const cancelShotProduction = (matcher: (key: string) => boolean) => {
-    for (const key of Array.from(shotProductionAbortControllersRef.current.keys())) {
+    for (const key of Array.from(shotProductionAbortControllersRef.current.keys()) as string[]) {
       if (!matcher(key)) continue;
       const ctrl = shotProductionAbortControllersRef.current.get(key);
       ctrl?.abort();
@@ -1166,6 +1282,33 @@ export default function App() {
   const queueKvConsoleAction = (type: 'generate' | 'accept' | 'discard' | 'regenerate', projectId: string) => {
     setSelection({ type: 'story', id: projectId });
     setKvConsoleActionRequest({ id: Date.now() + Math.floor(Math.random() * 1000), type });
+  };
+
+  const deleteLocalGeneratedAssets = async (urls: string[]) => {
+    const unique = Array.from(new Set((urls || []).map((u) => String(u || '').trim()).filter(Boolean)));
+    if (!unique.length) return { deleted: 0, missing: 0, rejected: 0 };
+    try {
+    const res = await fetch('/api/local-assets/delete', {
+        method: 'POST',
+        headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ urls: unique }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as any;
+      return {
+        deleted: Number(data?.deleted || 0),
+        missing: Number(data?.missing || 0),
+        rejected: Number(data?.rejected || 0),
+      };
+    } catch (e) {
+      addDebugEvent({
+        level: 'warn',
+        scope: 'local.assets',
+        message: 'Failed to delete local generated assets',
+        data: { error: e instanceof Error ? e.message : String(e), count: unique.length },
+      });
+      return null;
+    }
   };
 
   // ----- Workspace / Project Library -----
@@ -1195,7 +1338,7 @@ export default function App() {
     addToast('Project renamed', 'success');
   };
 
-  const handleDeleteProject = (projectId: string) => {
+  const handleDeleteProject = async (projectId: string) => {
     const existing = workspace.projects.find((p) => p.id === projectId);
     if (!existing) return;
     if (!window.confirm(`Delete project "${existing.title}"? This cannot be undone.`)) return;
@@ -1219,7 +1362,16 @@ export default function App() {
       return { ...prev, projects: nextProjects, activeProjectId };
     });
 
+    const deletionStats = await deleteLocalGeneratedAssets(collectGeneratedAssetUrlsFromStory(existing));
     if (workspace.activeProjectId === projectId) setScreen('library');
+    if (deletionStats) {
+      const extra =
+        deletionStats.missing || deletionStats.rejected
+          ? ` (${deletionStats.deleted} deleted, ${deletionStats.missing} missing, ${deletionStats.rejected} skipped)`
+          : ` (${deletionStats.deleted} files deleted)`;
+      addToast(`Project deleted${extra}`, 'info');
+      return;
+    }
     addToast('Project deleted', 'info');
   };
 
@@ -1233,13 +1385,15 @@ export default function App() {
     dup.createdAt = now;
     dup.updatedAt = now;
     dup.lastOpenedAt = now;
+    dup.ownerUserId = currentUserId;
+    dup.source = { type: 'local' };
 
     setWorkspace((prev) => ({ ...prev, projects: [dup, ...prev.projects] }));
     addToast('Project duplicated', 'success');
   };
 
   const handleCreateDemoProject = () => {
-    const demo = createDemoProject();
+    const demo = createDemoProject(currentUserId);
     setWorkspace((prev) => ({
       ...prev,
       projects: [demo, ...prev.projects],
@@ -1248,6 +1402,86 @@ export default function App() {
     setSelection({ type: 'story', id: demo.id });
     setScreen('project');
     addToast('Demo project created', 'success');
+  };
+
+  const handleExportProject = (projectId: string) => {
+    const existing = workspace.projects.find((p) => p.id === projectId);
+    if (!existing) return;
+    const envelope = buildProjectExportEnvelope(existing, currentUserId);
+    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
+    const safeTitle = String(existing.title || 'project').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 48) || 'project';
+    const fileName = `${safeTitle}-${new Date().toISOString().slice(0, 10)}.vision-project.json`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    appendProjectTransferLog(currentUserId, {
+      id: `transfer-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      kind: 'export',
+      at: Date.now(),
+      projectId: existing.id,
+      projectTitle: existing.title,
+      fileName,
+      exportedByUserId: currentUserId,
+    });
+    addToast(`Project exported: ${fileName}`, 'success');
+  };
+
+  const handleImportProjects = async (files: FileList | File[]) => {
+    const picked = Array.from(files || []).slice(0, 8);
+    if (!picked.length) return;
+    const importedStories: Story[] = [];
+    for (const file of picked) {
+      try {
+        const text = await file.text();
+        const parsed = parseProjectImportText(text, { currentUserId, sourceFileName: file.name });
+        importedStories.push(...parsed);
+      } catch (e) {
+        addDebugEvent({
+          level: 'warn',
+          scope: 'project.import',
+          message: 'Failed to parse project import file',
+          data: { fileName: file.name, error: e instanceof Error ? e.message : String(e) },
+        });
+      }
+    }
+    if (!importedStories.length) {
+      addToast('Import failed: no valid project found', 'info');
+      return;
+    }
+    const now = Date.now();
+    const usedIds = new Set(workspace.projects.map((p) => p.id));
+    const incoming = importedStories.map((s, idx) => {
+      const next = cloneStory(s);
+      if (!next.id || usedIds.has(next.id)) next.id = `proj-${now}-${idx}-${Math.random().toString(16).slice(2, 6)}`;
+      usedIds.add(next.id);
+      next.ownerUserId = currentUserId;
+      next.source = { ...(next.source || {}), type: 'imported', importedByUserId: currentUserId, importedAt: Date.now() } as any;
+      return next;
+    });
+    setWorkspace((prev) => ({ ...prev, projects: [...incoming, ...prev.projects], activeProjectId: incoming[0]?.id || prev.activeProjectId }));
+    const first = incoming[0];
+    if (first?.id) {
+      setSelection({ type: 'story', id: first.id });
+      setScreen('project');
+    }
+    for (const s of incoming) {
+      appendProjectTransferLog(currentUserId, {
+        id: `transfer-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        kind: 'import',
+        at: Date.now(),
+        projectId: s.id,
+        projectTitle: s.title,
+        importedByUserId: currentUserId,
+        exportedByUserId: s.source?.exportedByUserId,
+        fileName: s.source?.sourceFileName,
+      });
+    }
+    addToast(`Imported ${importedStories.length} project(s)`, 'success');
   };
 
   const upsertWorkspaceProject = (project: Story) => {
@@ -1261,14 +1495,19 @@ export default function App() {
   };
 
   const handleCreationComplete = (project: Story, plan: AgentPlan, debug?: any) => {
+    const ownedProject = {
+      ...project,
+      ownerUserId: project.ownerUserId || currentUserId,
+      source: project.source || { type: 'local' },
+    } as Story;
     setWorkspace((prev) => {
-      const idx = prev.projects.findIndex((p) => p.id === project.id);
+      const idx = prev.projects.findIndex((p) => p.id === ownedProject.id);
       const projects = prev.projects.slice();
-      if (idx < 0) projects.unshift(project);
-      else projects[idx] = mergeIncomingStoryPreferRealPreviews(project, projects[idx]);
-      return { ...prev, projects, activeProjectId: project.id };
+      if (idx < 0) projects.unshift(ownedProject);
+      else projects[idx] = mergeIncomingStoryPreferRealPreviews(ownedProject, projects[idx]);
+      return { ...prev, projects, activeProjectId: ownedProject.id };
     });
-    setSelection({ type: 'story', id: project.id });
+    setSelection({ type: 'story', id: ownedProject.id });
     setScreen('project');
 
     const systemEntry: AgentLogEntry = {
@@ -1282,7 +1521,7 @@ export default function App() {
 
     setAgentHistoryByProject((prev) => ({
       ...prev,
-      [project.id]: [...(prev[project.id] || []), systemEntry],
+      [ownedProject.id]: [...(prev[ownedProject.id] || []), systemEntry],
     }));
 
     const fellBack = Boolean(debug?.error);
@@ -1292,6 +1531,107 @@ export default function App() {
       addToast('Project scaffolded by Director AI', 'success');
     }
 
+  };
+
+  const hydrateShotVideoPromptFromKeyframe = (story: Story, sequenceId: string, shotId: string, nowTs?: number): Story => {
+    const seq =
+      (story.sequences || []).find((s) => s.id === sequenceId && (s.shots || []).some((x) => x.id === shotId)) ||
+      (story.sequences || []).find((s) => (s.shots || []).some((x) => x.id === shotId));
+    const shot = (seq?.shots || []).find((s) => s.id === shotId);
+    if (!seq || !shot) return story;
+
+    const activeVersion =
+      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
+      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
+    if (!activeVersion) return story;
+
+    const sourceBundle = resolveVideoSourceBundle(shot, activeVersion as any);
+    const sourceImageUrl = String(sourceBundle.sourceImageUrl || '').trim();
+    if (!sourceImageUrl) return story;
+
+    const cameraMeta = ((shot.elements as any)?.[ElementType.CAMERA]?.metadata || {}) as Record<string, any>;
+    const existingVideoPrompt = String(cameraMeta.videoPrompt || '').trim();
+    const runtimeGeneratedAt = Number(cameraMeta.runtimeVideoPromptGeneratedAt || 0);
+    const shouldHydrate = !existingVideoPrompt || runtimeGeneratedAt > 0;
+    if (!shouldHydrate) return story;
+
+    const styleGuide = String((story as any)?.styleGuide || '').trim();
+    const location = (story.locations || []).find((l) => l.id === shot.locationId);
+    const shotAction = String((shot.elements as any)?.[ElementType.SCRIPT]?.prompt || '').trim();
+    const cameraPrompt = String((shot.elements as any)?.[ElementType.CAMERA]?.prompt || '').trim();
+    const lightingPrompt = String((shot.elements as any)?.[ElementType.LIGHTING]?.prompt || '').trim();
+    const audioPrompt = String((shot.elements as any)?.[ElementType.AUDIO]?.prompt || '').trim();
+    const frameDescription = String(sourceBundle.frameDescription || shot.description || '').trim();
+    const dialogue = extractDialogueLines(shotAction);
+    const storyContext = [
+      story.logline ? `Logline: ${String(story.logline).trim()}` : '',
+      story.intent ? `Intent: ${String(story.intent).trim()}` : '',
+      seq.context ? `Sequence context: ${String(seq.context).trim()}` : '',
+      shot.description ? `Shot dramatic beat: ${String(shot.description).trim()}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const actingDirection = buildActingDirection({
+      frameDescription,
+      script: shotAction,
+      shotDescription: String(shot.description || '').trim(),
+      sequenceContext: String(seq.context || '').trim(),
+      dialogue,
+    });
+    const inferredStyleTranslation = buildStylePromptTranslation({
+      texts: [story.intent, styleGuide, location?.visualStyle, cameraPrompt, lightingPrompt, shot.description],
+      maxItems: 6,
+    });
+    const { prompt: videoPrompt } = composeStructuredVideoPrompt({
+      sourceKind: sourceBundle.sourceKind,
+      referenceFrames: sourceBundle.referenceFrames,
+      frameDescription,
+      storyContext,
+      actingDirection,
+      cameraPrompt,
+      lightingPrompt,
+      audioPrompt,
+      style: styleGuide || String(location?.visualStyle || '').trim(),
+      styleTranslation: inferredStyleTranslation,
+      dialogue,
+      directorNotes: existingVideoPrompt,
+      constraints: [
+        'Preserve character identity and wardrobe continuity.',
+        'Avoid flicker, morphing artifacts, and geometry instability.',
+      ],
+      maxChars: 7200,
+    });
+    if (!String(videoPrompt || '').trim()) return story;
+
+    const ts = nowTs || Date.now();
+    return {
+      ...story,
+      sequences: (story.sequences || []).map((s) =>
+        s.id !== sequenceId
+          ? s
+          : {
+              ...s,
+              shots: (s.shots || []).map((x) =>
+                x.id !== shotId
+                  ? x
+                  : {
+                      ...x,
+                      elements: {
+                        ...x.elements,
+                        [ElementType.CAMERA]: {
+                          ...x.elements[ElementType.CAMERA],
+                          metadata: {
+                            ...(x.elements?.[ElementType.CAMERA]?.metadata || {}),
+                            videoPrompt,
+                            runtimeVideoPromptGeneratedAt: ts,
+                          },
+                        },
+                      },
+                    },
+              ),
+            },
+      ),
+    };
   };
 
   const startShotProduction = async (args: { sequenceId: string; shotId: string }) => {
@@ -1305,10 +1645,12 @@ export default function App() {
       return;
     }
 
-    const activeVersion =
-      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
-      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
-    const imageUrl = String(activeVersion?.imageUrl || '').trim();
+	    const activeVersion =
+	      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
+	      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
+
+    const sourceBundle = resolveVideoSourceBundle(shot, activeVersion as any);
+    const imageUrl = String(sourceBundle.sourceImageUrl || '').trim();
     if (!imageUrl) {
       addToast('Start Production blocked: generate/select a keyframe first.', 'info');
       return;
@@ -1321,21 +1663,47 @@ export default function App() {
     const lightingPrompt = String(shot.elements?.[ElementType.LIGHTING]?.prompt || '').trim();
     const audioPrompt = String(shot.elements?.[ElementType.AUDIO]?.prompt || '').trim();
     const authoredVideoPrompt = String((shot.elements as any)?.[ElementType.CAMERA]?.metadata?.videoPrompt || '').trim();
+    const dialogue = extractDialogueLines(shotAction);
+    const frameDescription = String(sourceBundle.frameDescription || shot.description || '').trim();
+    const storyContext = [
+      storyNow.logline ? `Logline: ${String(storyNow.logline).trim()}` : '',
+      storyNow.intent ? `Intent: ${String(storyNow.intent).trim()}` : '',
+      seq.context ? `Sequence context: ${String(seq.context).trim()}` : '',
+      shot.description ? `Shot dramatic beat: ${String(shot.description).trim()}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const actingDirection = buildActingDirection({
+      frameDescription,
+      script: shotAction,
+      shotDescription: String(shot.description || '').trim(),
+      sequenceContext: String(seq.context || '').trim(),
+      dialogue,
+    });
     const inferredStyleTranslation = buildStylePromptTranslation({
       texts: [storyNow.intent, styleGuide, location?.visualStyle, cameraPrompt, lightingPrompt, shot.description],
       maxItems: 6,
     });
 
-    const videoPrompt =
-      authoredVideoPrompt ||
-      [
-        'Use the provided source image as the first frame and preserve subject identity and environment continuity.',
-        inferredStyleTranslation ? `Style translation hints: ${inferredStyleTranslation}.` : '',
-        'Motion quality: natural physics, stable anatomy, no flicker, no abrupt style drift.',
-        'Output: coherent, style-consistent, high detail.',
-      ]
-        .filter(Boolean)
-        .join('\n');
+    const { prompt: videoPrompt } = composeStructuredVideoPrompt({
+      sourceKind: sourceBundle.sourceKind,
+      referenceFrames: sourceBundle.referenceFrames,
+      frameDescription,
+      storyContext,
+      actingDirection,
+      cameraPrompt,
+      lightingPrompt,
+      audioPrompt,
+      style: styleGuide || String(location?.visualStyle || '').trim(),
+      styleTranslation: inferredStyleTranslation,
+      dialogue,
+      directorNotes: authoredVideoPrompt,
+      constraints: [
+        'Preserve character identity and wardrobe continuity.',
+        'Avoid flicker, morphing artifacts, and geometry instability.',
+      ],
+      maxChars: 7200,
+    });
 
     const durationSeconds = normalizeShotDurationSeconds(shot.duration);
     const productionKey = `${storyNow.id}|${args.sequenceId}|${args.shotId}`;
@@ -1356,6 +1724,17 @@ export default function App() {
                   : {
                       ...x,
                       duration: durationSeconds,
+                      elements: {
+                        ...x.elements,
+                        [ElementType.CAMERA]: {
+                          ...x.elements[ElementType.CAMERA],
+                          metadata: {
+                            ...(x.elements?.[ElementType.CAMERA]?.metadata || {}),
+                            videoPrompt,
+                            runtimeVideoPromptGeneratedAt: now,
+                          },
+                        },
+                      },
                       production: {
                         ...x.production,
                         status: 'running',
@@ -1374,20 +1753,28 @@ export default function App() {
       const out = await generateVideoFromImage({
         prompt: videoPrompt,
         imageUrl,
+        referenceImageUrls: sourceBundle.referenceImageUrls,
         durationSeconds,
         aspectRatio,
         resolution: '720p',
         generateAudio: true,
         signal: productionController.signal,
         promptSpec: {
+          frameDescription,
           shotDescription: String(shot.description || '').trim(),
           action: shotAction,
+          actingDirection,
+          storyContext,
+          dialogue,
+          cameraman: cameraPrompt,
+          directorNotes: authoredVideoPrompt,
           style: styleGuide || String(location?.visualStyle || '').trim(),
           styleTranslation: inferredStyleTranslation,
           camera: cameraPrompt,
           composition: `Aspect ratio ${aspectRatio}`,
           mood: lightingPrompt,
           audio: audioPrompt,
+          referenceFrames: sourceBundle.referenceFrames.slice(0, 9),
           constraints: [
             'Preserve character identity and wardrobe continuity.',
             'Avoid flicker, morphing artifacts, and geometry instability.',
@@ -1417,12 +1804,15 @@ export default function App() {
                           durationSeconds,
                           resolution: '720p' as const,
                           operationName: out.operationName,
-                          metadata: {
-                            prompt: videoPrompt,
-                            sourceImageUrl: imageUrl,
-                            sourceShotVersionId: String(activeVersion?.id || ''),
-                          },
-                        };
+	                          metadata: {
+	                            prompt: videoPrompt,
+	                            sourceImageUrl: imageUrl,
+	                            sourceShotVersionId: String(activeVersion?.id || ''),
+                              referenceImageUrls: sourceBundle.referenceImageUrls,
+                              frameDescription,
+                              actingDirection,
+	                          },
+	                        };
                         return {
                           ...x,
                           production: {
@@ -1479,7 +1869,7 @@ export default function App() {
         level: 'error',
         scope: 'asset.video',
         message: 'Start production failed',
-        data: { error: err, sequenceId: args.sequenceId, shotId: args.shotId },
+        data: { error: err, sequenceId: args.sequenceId, shotId: args.shotId, debug: (e as any)?.debug },
       });
       updateActiveStory((prev) => ({
         ...prev,
@@ -1546,6 +1936,7 @@ export default function App() {
 
   const consoleContextType: 'story' | 'sequence' | 'shot' =
     selection.type === 'shot' ? 'shot' : selection.type === 'sequence' ? 'sequence' : 'story';
+  const isCompactLayout = viewport.width < 1400 || viewport.height < 860;
 
   // ----- Project Editing Handlers -----
 
@@ -1720,9 +2111,193 @@ export default function App() {
     addToast('Environment updated', 'info');
   };
 
+  const isAssetDone = (state: any) => String(state?.status || '').toLowerCase() === 'done';
+  const isAssetQueuedOrRunning = (state: any) => {
+    const s = String(state?.status || '').toLowerCase();
+    return s === 'queued' || s === 'running';
+  };
+  const isLookBoundToAvatar = (look: any, avatarVersionId: string) => {
+    if (!look || !avatarVersionId) return false;
+    const versions = Array.isArray((look as any).previewVersions) ? (look as any).previewVersions : [];
+    const activeId = String((look as any).activePreviewVersionId || '').trim();
+    const hit = versions.find((v: any) => String(v?.id || '') === activeId) || versions[versions.length - 1];
+    return String(hit?.metadata?.sourceAvatarVersionId || '') === String(avatarVersionId);
+  };
+  const getShotCast = (shot: Shot) => {
+    const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+    return Array.isArray(cast) ? cast : [];
+  };
+  const collectAffectedShotRefsForCharacter = (story: Story, characterId: string): Array<{ sequenceId: string; shotId: string }> => {
+    const out: Array<{ sequenceId: string; shotId: string }> = [];
+    for (const seq of story.sequences || []) {
+      for (const shot of seq.shots || []) {
+        if (!isAssetQueuedOrRunning((shot as any)?.assetState)) continue;
+        const hasCharacter = getShotCast(shot).some((c: any) => String(c?.id || '').trim() === characterId);
+        if (!hasCharacter) continue;
+        out.push({ sequenceId: String(seq.id || ''), shotId: String(shot.id || '') });
+      }
+    }
+    return out;
+  };
+  const applyStopForAffectedShots = (
+    story: Story,
+    projectId: string,
+    affected: Array<{ sequenceId: string; shotId: string }>,
+    reason: string,
+  ) => {
+    const now = Date.now();
+    const affectedKeys = new Set(affected.map((x) => `${x.sequenceId}|${x.shotId}`));
+    for (const { sequenceId, shotId } of affected) {
+      const key = `${projectId}|shot|${sequenceId}|${shotId}`;
+      cancelledAssetJobKeysRef.current.add(key);
+      cancelAssetJobs((k) => k === key);
+    }
+    return {
+      ...story,
+      sequences: (story.sequences || []).map((seq) => ({
+        ...seq,
+        shots: (seq.shots || []).map((shot) => {
+          const sk = `${String(seq.id || '')}|${String(shot.id || '')}`;
+          if (!affectedKeys.has(sk)) return shot;
+          if (!isAssetQueuedOrRunning((shot as any)?.assetState)) return shot;
+          return {
+            ...shot,
+            aiState: 'idle',
+            aiPrompt: '',
+            assetState: {
+              ...((shot as any)?.assetState || {}),
+              status: 'blocked',
+              lastError: reason,
+              lastAttemptAt: now,
+            },
+          } as Shot;
+        }),
+      })),
+    };
+  };
+  const validateNewIdentityForAffectedShots = (
+    story: Story,
+    characterId: string,
+    affected: Array<{ sequenceId: string; shotId: string }>,
+  ): string | null => {
+    const ch = (story.characters || []).find((x) => String(x.id || '').trim() === characterId);
+    if (!ch) return '角色不存在，无法继续生产。';
+    if (!isAssetDone((ch as any)?.assetState)) return '新 avatar 尚未生成完成，无法用新形象继续。';
+    const avatarVersionId = String((ch as any)?.activeAvatarVersionId || '').trim();
+    const avatarUrl = getCharacterActiveAvatarUrl(ch, { activeOnly: true });
+    if (!avatarVersionId || !avatarUrl || isLikelyPlaceholderImageUrl(avatarUrl)) return '新 avatar 不可用，已停止当前镜头生产。';
+    for (const { sequenceId, shotId } of affected) {
+      const seq = (story.sequences || []).find((s) => String(s.id || '') === sequenceId);
+      const shot = (seq?.shots || []).find((s) => String(s.id || '') === shotId);
+      if (!shot) continue;
+      const castEntry = getShotCast(shot).find((c: any) => String(c?.id || '').trim() === characterId);
+      if (!castEntry) continue;
+      const lookId = String((castEntry as any)?.activeLookId || '').trim();
+      if (!lookId) continue;
+      const look = (ch.looks || []).find((lk) => String(lk.id || '').trim() === lookId);
+      if (!look || !isAssetDone((look as any)?.assetState)) {
+        return `角色 Look 未生成完成（${lookId}），已停止当前镜头生产。`;
+      }
+      if (!isLookBoundToAvatar(look, avatarVersionId)) {
+        return `角色 Look 未绑定到当前 avatar（${lookId}），已停止当前镜头生产。`;
+      }
+      const lookUrl = getLookActivePreviewUrl(look, { activeOnly: true });
+      if (!lookUrl || isLikelyPlaceholderImageUrl(lookUrl)) {
+        return `角色 Look 预览不可用（${lookId}），已停止当前镜头生产。`;
+      }
+    }
+    return null;
+  };
+
   const handleUpdateCharacter = (char: Character) => {
-    updateActiveStory((prev) => ({ ...prev, characters: prev.characters.map((c) => (c.id === char.id ? char : c)) }));
-    addToast('Character profile updated', 'info');
+    if (!activeStory?.id) {
+      updateActiveStory((prev) => ({ ...prev, characters: prev.characters.map((c) => (c.id === char.id ? char : c)) }));
+      addToast('Character profile updated', 'info');
+      return;
+    }
+    const projectId = activeStory.id;
+    const prevChar = (activeStory.characters || []).find((c) => String(c.id || '') === String(char.id || ''));
+    const prevAvatarVersionId = String((prevChar as any)?.activeAvatarVersionId || '').trim();
+    const nextAvatarVersionId = String((char as any)?.activeAvatarVersionId || '').trim();
+    const avatarChanged = prevAvatarVersionId !== nextAvatarVersionId;
+    const storyAfterCharUpdate: Story = {
+      ...activeStory,
+      characters: (activeStory.characters || []).map((c) => (c.id === char.id ? char : c)),
+    };
+
+    if (!avatarChanged) {
+      updateStoryById(projectId, () => storyAfterCharUpdate);
+      addToast('Character profile updated', 'info');
+      return;
+    }
+
+    const affected = collectAffectedShotRefsForCharacter(activeStory, String(char.id || '').trim());
+    if (!affected.length) {
+      updateStoryById(projectId, () => storyAfterCharUpdate);
+      addToast('Character avatar updated', 'info');
+      return;
+    }
+
+    const userChoice = window.prompt(
+      '检测到该角色在镜头 keyframe 队列中：\n1 = 停止生产\n2 = 继续生产\n3 = 使用新形象重新生产\n请输入 1/2/3',
+      '2',
+    );
+    if (userChoice === null) {
+      addToast('Avatar update cancelled', 'info');
+      return;
+    }
+    const choice = String(userChoice || '').trim();
+
+    if (choice === '1') {
+      const stoppedStory = applyStopForAffectedShots(
+        storyAfterCharUpdate,
+        projectId,
+        affected,
+        'Stopped by user after avatar update.',
+      );
+      updateStoryById(projectId, () => stoppedStory);
+      addToast('Stopped queued/running keyframe tasks for updated avatar', 'info');
+      return;
+    }
+
+    if (choice === '3') {
+      const invalidReason = validateNewIdentityForAffectedShots(storyAfterCharUpdate, String(char.id || '').trim(), affected);
+      if (invalidReason) {
+        const stoppedStory = applyStopForAffectedShots(storyAfterCharUpdate, projectId, affected, invalidReason);
+        updateStoryById(projectId, () => stoppedStory);
+        window.alert(invalidReason);
+        addToast('Shot generation stopped: new identity unavailable', 'info');
+        return;
+      }
+      const stoppedStory = applyStopForAffectedShots(
+        storyAfterCharUpdate,
+        projectId,
+        affected,
+        'Avatar changed, requeue with new identity.',
+      );
+      updateStoryById(projectId, () => stoppedStory);
+      const jobs: AssetJob[] = [];
+      for (const { sequenceId, shotId } of affected) {
+        const seq = (stoppedStory.sequences || []).find((s) => String(s.id || '') === sequenceId);
+        const shot = (seq?.shots || []).find((s) => String(s.id || '') === shotId);
+        if (!seq || !shot) continue;
+        jobs.push({ kind: 'shot', sequenceId: String(seq.id || ''), shot });
+      }
+      if (jobs.length) {
+        runAssetJobsForDirector({
+          projectId,
+          story: stoppedStory,
+          jobs,
+          scopeLabel: 'avatar-update:regenerate-shots',
+          concurrency: 2,
+        });
+      }
+      addToast('Queued shot regeneration with new avatar identity', 'success');
+      return;
+    }
+
+    updateStoryById(projectId, () => storyAfterCharUpdate);
+    addToast('Avatar updated, keeping current keyframe queue', 'info');
   };
 
   const handleDeleteSequence = (id: string) => {
@@ -1848,7 +2423,10 @@ export default function App() {
       return !ch || !(ch.looks || []).some((lk) => lk.id === job.lookId);
     }
     const seq = (project.sequences || []).find((s) => s.id === job.sequenceId);
-    return !seq || !(seq.shots || []).some((s) => s.id === job.shot.id);
+    if (seq && (seq.shots || []).some((s) => s.id === job.shot.id)) return false;
+    // Sequence ID may be stale after reorder/move; fall back to global shot-id lookup.
+    const existsByShotId = (project.sequences || []).some((s) => (s.shots || []).some((x) => x.id === job.shot.id));
+    return !existsByShotId;
   };
 
   const runAssetJobsForDirector = (args: {
@@ -1889,8 +2467,18 @@ export default function App() {
         }
         if (ev.type === 'success') {
           releaseJobController(ev.job);
-          storyRef = applyAssetResult(storyRef, ev.job, ev.imageUrl, ev.meta);
-          updateStoryById(projectId, (prev) => applyAssetResult(prev, ev.job, ev.imageUrl, ev.meta));
+          const applySuccess = (base: Story) => {
+            const afterResult = applyAssetResult(base, ev.job, ev.imageUrl, ev.meta);
+            if (ev.job?.kind !== 'shot') return afterResult;
+            return hydrateShotVideoPromptFromKeyframe(
+              afterResult,
+              String(ev.job.sequenceId || ''),
+              String(ev.job.shot?.id || ''),
+              Date.now(),
+            );
+          };
+          storyRef = applySuccess(storyRef);
+          updateStoryById(projectId, (prev) => applySuccess(prev));
           addDebugEvent({
             level: 'info',
             scope: 'asset.exec',
@@ -3269,7 +3857,7 @@ export default function App() {
               jobs: exec.deferredJobs,
               scopeLabel: exec.scopeLabel || 'director:interaction',
               concurrency: exec.concurrency || 2,
-              story: exec.storyAfterUpdates || storyWithAttachments,
+              story: exec.storyAfterUpdates || activeStory,
             });
             addToast('Interaction mode: generation is waiting for your confirmation.', 'info');
           }
@@ -3316,6 +3904,7 @@ export default function App() {
       <>
         <ProjectLibrary
           projects={workspace.projects}
+          currentUserId={currentUserId}
           theme={theme}
           toggleTheme={toggleTheme}
           onOpenProject={openProject}
@@ -3324,8 +3913,22 @@ export default function App() {
           onRenameProject={handleRenameProject}
           onDuplicateProject={handleDuplicateProject}
           onDeleteProject={handleDeleteProject}
+          onExportProject={handleExportProject}
+          onImportProjects={() => importInputRef.current?.click()}
           onOpenAiSettings={() => setIsAiSettingsOpen(true)}
           onOpenDebug={() => setIsDebugOpen(true)}
+        />
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,.vision-project.json"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = e.target.files;
+            if (files?.length) handleImportProjects(files);
+            e.currentTarget.value = '';
+          }}
         />
 
         {isAiSettingsOpen && (
@@ -3337,6 +3940,14 @@ export default function App() {
               addToast('AI settings saved', 'success');
             }}
             onClose={() => setIsAiSettingsOpen(false)}
+          />
+        )}
+        {isDebugOpen && (
+          <DebugPanel
+            aiSettings={aiSettings}
+            activeStory={null}
+            agentHistory={[]}
+            onClose={() => setIsDebugOpen(false)}
           />
         )}
       </>
@@ -3551,6 +4162,7 @@ export default function App() {
               onSendMessage={handleDirectorMessage}
               isThinking={isDirectorThinking}
               stream={directorStream || undefined}
+              compact={isCompactLayout}
               workflowMode={String((aiSettings.direct as any)?.workflowMode || 'auto') as any}
               onWorkflowModeChange={(mode) =>
                 setAiSettings((prev) => ({ ...prev, direct: { ...prev.direct, workflowMode: mode } as any }))
@@ -3579,7 +4191,7 @@ export default function App() {
       </div>
 
       {/* 3. Right Inspector (Contextual) - STRICTLY LIMITED TO SHOTS */}
-      {!isCinemaMode && !isPlayingMaster && selection.type === 'shot' && (
+      {!isCinemaMode && !isPlayingMaster && selection.type === 'shot' && !isCompactLayout && (
         <InspectorPanel
           selection={selection}
           selectedItem={activeItem}

@@ -24,10 +24,13 @@ import { ProxyAgent } from 'undici';
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 const GENERATED_ASSETS_DIR = path.resolve(process.cwd(), '.vision-assets');
+const VISION_USER_ID_HEADER = 'x-vision-user-id';
+const USER_ID_RE = /^[a-z0-9][a-z0-9_-]{2,63}$/i;
 
 type GeminiResponseSchema = any;
 const schemaString = (): GeminiResponseSchema => ({ type: 'STRING' });
 const schemaInt = (): GeminiResponseSchema => ({ type: 'INTEGER' });
+const schemaBool = (): GeminiResponseSchema => ({ type: 'BOOLEAN' });
 const schemaArray = (items: GeminiResponseSchema): GeminiResponseSchema => ({ type: 'ARRAY', items });
 const schemaFreeformObject = (): GeminiResponseSchema => ({
   type: 'OBJECT',
@@ -118,6 +121,20 @@ const GEMINI_SCHEMA = {
       negativePrompt: schemaString(),
     },
   }),
+  imageDescribe: schemaObject({
+    required: ['description'],
+    propertyOrdering: ['description', 'keySubjects', 'environment', 'composition', 'camera', 'lighting', 'style', 'constraints'],
+    properties: {
+      description: schemaString(),
+      keySubjects: schemaArray(schemaString()),
+      environment: schemaString(),
+      composition: schemaString(),
+      camera: schemaString(),
+      lighting: schemaString(),
+      style: schemaString(),
+      constraints: schemaArray(schemaString()),
+    },
+  }),
   scaffoldEnvironments: schemaObject({
     required: ['locations'],
     propertyOrdering: ['locations'],
@@ -159,11 +176,21 @@ const GEMINI_SCHEMA = {
     properties: {
       sequences: schemaArray(
         schemaObject({
-          required: ['title', 'context', 'scenes'],
-          propertyOrdering: ['title', 'context', 'scenes'],
+          required: ['title', 'context', 'sceneDecision', 'scenes'],
+          propertyOrdering: ['title', 'context', 'sceneDecision', 'scenes'],
           properties: {
             title: schemaString(),
             context: schemaString(),
+            sceneDecision: schemaObject({
+              required: ['split', 'sceneCount', 'rationale'],
+              propertyOrdering: ['split', 'sceneCount', 'rationale', 'criteria'],
+              properties: {
+                split: schemaBool(),
+                sceneCount: schemaInt(),
+                rationale: schemaString(),
+                criteria: schemaArray(schemaString()),
+              },
+            }),
             scenes: schemaArray(
               schemaObject({
                 required: ['title', 'shots'],
@@ -211,7 +238,7 @@ const GEMINI_SCHEMA = {
                   title: schemaString(),
                   shots: schemaArray(
                     schemaObject({
-                      required: ['camera', 'lighting', 'audio', 'videoPrompt'],
+                      required: ['camera', 'lighting', 'audio'],
                       propertyOrdering: ['camera', 'lighting', 'audio', 'videoPrompt'],
                       properties: {
                         camera: schemaString(),
@@ -262,11 +289,21 @@ const GEMINI_SCHEMA = {
       ),
       sequences: schemaArray(
         schemaObject({
-          required: ['title', 'context', 'scenes'],
-          propertyOrdering: ['title', 'context', 'scenes'],
+          required: ['title', 'context', 'sceneDecision', 'scenes'],
+          propertyOrdering: ['title', 'context', 'sceneDecision', 'scenes'],
           properties: {
             title: schemaString(),
             context: schemaString(),
+            sceneDecision: schemaObject({
+              required: ['split', 'sceneCount', 'rationale'],
+              propertyOrdering: ['split', 'sceneCount', 'rationale', 'criteria'],
+              properties: {
+                split: schemaBool(),
+                sceneCount: schemaInt(),
+                rationale: schemaString(),
+                criteria: schemaArray(schemaString()),
+              },
+            }),
             scenes: schemaArray(
               schemaObject({
                 required: [
@@ -293,7 +330,6 @@ const GEMINI_SCHEMA = {
                         'locationName',
                         'castNames',
                         'script',
-                        'videoPrompt',
                       ],
                       propertyOrdering: [
                         'description',
@@ -317,6 +353,7 @@ const GEMINI_SCHEMA = {
                         locationName: schemaString(),
                         castNames: schemaArray(schemaString()),
                         script: schemaString(),
+                        // Optional now: video prompt is composed asynchronously at shot production stage.
                         videoPrompt: schemaString(),
                       },
                     }),
@@ -422,28 +459,67 @@ const getProxyDispatcher = (targetUrl: string, env: Record<string, string>) => {
   return g.__VISION_PROXY_CACHE__[proxyUrl];
 };
 
-const ensureGeneratedDir = () => {
+const normalizeUserId = (raw: unknown): string => {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s) return '';
+  const cleaned = s.replace(/[^a-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  return USER_ID_RE.test(cleaned) ? cleaned : '';
+};
+
+const getRequestUserId = (req: any): string => {
+  const direct = req?.headers?.[VISION_USER_ID_HEADER];
+  const lower = req?.headers?.[VISION_USER_ID_HEADER.toLowerCase()];
+  return normalizeUserId(direct || lower) || 'anon';
+};
+
+const userGeneratedAssetsDir = (userId: string) => {
+  const safeUserId = normalizeUserId(userId) || 'anon';
+  return path.join(GENERATED_ASSETS_DIR, safeUserId);
+};
+
+const ensureGeneratedDir = (userId: string) => {
   try {
-    fs.mkdirSync(GENERATED_ASSETS_DIR, { recursive: true });
+    fs.mkdirSync(userGeneratedAssetsDir(userId), { recursive: true });
   } catch {
     // ignore
   }
 };
 
-const safeGeneratedAssetPath = (urlPathname: string) => {
+const parseGeneratedAssetRequest = (urlPathname: string): { userId?: string; filename: string } | null => {
   const decoded = decodeURIComponent(String(urlPathname || ''));
-  // Accept either a full pathname (`/__generated__/file.png`) or a relative-ish path.
   let rel = decoded.split('?')[0].split('#')[0].replace(/^\/+/, '');
   if (!rel) return null;
-
-  // Map `/__generated__/file.png` -> `.vision-assets/file.png`
   if (rel === '__generated__') return null;
   if (rel.startsWith('__generated__/')) rel = rel.slice('__generated__/'.length);
+  if (!rel || rel.includes('..') || rel.includes('\\')) return null;
+  const parts = rel.split('/').filter(Boolean);
+  if (parts.length === 1) return { filename: parts[0] };
+  if (parts.length === 2) {
+    const userId = normalizeUserId(parts[0]);
+    if (!userId) return null;
+    return { userId, filename: parts[1] };
+  }
+  return null;
+};
 
-  // Hardening: only allow a single filename (no subdirs).
-  if (!rel) return null;
-  if (rel.includes('..') || rel.includes('\\') || rel.includes('/')) return null;
-  return path.join(GENERATED_ASSETS_DIR, rel);
+const safeGeneratedAssetPaths = (urlPathname: string, fallbackUserId?: string): string[] => {
+  const parsed = parseGeneratedAssetRequest(urlPathname);
+  if (!parsed?.filename || parsed.filename.includes('/')) return [];
+  const out = new Set<string>();
+  if (parsed.userId) {
+    out.add(path.join(userGeneratedAssetsDir(parsed.userId), parsed.filename));
+    return Array.from(out);
+  }
+  const normalizedFallback = normalizeUserId(fallbackUserId || '') || 'anon';
+  out.add(path.join(userGeneratedAssetsDir(normalizedFallback), parsed.filename));
+  // Legacy compatibility: historical assets without user segment lived directly under .vision-assets.
+  out.add(path.join(GENERATED_ASSETS_DIR, parsed.filename));
+  return Array.from(out);
+};
+
+const buildGeneratedAssetUrl = (userId: string, filename: string) => {
+  const safeUserId = normalizeUserId(userId) || 'anon';
+  return `/__generated__/${safeUserId}/${filename}`;
 };
 
 const mimeByExt = (ext: string) => {
@@ -568,23 +644,23 @@ const resolveGeminiBaseUrl = (env?: Record<string, string>) => {
   return 'https://generativelanguage.googleapis.com/v1beta';
 };
 
-const buildGeminiGenerateContentUrl = (args: { env?: Record<string, string>; model: string }) => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
+const buildGeminiGenerateContentUrl = (args: { env?: Record<string, string>; model: string; baseUrl?: string }) => {
+  const baseUrl = String(args.baseUrl || '').trim() || resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:generateContent`;
 };
 
-const buildGeminiStreamContentUrl = (args: { env?: Record<string, string>; model: string }) => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
+const buildGeminiStreamContentUrl = (args: { env?: Record<string, string>; model: string; baseUrl?: string }) => {
+  const baseUrl = String(args.baseUrl || '').trim() || resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:streamGenerateContent?alt=sse`;
 };
 
-const buildGeminiPredictLongRunningUrl = (args: { env?: Record<string, string>; model: string }) => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
+const buildGeminiPredictLongRunningUrl = (args: { env?: Record<string, string>; model: string; baseUrl?: string }) => {
+  const baseUrl = String(args.baseUrl || '').trim() || resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/models/${encodeURIComponent(args.model)}:predictLongRunning`;
 };
 
-const buildGeminiOperationUrl = (args: { env?: Record<string, string>; operationName: string }) => {
-  const baseUrl = resolveGeminiBaseUrl(args.env);
+const buildGeminiOperationUrl = (args: { env?: Record<string, string>; operationName: string; baseUrl?: string }) => {
+  const baseUrl = String(args.baseUrl || '').trim() || resolveGeminiBaseUrl(args.env);
   return `${baseUrl}/${String(args.operationName || '').replace(/^\/+/, '')}`;
 };
 
@@ -609,6 +685,50 @@ const adjustRequestedAgents = (requested: string[], selection: any, directive: s
   return Array.from(set);
 };
 
+type TokenUsage = { promptTokens?: number; outputTokens?: number; totalTokens?: number };
+
+const extractGeminiUsage = (raw: any): TokenUsage | undefined => {
+  const u = raw?.usageMetadata || raw?.usage_metadata;
+  if (!u || typeof u !== 'object') return undefined;
+  const promptTokens = Number(u.promptTokenCount ?? u.prompt_token_count);
+  const outputTokens = Number(u.candidatesTokenCount ?? u.candidates_token_count);
+  const totalTokens = Number(u.totalTokenCount ?? u.total_token_count);
+  const out: TokenUsage = {};
+  if (Number.isFinite(promptTokens)) out.promptTokens = promptTokens;
+  if (Number.isFinite(outputTokens)) out.outputTokens = outputTokens;
+  if (Number.isFinite(totalTokens)) out.totalTokens = totalTokens;
+  return Object.keys(out).length ? out : undefined;
+};
+
+const mergeTokenUsage = (...items: Array<TokenUsage | null | undefined>): TokenUsage | undefined => {
+  let promptTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let any = false;
+  for (const u of items) {
+    if (!u) continue;
+    if (typeof u.promptTokens === 'number' && Number.isFinite(u.promptTokens)) {
+      promptTokens += u.promptTokens;
+      any = true;
+    }
+    if (typeof u.outputTokens === 'number' && Number.isFinite(u.outputTokens)) {
+      outputTokens += u.outputTokens;
+      any = true;
+    }
+    if (typeof u.totalTokens === 'number' && Number.isFinite(u.totalTokens)) {
+      totalTokens += u.totalTokens;
+      any = true;
+    }
+  }
+  if (!any) return undefined;
+  const out: TokenUsage = {};
+  if (promptTokens > 0) out.promptTokens = promptTokens;
+  if (outputTokens > 0) out.outputTokens = outputTokens;
+  if (totalTokens > 0) out.totalTokens = totalTokens;
+  if (!out.totalTokens && (out.promptTokens || out.outputTokens)) out.totalTokens = (out.promptTokens || 0) + (out.outputTokens || 0);
+  return out;
+};
+
 const callGeminiJson = async (args: {
   apiKey: string;
   model: string;
@@ -617,8 +737,9 @@ const callGeminiJson = async (args: {
   prompt: string;
   env?: Record<string, string>;
   responseSchema?: any;
-}): Promise<any> => {
-  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
+  baseUrl?: string;
+}): Promise<{ value: any; usage?: TokenUsage; raw?: any }> => {
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
   const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
 
   const parseJsonLenient = (raw: string) => {
@@ -748,15 +869,16 @@ const callGeminiJson = async (args: {
           err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
           throw err;
         }
-        const data = (await res.json()) as any;
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        const raw = (await res.json()) as any;
+        const usage = extractGeminiUsage(raw);
+        const text = raw?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (typeof text !== 'string') {
           const err: any = new Error('Gemini: missing text response');
           err.retryable = true;
           throw err;
         }
         try {
-          return parseJsonLenient(text);
+          return { value: parseJsonLenient(text), usage, raw };
         } catch (e) {
           const err: any = e instanceof Error ? e : new Error(String(e));
           // Gemini occasionally returns truncated/non-JSON text; retry often fixes it.
@@ -771,6 +893,108 @@ const callGeminiJson = async (args: {
   );
 };
 
+const callGeminiVisionJson = async (args: {
+  apiKey: string;
+  model: string;
+  temperature: number;
+  maxOutputTokens?: number;
+  prompt: string;
+  image: { mimeType: string; bytes: Buffer };
+  env?: Record<string, string>;
+  responseSchema?: any;
+  baseUrl?: string;
+}): Promise<{ value: any; usage?: TokenUsage; raw?: any }> => {
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
+  const maxAttempts = Math.max(1, Math.min(6, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 4)));
+  const geminiDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
+
+  const parseJsonLenient = (raw: string) => {
+    const text = String(raw || '').trim();
+    const stripped = text
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+    const normalizeQuotes = (s: string) =>
+      s
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/\uFEFF/g, '');
+    const stripJsonComments = (s: string) =>
+      s
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|\s)\/\/.*$/gm, '$1');
+    const stripTrailingCommas = (s: string) => {
+      let out = s;
+      for (let i = 0; i < 8; i++) {
+        const next = out.replace(/,\s*([}\]])/g, '$1');
+        if (next === out) return out;
+        out = next;
+      }
+      return out;
+    };
+    const repaired = stripTrailingCommas(stripJsonComments(normalizeQuotes(stripped))).trim();
+    return JSON.parse(repaired);
+  };
+
+  const raw = await withRetries(
+    async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90_000);
+      try {
+        const init: any = {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': args.apiKey },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { inlineData: { mimeType: args.image.mimeType, data: args.image.bytes.toString('base64') } },
+                  { text: args.prompt },
+                ],
+              },
+            ],
+            ...(args.responseSchema ? { generationConfig: { responseMimeType: 'application/json', responseSchema: args.responseSchema, temperature: args.temperature, maxOutputTokens: args.maxOutputTokens ?? 512 } } : {
+              generationConfig: { temperature: args.temperature, maxOutputTokens: args.maxOutputTokens ?? 512 },
+            }),
+          }),
+        };
+        if (geminiDispatcher) init.dispatcher = geminiDispatcher;
+        const res = await fetch(url, init);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          const err: any = new Error(`Gemini HTTP ${res.status}${text ? `: ${text}` : ''}`);
+          err.status = res.status;
+          err.retryable = [408, 425, 429, 500, 502, 503, 504].includes(Number(res.status));
+          throw err;
+        }
+        return (await res.json()) as any;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    { label: `gemini.vision:${args.model}`, maxAttempts },
+  );
+
+  const usage = extractGeminiUsage(raw);
+  const parts = raw?.candidates?.[0]?.content?.parts;
+  const list = Array.isArray(parts) ? parts : [];
+  const text = list.find((p: any) => p && typeof p === 'object' && typeof p.text === 'string')?.text;
+  if (typeof text !== 'string' || !text.trim()) {
+    const preview = raw?.candidates?.[0]?.content?.parts?.[0]?.text;
+    throw new Error(`Gemini: missing text response. Preview: ${String(preview || JSON.stringify(raw)).slice(0, 240)}`);
+  }
+  try {
+    const parsed = parseJsonLenient(text);
+    return { value: parsed, usage, raw };
+  } catch (e) {
+    const err: any = e instanceof Error ? e : new Error(String(e));
+    err.retryable = true;
+    throw err;
+  }
+};
+
 const callGeminiToolCall = async (args: {
   apiKey: string;
   model: string;
@@ -780,8 +1004,9 @@ const callGeminiToolCall = async (args: {
   env?: Record<string, string>;
   functionDeclarations: any[];
   allowedFunctionNames?: string[];
-}): Promise<{ name: string; args: any; raw: any }> => {
-  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
+  baseUrl?: string;
+}): Promise<{ name: string; args: any; raw: any; usage?: TokenUsage }> => {
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
   const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
   const geminiDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
 
@@ -823,16 +1048,17 @@ const callGeminiToolCall = async (args: {
     { label: `gemini.tool:${args.model}`, maxAttempts },
   );
 
-  const data = (await res.json()) as any;
-  const parts = data?.candidates?.[0]?.content?.parts;
+  const raw = (await res.json()) as any;
+  const usage = extractGeminiUsage(raw);
+  const parts = raw?.candidates?.[0]?.content?.parts;
   const list = Array.isArray(parts) ? parts : [];
   const fc = list.find((p: any) => p && typeof p === 'object' && (p.functionCall || p.function_call));
   const call = (fc?.functionCall || fc?.function_call) as any;
   if (!call?.name) {
-    const preview = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    throw new Error(`Gemini: missing functionCall. Preview: ${String(preview || JSON.stringify(data)).slice(0, 240)}`);
+    const preview = raw?.candidates?.[0]?.content?.parts?.[0]?.text;
+    throw new Error(`Gemini: missing functionCall. Preview: ${String(preview || JSON.stringify(raw)).slice(0, 240)}`);
   }
-  return { name: String(call.name), args: call.args ?? {}, raw: data };
+  return { name: String(call.name), args: call.args ?? {}, raw, usage };
 };
 
 const callGeminiStreamText = async (args: {
@@ -920,7 +1146,7 @@ const callOpenAICompatibleJson = async (args: {
   temperature: number;
   prompt: string;
   env?: Record<string, string>;
-}): Promise<any> => {
+}): Promise<{ value: any; usage?: TokenUsage; raw?: any }> => {
   const url = `${args.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
   const llmDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
   const data = await withRetries(
@@ -964,7 +1190,19 @@ const callOpenAICompatibleJson = async (args: {
 
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== 'string') throw new Error('LLM: missing content');
-  return JSON.parse(content);
+  const usageRaw = data?.usage;
+  let usage: TokenUsage | undefined;
+  if (usageRaw && typeof usageRaw === 'object') {
+    const promptTokens = Number((usageRaw as any).prompt_tokens);
+    const outputTokens = Number((usageRaw as any).completion_tokens);
+    const totalTokens = Number((usageRaw as any).total_tokens);
+    const out: TokenUsage = {};
+    if (Number.isFinite(promptTokens)) out.promptTokens = promptTokens;
+    if (Number.isFinite(outputTokens)) out.outputTokens = outputTokens;
+    if (Number.isFinite(totalTokens)) out.totalTokens = totalTokens;
+    if (Object.keys(out).length) usage = out;
+  }
+  return { value: JSON.parse(content), usage, raw: data };
 };
 
 type ModelProvider = 'gemini';
@@ -1129,8 +1367,9 @@ const callGeminiImage = async (args: {
   aspectRatio?: string;
   references?: Array<{ mimeType: string; bytes: Buffer; label?: string }>;
   env?: Record<string, string>;
-}): Promise<{ mimeType: string; bytes: Buffer }> => {
-  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model });
+  baseUrl?: string;
+}): Promise<{ mimeType: string; bytes: Buffer; raw?: any; usage?: TokenUsage }> => {
+  const url = buildGeminiGenerateContentUrl({ env: args.env, model: args.model, baseUrl: args.baseUrl });
   const maxAttempts = Math.max(1, Math.min(8, Number(args.env?.VISION_LLM_MAX_ATTEMPTS || args.env?.GEMINI_MAX_ATTEMPTS || 5)));
 
   const generationConfig: any = {
@@ -1165,7 +1404,7 @@ const callGeminiImage = async (args: {
     }),
   };
   const imgDispatcher = args.env ? getProxyDispatcher(url, args.env) : undefined;
-  const data = await withRetries(
+  const raw = await withRetries(
     async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 90_000);
@@ -1187,14 +1426,15 @@ const callGeminiImage = async (args: {
     },
     { label: `gemini.image:${args.model}`, maxAttempts },
   );
+  const usage = extractGeminiUsage(raw);
 
-  const parts = (data?.candidates?.[0]?.content?.parts || []) as any[];
+  const parts = (raw?.candidates?.[0]?.content?.parts || []) as any[];
   const inline = parts.find((p) => p?.inlineData?.data || p?.inline_data?.data);
   const inlineData = inline?.inlineData || inline?.inline_data;
   const mimeType = String(inlineData?.mimeType || inlineData?.mime_type || 'image/png');
   const b64 = inlineData?.data;
   if (typeof b64 !== 'string' || !b64) throw new Error('Gemini Image: missing inlineData');
-  return { mimeType, bytes: Buffer.from(b64, 'base64') };
+  return { mimeType, bytes: Buffer.from(b64, 'base64'), raw, usage };
 };
 
 const agentApiPlugin = (env: Record<string, string>): Plugin => {
@@ -1202,39 +1442,599 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   const geminiApiKey = String(env.GEMINI_API_KEY || '').trim();
   const geminiBaseUrl = resolveGeminiBaseUrl(env);
 
-  const applyRoutes = (middlewares: any) => {
-    middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
-      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
-      const pathname = String(req?.url || '').split('?')[0];
-      const filePath = safeGeneratedAssetPath(pathname);
-      if (!filePath) {
-        res.statusCode = 400;
-        return res.end('Bad path');
-      }
+  type PipelineKind =
+    | 'agent.scaffold'
+    | 'agent.direct'
+    | 'asset.video.generate'
+    | 'asset.image.generate'
+    | 'asset.image.describe'
+    | 'asset.image.store';
+  type PipelineTaskToken = {
+    id: string;
+    userId: string;
+    kind: PipelineKind;
+    enqueuedAt: number;
+    startedAt: number;
+    attempt: number;
+  };
+  type QueuedTask = {
+    token: Omit<PipelineTaskToken, 'startedAt' | 'attempt'>;
+    start: (token: PipelineTaskToken) => void;
+  };
+  const pipelineConcurrencyPerUser = Math.max(1, Math.min(16, Number(env.VISION_PIPELINE_CONCURRENCY_PER_USER || 2)));
+  const pipelineMaxQueuePerUser = Math.max(1, Math.min(200, Number(env.VISION_PIPELINE_MAX_QUEUE_PER_USER || 24)));
+  const pipelineRateLimitPerMin = Math.max(1, Math.min(2000, Number(env.VISION_PIPELINE_RATE_LIMIT_PER_MINUTE || 120)));
+  const pipelineMaxAttempts = Math.max(1, Math.min(5, Number(env.VISION_PIPELINE_MAX_ATTEMPTS || 2)));
+  const pipelineAuditDir = path.resolve(process.cwd(), '.vision-audit');
+  const pipelineStateDir = path.resolve(process.cwd(), '.vision-pipeline');
+  const pipelineStateFile = path.join(pipelineStateDir, 'tasks.json');
+  type PipelineTaskState = {
+    id: string;
+    route: string;
+    kind: PipelineKind;
+    userId: string;
+    status: 'queued' | 'running' | 'success' | 'failed';
+    enqueuedAt: number;
+    startedAt?: number;
+    endedAt?: number;
+    attempts: number;
+    statusCode?: number;
+    error?: string;
+    waitMs?: number;
+    durationMs?: number;
+    result?: any;
+  };
+  const pipelineTaskStateById = new Map<string, PipelineTaskState>();
+  const pipelineTaskStateOrder: string[] = [];
+  const pipelineTaskStateLimit = Math.max(200, Math.min(10_000, Number(env.VISION_PIPELINE_TASK_HISTORY_LIMIT || 2000)));
+  let pipelineStateFlushTimer: any = null;
+  const pipelineQueueByUser = new Map<string, QueuedTask[]>();
+  const pipelineRunningByUser = new Map<string, number>();
+  const pipelineRateWindows = new Map<string, { minute: number; count: number }>();
+
+  const appendPipelineAudit = (event: Record<string, any>) => {
+    try {
+      fs.mkdirSync(pipelineAuditDir, { recursive: true });
+      const now = new Date();
+      const yyyy = now.getUTCFullYear();
+      const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(now.getUTCDate()).padStart(2, '0');
+      const date = `${yyyy}-${mm}-${dd}`;
+      const line = `${JSON.stringify({ ts: Date.now(), ...event })}\n`;
+      fs.appendFileSync(path.join(pipelineAuditDir, `${date}.jsonl`), line);
+    } catch {
+      // ignore audit errors
+    }
+  };
+
+  const scheduleFlushPipelineTaskState = () => {
+    if (pipelineStateFlushTimer) return;
+    pipelineStateFlushTimer = setTimeout(() => {
+      pipelineStateFlushTimer = null;
       try {
-        const stat = fs.statSync(filePath);
-        if (!stat.isFile()) {
-          res.statusCode = 404;
-          return res.end('Not found');
-        }
-        res.statusCode = 200;
-        res.setHeader('content-type', mimeByExt(path.extname(filePath)));
-        res.setHeader('cache-control', 'public, max-age=31536000, immutable');
-        if (req.method === 'HEAD') return res.end();
-        fs.createReadStream(filePath).pipe(res);
+        fs.mkdirSync(pipelineStateDir, { recursive: true });
+        const tasks = pipelineTaskStateOrder
+          .map((id) => pipelineTaskStateById.get(id))
+          .filter(Boolean);
+        fs.writeFileSync(pipelineStateFile, JSON.stringify({ updatedAt: Date.now(), tasks }, null, 2));
       } catch {
-        res.statusCode = 404;
-        return res.end('Not found');
+        // ignore persistence errors
       }
+    }, 250);
+  };
+
+  const upsertPipelineTaskState = (task: PipelineTaskState) => {
+    if (!pipelineTaskStateById.has(task.id)) pipelineTaskStateOrder.unshift(task.id);
+    pipelineTaskStateById.set(task.id, task);
+    while (pipelineTaskStateOrder.length > pipelineTaskStateLimit) {
+      const id = pipelineTaskStateOrder.pop();
+      if (id) pipelineTaskStateById.delete(id);
+    }
+    scheduleFlushPipelineTaskState();
+  };
+
+  const loadPipelineTaskState = () => {
+    try {
+      const raw = fs.readFileSync(pipelineStateFile, 'utf-8');
+      const parsed = JSON.parse(raw) as { tasks?: PipelineTaskState[] };
+      const items = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+      for (const t of items.slice(0, pipelineTaskStateLimit)) {
+        if (!t || typeof t !== 'object' || !t.id) continue;
+        const recovered: PipelineTaskState =
+          t.status === 'running'
+            ? {
+                ...t,
+                status: 'failed',
+                endedAt: Date.now(),
+                error: t.error || 'Recovered after process restart',
+              }
+            : t;
+        pipelineTaskStateById.set(recovered.id, recovered);
+        pipelineTaskStateOrder.push(recovered.id);
+      }
+    } catch {
+      // ignore missing/corrupt state file
+    }
+  };
+  loadPipelineTaskState();
+
+  const takePipelineRateToken = (userId: string, kind: PipelineKind) => {
+    const minute = Math.floor(Date.now() / 60_000);
+    const key = `${userId}|${kind}`;
+    const prev = pipelineRateWindows.get(key);
+    if (!prev || prev.minute !== minute) {
+      pipelineRateWindows.set(key, { minute, count: 1 });
+      return { allowed: true, remaining: pipelineRateLimitPerMin - 1 };
+    }
+    if (prev.count >= pipelineRateLimitPerMin) {
+      return { allowed: false, remaining: 0 };
+    }
+    prev.count += 1;
+    return { allowed: true, remaining: pipelineRateLimitPerMin - prev.count };
+  };
+
+  const pumpPipelineQueueForUser = (userId: string) => {
+    const queue = pipelineQueueByUser.get(userId) || [];
+    let running = Number(pipelineRunningByUser.get(userId) || 0);
+    while (running < pipelineConcurrencyPerUser && queue.length > 0) {
+      const task = queue.shift()!;
+      running += 1;
+      pipelineRunningByUser.set(userId, running);
+      task.start({
+        ...task.token,
+        startedAt: Date.now(),
+        attempt: 1,
+      });
+    }
+    pipelineQueueByUser.set(userId, queue);
+  };
+
+  const enqueuePipelineTask = (
+    req: any,
+    res: any,
+    args: { kind: PipelineKind; route: string },
+  ): { tokenBase: Omit<PipelineTaskToken, 'startedAt' | 'attempt'>; started: Promise<PipelineTaskToken> } | null => {
+    const userId = getRequestUserId(req);
+    const rate = takePipelineRateToken(userId, args.kind);
+    if (!rate.allowed) {
+      appendPipelineAudit({
+        type: 'pipeline.rate_limited',
+        route: args.route,
+        kind: args.kind,
+        userId,
+      });
+      sendJson(res, 429, {
+        ok: false,
+        error: 'Rate limit exceeded',
+        code: 'PIPELINE_RATE_LIMITED',
+        retryAfterSeconds: 60,
+      });
+      return null;
+    }
+
+    const tokenBase = {
+      id: `pipe-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      userId,
+      kind: args.kind,
+      enqueuedAt: Date.now(),
+    };
+    upsertPipelineTaskState({
+      id: tokenBase.id,
+      route: args.route,
+      kind: args.kind,
+      userId,
+      status: 'queued',
+      enqueuedAt: tokenBase.enqueuedAt,
+      attempts: 0,
+    });
+    try {
+      if (res && typeof res.setHeader === 'function') res.setHeader('x-vision-task-id', tokenBase.id);
+    } catch {
+      // ignore header errors
+    }
+    const queue = pipelineQueueByUser.get(userId) || [];
+    if (queue.length >= pipelineMaxQueuePerUser) {
+      appendPipelineAudit({
+        type: 'pipeline.queue_rejected',
+        route: args.route,
+        kind: args.kind,
+        userId,
+        queueLength: queue.length,
+      });
+      sendJson(res, 503, {
+        ok: false,
+        error: 'Pipeline queue is full',
+        code: 'PIPELINE_QUEUE_FULL',
+        maxQueuePerUser: pipelineMaxQueuePerUser,
+      });
+      return null;
+    }
+
+    appendPipelineAudit({
+      type: 'pipeline.queued',
+      route: args.route,
+      kind: args.kind,
+      userId,
+      queueLength: queue.length + 1,
+      running: Number(pipelineRunningByUser.get(userId) || 0),
     });
 
-    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
-      if (req.method !== 'POST') return next();
-      const body = await readJsonBody(req);
+    const started = new Promise<PipelineTaskToken>((resolve) => {
+      queue.push({
+        token: tokenBase,
+        start: resolve,
+      });
+    });
+    pipelineQueueByUser.set(userId, queue);
+    pumpPipelineQueueForUser(userId);
+    return { tokenBase, started };
+  };
 
+  const markPipelineTaskStarted = (startedToken: PipelineTaskToken, args: { kind: PipelineKind; route: string }) => {
+    const userId = startedToken.userId;
+    const prev = pipelineTaskStateById.get(startedToken.id);
+    upsertPipelineTaskState({
+      ...(prev as PipelineTaskState),
+      id: startedToken.id,
+      route: args.route,
+      kind: args.kind,
+      userId,
+      status: 'running',
+      enqueuedAt: startedToken.enqueuedAt,
+      startedAt: startedToken.startedAt,
+      attempts: Math.max(1, Number(prev?.attempts || 0)),
+      waitMs: startedToken.startedAt - startedToken.enqueuedAt,
+    });
+    appendPipelineAudit({
+      type: 'pipeline.started',
+      route: args.route,
+      kind: args.kind,
+      userId,
+      taskId: startedToken.id,
+      waitMs: startedToken.startedAt - startedToken.enqueuedAt,
+      queueLength: (pipelineQueueByUser.get(userId) || []).length,
+      running: Number(pipelineRunningByUser.get(userId) || 0),
+    });
+  };
+
+  const beginPipelineTask = async (
+    req: any,
+    res: any,
+    args: { kind: PipelineKind; route: string },
+  ): Promise<PipelineTaskToken | null> => {
+    const enqueued = enqueuePipelineTask(req, res, args);
+    if (!enqueued) return null;
+    const startedToken = await enqueued.started;
+    markPipelineTaskStarted(startedToken, args);
+    return startedToken;
+  };
+
+  const endPipelineTask = (token: PipelineTaskToken, args: { route: string; ok: boolean; statusCode?: number; error?: any }) => {
+    const running = Math.max(0, Number(pipelineRunningByUser.get(token.userId) || 0) - 1);
+    pipelineRunningByUser.set(token.userId, running);
+    appendPipelineAudit({
+      type: args.ok ? 'pipeline.finished' : 'pipeline.failed',
+      route: args.route,
+      kind: token.kind,
+      userId: token.userId,
+      taskId: token.id,
+      durationMs: Date.now() - token.startedAt,
+      statusCode: args.statusCode || 0,
+      error: args.error ? formatFetchError(args.error) : undefined,
+    });
+    const prev = pipelineTaskStateById.get(token.id);
+    upsertPipelineTaskState({
+      ...(prev as PipelineTaskState),
+      id: token.id,
+      route: args.route,
+      kind: token.kind,
+      userId: token.userId,
+      status: args.ok ? 'success' : 'failed',
+      enqueuedAt: Number(prev?.enqueuedAt || token.enqueuedAt || Date.now()),
+      startedAt: Number(prev?.startedAt || token.startedAt || Date.now()),
+      endedAt: Date.now(),
+      attempts: Math.max(1, Number(prev?.attempts || token.attempt || 1)),
+      statusCode: Number(args.statusCode || 0) || undefined,
+      error: args.error ? formatFetchError(args.error) : undefined,
+      waitMs: prev?.waitMs,
+      durationMs: Date.now() - Number(prev?.startedAt || token.startedAt || Date.now()),
+    });
+    pumpPipelineQueueForUser(token.userId);
+  };
+
+  const withPipelineTask = async <T,>(
+    req: any,
+    res: any,
+    args: { kind: PipelineKind; route: string; run: () => Promise<T> },
+  ) => {
+    const token = await beginPipelineTask(req, res, { kind: args.kind, route: args.route });
+    if (!token) return null;
+    let lastErr: any = null;
+    try {
+      for (let attempt = 1; attempt <= pipelineMaxAttempts; attempt++) {
+        const prev = pipelineTaskStateById.get(token.id);
+        if (prev) {
+          upsertPipelineTaskState({
+            ...prev,
+            attempts: Math.max(Number(prev.attempts || 0), attempt),
+            status: 'running',
+          });
+        }
+        try {
+          const out = await args.run();
+          endPipelineTask(token, { route: args.route, ok: true, statusCode: Number(res?.statusCode || 200) });
+          return out;
+        } catch (e: any) {
+          lastErr = e;
+          const shouldRetry = attempt < pipelineMaxAttempts && isRetryableNetworkError(e);
+          if (!shouldRetry) throw e;
+          await sleep(Math.min(3000, 300 * attempt + Math.floor(Math.random() * 150)));
+        }
+      }
+      throw lastErr;
+    } catch (e) {
+      endPipelineTask(token, { route: args.route, ok: false, statusCode: Number(res?.statusCode || 500), error: e });
+      if (!res?.headersSent && !res?.writableEnded) {
+        sendJson(res, 502, {
+          ok: false,
+          error: formatFetchError(e),
+          code: 'PIPELINE_TASK_FAILED',
+          route: args.route,
+          kind: args.kind,
+        });
+      }
+      return null;
+    }
+  };
+
+  const submitPipelineTask = <T,>(
+    req: any,
+    res: any,
+    args: { kind: PipelineKind; route: string; run: () => Promise<T>; mapResult?: (out: T) => any },
+  ): { taskId: string; statusUrl: string } | null => {
+    const enqueued = enqueuePipelineTask(req, res, { kind: args.kind, route: args.route });
+    if (!enqueued) return null;
+    const taskId = enqueued.tokenBase.id;
+    enqueued.started
+      .then(async (token) => {
+        markPipelineTaskStarted(token, { kind: args.kind, route: args.route });
+        let lastErr: any = null;
+        try {
+          for (let attempt = 1; attempt <= pipelineMaxAttempts; attempt++) {
+            const prev = pipelineTaskStateById.get(token.id);
+            if (prev) {
+              upsertPipelineTaskState({
+                ...prev,
+                attempts: Math.max(Number(prev.attempts || 0), attempt),
+                status: 'running',
+              });
+            }
+            try {
+              const out = await args.run();
+              const prevDone = pipelineTaskStateById.get(token.id);
+              if (prevDone) {
+                upsertPipelineTaskState({
+                  ...prevDone,
+                  result: args.mapResult ? args.mapResult(out) : undefined,
+                });
+              }
+              endPipelineTask(token, { route: args.route, ok: true, statusCode: 200 });
+              return;
+            } catch (e: any) {
+              lastErr = e;
+              const shouldRetry = attempt < pipelineMaxAttempts && isRetryableNetworkError(e);
+              if (!shouldRetry) throw e;
+              await sleep(Math.min(3000, 300 * attempt + Math.floor(Math.random() * 150)));
+            }
+          }
+          throw lastErr;
+        } catch (e: any) {
+          endPipelineTask(token, { route: args.route, ok: false, statusCode: Number(e?.status || 500) || 500, error: e });
+        }
+      })
+      .catch((e) => {
+        const prev = pipelineTaskStateById.get(taskId);
+        if (prev) {
+          upsertPipelineTaskState({
+            ...prev,
+            status: 'failed',
+            endedAt: Date.now(),
+            error: formatFetchError(e),
+          });
+        }
+      });
+    return { taskId, statusUrl: `/api/pipeline/tasks/${encodeURIComponent(taskId)}` };
+  };
+
+	  const applyRoutes = (middlewares: any) => {
+      middlewares.use('/api/pipeline/metrics', async (req: any, res: any, next: any) => {
+        if (req.method !== 'GET') return next();
+        const queueByUser = Array.from(pipelineQueueByUser.entries()).map(([userId, q]) => ({ userId, queued: q.length }));
+        const runningByUser = Array.from(pipelineRunningByUser.entries()).map(([userId, running]) => ({ userId, running }));
+        return sendJson(res, 200, {
+          ok: true,
+          limits: {
+            concurrencyPerUser: pipelineConcurrencyPerUser,
+            maxQueuePerUser: pipelineMaxQueuePerUser,
+            rateLimitPerMinute: pipelineRateLimitPerMin,
+            maxAttempts: pipelineMaxAttempts,
+          },
+          queueByUser,
+          runningByUser,
+        });
+      });
+
+      middlewares.use('/api/pipeline/tasks', async (req: any, res: any, next: any) => {
+        if (req.method !== 'GET') return next();
+        const full = String(req?.url || '');
+        const [pathnameRaw, queryRaw] = full.split('?');
+        const pathname = String(pathnameRaw || '');
+        const base = '/api/pipeline/tasks';
+        const query = new URLSearchParams(String(queryRaw || ''));
+        if (pathname === base || pathname === `${base}/`) {
+          const limit = Math.max(1, Math.min(500, Number(query.get('limit') || 100)));
+          const userId = normalizeUserId(query.get('userId') || '');
+          const status = String(query.get('status') || '').trim();
+          const out = pipelineTaskStateOrder
+            .map((id) => pipelineTaskStateById.get(id))
+            .filter(Boolean)
+            .filter((t) => (userId ? t!.userId === userId : true))
+            .filter((t) => (status ? t!.status === status : true))
+            .slice(0, limit);
+          return sendJson(res, 200, { ok: true, count: out.length, tasks: out as any });
+        }
+        if (pathname.startsWith(`${base}/`)) {
+          const id = decodeURIComponent(pathname.slice(`${base}/`.length));
+          const task = pipelineTaskStateById.get(id);
+          if (!task) return sendJson(res, 404, { ok: false, error: 'Task not found' });
+          return sendJson(res, 200, { ok: true, task });
+        }
+        return next();
+      });
+
+	    middlewares.use('/__generated__', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+	      const pathname = String(req?.url || '').split('?')[0];
+        const userId = getRequestUserId(req);
+	      const fileCandidates = safeGeneratedAssetPaths(pathname, userId);
+	      if (!fileCandidates.length) {
+	        res.statusCode = 400;
+	        return res.end('Bad path');
+	      }
+	      try {
+          let filePath = '';
+          let stat: fs.Stats | null = null;
+          for (const p of fileCandidates) {
+            try {
+              const s = fs.statSync(p);
+              if (s.isFile()) {
+                filePath = p;
+                stat = s;
+                break;
+              }
+            } catch {
+              // try next
+            }
+          }
+          if (!filePath || !stat) {
+            res.statusCode = 404;
+            return res.end('Not found');
+          }
+	        const size = Number(stat.size || 0);
+	        const contentType = mimeByExt(path.extname(filePath));
+	        res.setHeader('content-type', contentType);
+	        res.setHeader('cache-control', 'public, max-age=31536000, immutable');
+	        res.setHeader('accept-ranges', 'bytes');
+
+	        // HTML5 video commonly requests `Range` (even for metadata). If we ignore it,
+	        // some browsers will treat the response as a load failure.
+	        const range = String(req.headers?.range || '').trim();
+	        if (req.method === 'GET' && range.startsWith('bytes=')) {
+	          const m = /^bytes=(\d*)-(\d*)$/i.exec(range);
+	          if (!m) {
+	            res.statusCode = 416;
+	            res.setHeader('content-range', `bytes */${size}`);
+	            return res.end();
+	          }
+	          const startRaw = m[1] ? Number(m[1]) : 0;
+	          const endRaw = m[2] ? Number(m[2]) : size - 1;
+	          const start = Number.isFinite(startRaw) ? startRaw : 0;
+	          const end = Number.isFinite(endRaw) ? endRaw : size - 1;
+	          if (start < 0 || end < start || start >= size) {
+	            res.statusCode = 416;
+	            res.setHeader('content-range', `bytes */${size}`);
+	            return res.end();
+	          }
+	          res.statusCode = 206;
+	          res.setHeader('content-range', `bytes ${start}-${end}/${size}`);
+	          res.setHeader('content-length', String(end - start + 1));
+	          return fs.createReadStream(filePath, { start, end }).pipe(res);
+	        }
+
+	        res.statusCode = 200;
+	        res.setHeader('content-length', String(size));
+	        if (req.method === 'HEAD') return res.end();
+	        return fs.createReadStream(filePath).pipe(res);
+	      } catch {
+	        res.statusCode = 404;
+	        return res.end('Not found');
+	      }
+	    });
+
+      middlewares.use('/api/local-assets/delete', async (req: any, res: any, next: any) => {
+        if (req.method !== 'POST') return next();
+        const userId = getRequestUserId(req);
+        const body = await readJsonBody(req);
+        const rawUrls = Array.isArray(body?.urls) ? body.urls : [];
+        const urls = Array.from(
+          new Set(
+            rawUrls
+              .map((u: any) => String(u || '').trim())
+              .filter((u: string) => Boolean(u)),
+          ),
+        ).slice(0, 2000);
+
+        let deleted = 0;
+        let missing = 0;
+        let rejected = 0;
+        const errors: string[] = [];
+
+        for (const u of urls) {
+          const candidates = safeGeneratedAssetPaths(u, userId);
+          if (!candidates.length) {
+            rejected += 1;
+            continue;
+          }
+          let removed = false;
+          let missingCount = 0;
+          for (const p of candidates) {
+            try {
+              await fs.promises.unlink(p);
+              deleted += 1;
+              removed = true;
+              break;
+            } catch (e: any) {
+              const code = String(e?.code || '');
+              if (code === 'ENOENT') {
+                missingCount += 1;
+                continue;
+              }
+              errors.push(`${path.basename(p)}:${code || 'ERR'}`);
+              break;
+            }
+          }
+          if (!removed && missingCount === candidates.length) {
+            missing += 1;
+          }
+        }
+
+        return sendJson(res, 200, {
+          ok: true,
+          requested: urls.length,
+          deleted,
+          missing,
+          rejected,
+          errors: errors.slice(0, 20),
+        });
+      });
+
+	    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'POST') return next();
+        const userId = getRequestUserId(req);
+	      const body = await readJsonBody(req);
+        const reqUrl = new URL(String(req?.url || '/api/asset/video/generate'), 'http://127.0.0.1');
+        const bypassPipeline = String(reqUrl.searchParams.get('bypassPipeline') || '').trim() === '1';
+        const preferHeader = String(req?.headers?.prefer || req?.headers?.Prefer || '').toLowerCase();
+        const asyncRequested = !bypassPipeline && (Boolean(body?.async) || preferHeader.includes('respond-async'));
+
+      const runVideoGenerate = async () => {
       const prompt = String(body?.prompt || '').trim();
       const promptSpec = body?.promptSpec && typeof body.promptSpec === 'object' ? body.promptSpec : null;
       const imageUrl = String(body?.imageUrl || '').trim();
+      const referenceImageUrls = (Array.isArray(body?.referenceImageUrls) ? body.referenceImageUrls : [])
+        .map((u: any) => String(u || '').trim())
+        .filter(Boolean)
+        .slice(0, 12);
       const durationRaw = Number(body?.durationSeconds ?? 6);
       const durationSeconds = durationRaw === 4 || durationRaw === 6 || durationRaw === 8 ? durationRaw : 6;
       const aspectRatio = String(body?.aspectRatio || '16:9').trim() === '9:16' ? '9:16' : '16:9';
@@ -1248,9 +2048,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
       if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
       if (resolution !== '720p') return sendJson(res, 400, { ok: false, error: 'Only 720p is supported' });
-      if (!geminiApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+      // Veo must call direct Gemini. Do NOT route through Compass gateway.
+      if (!geminiDirectApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
 
-      const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any): string => {
+      const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any, refUrls: string[]): string => {
         const core = String(basePrompt || '').trim();
         const hasLabel = (labels: string[]) => {
           if (!core) return false;
@@ -1263,8 +2064,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const parts: string[] = [];
         parts.push('Image-to-video: use the provided image as the starting frame; preserve subject identity and environment continuity.');
         if (core) parts.push(`Core direction: ${core}`);
+        pushIfMissing(['current frame', 'frame description'], spec?.frameDescription ? `Current frame: ${String(spec.frameDescription).trim()}` : '');
+        pushIfMissing(['story context', 'narrative context'], spec?.storyContext ? `Story context: ${String(spec.storyContext).trim()}` : '');
         pushIfMissing(['scene'], spec?.shotDescription ? `Scene: ${String(spec.shotDescription).trim()}` : '');
+        pushIfMissing(['acting direction', 'performance direction'], spec?.actingDirection ? `Acting direction: ${String(spec.actingDirection).trim()}` : '');
         pushIfMissing(['action'], spec?.action ? `Action: ${String(spec.action).trim()}` : '');
+        pushIfMissing(['dialogue'], Array.isArray(spec?.dialogue) && spec.dialogue.length ? `Dialogue: ${spec.dialogue.map((x: any) => `"${String(x || '').trim()}"`).join(' ')}` : '');
+        pushIfMissing(['director notes'], spec?.directorNotes ? `Director notes: ${String(spec.directorNotes).trim()}` : '');
+        pushIfMissing(['cameraman', 'camera plan'], spec?.cameraman ? `Cameraman plan: ${String(spec.cameraman).trim()}` : '');
         pushIfMissing(['camera motion', 'camera'], spec?.camera ? `Camera motion: ${String(spec.camera).trim()}` : '');
         pushIfMissing(['composition'], spec?.composition ? `Composition: ${String(spec.composition).trim()}` : '');
         pushIfMissing(['lens/look', 'lens'], spec?.lensEffect ? `Lens/look: ${String(spec.lensEffect).trim()}` : '');
@@ -1277,6 +2084,23 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           });
         pushIfMissing(['style translation hints', 'style intent'], inferredStyle ? `Style translation hints: ${inferredStyle}.` : '');
         pushIfMissing(['audio intent', 'audio'], spec?.audio ? `Audio intent: ${String(spec.audio).trim()}` : '');
+        if (Array.isArray(spec?.referenceFrames) && spec.referenceFrames.length) {
+          const frameSummary = spec.referenceFrames
+            .slice(0, 8)
+            .map((f: any, i: number) => {
+              const idx = Number.isFinite(Number(f?.panelIndex)) ? `#${Number(f.panelIndex) + 1}` : `#${i + 1}`;
+              const d = String(f?.description || '').trim().slice(0, 180);
+              return d ? `${idx} ${d}` : idx;
+            })
+            .join(' | ');
+          pushIfMissing(['reference frames', 'reference bundle'], frameSummary ? `Reference frame bundle: ${frameSummary}` : '');
+        }
+        if (refUrls.length > 1) {
+          parts.push(
+            `Additional references: ${refUrls.length} images provided as context. ` +
+              'Current Gemini path uses the first frame as source image; keep continuity with all provided references.',
+          );
+        }
         const constraints = Array.isArray(spec?.constraints) ? spec.constraints : [];
         pushIfMissing(['constraints'], constraints.length ? `Constraints: ${constraints.map((x: any) => String(x).trim()).filter(Boolean).join(' ')}` : '');
         if (!/motion quality\s*:/i.test(core)) {
@@ -1288,7 +2112,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         return parts.join('\n').slice(0, 8000);
       };
 
-      const promptUsed = composeVeoImageToVideoPrompt(prompt, promptSpec);
+      const promptUsed = composeVeoImageToVideoPrompt(prompt, promptSpec, referenceImageUrls);
 
       const loadImage = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
         const u = String(url || '').trim();
@@ -1296,10 +2120,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         if (u.startsWith('/__generated__/')) {
           const clean = u.split('?')[0].split('#')[0];
-          const filePath = safeGeneratedAssetPath(clean);
-          if (!filePath) return null;
-          const bytes = await fs.promises.readFile(filePath);
-          return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+          const fileCandidates = safeGeneratedAssetPaths(clean, userId);
+          for (const filePath of fileCandidates) {
+            try {
+              const bytes = await fs.promises.readFile(filePath);
+              return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+            } catch {
+              // try next candidate
+            }
+          }
+          return null;
         }
 
         if (u.startsWith('data:image/')) {
@@ -1338,7 +2168,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const queue = Array.from(candidates);
         for (let i = 0; i < queue.length; i++) {
           const c = queue[i];
-          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiApiKey)}`;
+          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiDirectApiKey)}`;
           for (const u of [c, withKey]) {
             try {
               const resp = await withRetries(
@@ -1346,7 +2176,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   const controller = new AbortController();
                   const timeout = setTimeout(() => controller.abort(), 90_000);
                   try {
-                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiApiKey } };
+                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiDirectApiKey } };
                     const dispatcher = getProxyDispatcher(u, env);
                     const runVideoFetch = async (useDispatcher: boolean) => {
                       const reqInit: any = { ...init };
@@ -1526,7 +2356,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const loaded = await loadImage(imageUrl);
         if (!loaded) return sendJson(res, 400, { ok: false, error: 'Unable to load source image' });
 
-        ensureGeneratedDir();
+        ensureGeneratedDir(userId);
         let predictRes: any = null;
         let model = modelCandidates[0];
         let predictParamsUsed: Record<string, any> = {};
@@ -1541,7 +2371,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         };
         for (const candidate of modelCandidates) {
           model = candidate;
-          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate, baseUrl: geminiDirectBaseUrl })}?key=${encodeURIComponent(geminiDirectApiKey)}`;
           const predictDispatcher = getProxyDispatcher(predictUrl, env);
           const baseParams: Record<string, any> = {
             aspectRatio,
@@ -1641,7 +2471,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             throw new Error(`Gemini Video timeout after ${Math.round((Date.now() - pollStart) / 1000)}s`);
           }
           await sleep(pollIntervalMs);
-          const opUrl = `${buildGeminiOperationUrl({ env, operationName })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const opUrl = `${buildGeminiOperationUrl({ env, operationName, baseUrl: geminiDirectBaseUrl })}?key=${encodeURIComponent(geminiDirectApiKey)}`;
           const opDispatcher = getProxyDispatcher(opUrl, env);
           opData = await withRetries(
             async () => {
@@ -1726,11 +2556,16 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         }
 
         if (videoBytes && videoBytes.length) {
-          const hash = crypto.createHash('sha256').update(`${model}\n${durationSeconds}\n${aspectRatio}\n${promptUsed}\n${imageUrl}`).digest('hex').slice(0, 16);
+          const hash = crypto
+            .createHash('sha256')
+            .update(`${model}\n${durationSeconds}\n${aspectRatio}\n${promptUsed}\n${imageUrl}\n${referenceImageUrls.join('\n')}`)
+            .digest('hex')
+            .slice(0, 16);
           const filename = `${Date.now()}-${hash}.mp4`;
-          fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), videoBytes);
+          ensureGeneratedDir(userId);
+          fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), videoBytes);
           return sendJson(res, 200, {
-            videoUrl: `/__generated__/${filename}`,
+            videoUrl: buildGeneratedAssetUrl(userId, filename),
             operationName,
             debug: {
               transport: 'http',
@@ -1743,6 +2578,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               bytes: videoBytes.length,
               promptPreview: prompt.slice(0, 240),
               promptUsedPreview: promptUsed.slice(0, 320),
+              referenceImageCount: referenceImageUrls.length,
               requestParameters: predictParamsUsed,
               uriCandidates: Array.from(uriCandidates).slice(0, 16),
             },
@@ -1783,6 +2619,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               raiReasons,
               promptPreview: prompt.slice(0, 240),
               promptUsedPreview: promptUsed.slice(0, 320),
+              referenceImageCount: referenceImageUrls.length,
             },
           });
         }
@@ -1800,37 +2637,235 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           );
           throw new Error(`Gemini Video: operation completed but no downloadable video URI (shape=${responseShape})`);
         }
-        return sendJson(res, 200, {
-          videoUrl: resolvedVideoUri,
+
+        // IMPORTANT: never return a remote Gemini URL to the browser.
+        // Browsers can't attach the required API key headers; persisting that URL breaks preview/playback.
+        // If we can't download bytes here, treat it as a transient server-side failure so the user can retry.
+        const err: any = new Error('Gemini Video: operation completed but video download failed');
+        err.status = 502;
+        err.retryable = true;
+        (err as any).debug = {
+          provider: 'gemini',
+          model,
           operationName,
-          debug: {
-            transport: 'http',
-            provider: 'gemini',
-            model,
-            baseUrl: geminiBaseUrl,
-            durationSeconds,
-            resolution,
-            aspectRatio,
-            remote: true,
-            promptUsedPreview: promptUsed.slice(0, 320),
-            requestParameters: predictParamsUsed,
-            uriCandidates: Array.from(uriCandidates).slice(0, 16),
-          },
-        });
+          gateway: 'direct',
+          durationSeconds,
+          resolution,
+          aspectRatio,
+          resolvedVideoUri,
+          uriCandidates: Array.from(uriCandidates).slice(0, 16),
+        };
+        throw err;
       } catch (e: any) {
         const status = Number(e?.status || 0);
         const code = Number.isFinite(status) && status >= 400 && status <= 599 ? status : 500;
         return sendJson(res, code, {
           ok: false,
           error: formatFetchError(e),
-          debug: { provider: 'gemini', modelCandidates, imageUrlPreview: imageUrl.slice(0, 200), promptPreview: prompt.slice(0, 200), promptUsedPreview: promptUsed.slice(0, 320) },
+          debug: {
+            ...(e?.debug && typeof e.debug === 'object' ? e.debug : {}),
+            provider: 'gemini',
+            modelCandidates,
+            imageUrlPreview: imageUrl.slice(0, 200),
+            promptPreview: prompt.slice(0, 200),
+            promptUsedPreview: promptUsed.slice(0, 320),
+            referenceImageCount: referenceImageUrls.length,
+          },
         });
       }
-    });
+      };
 
-		    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
-		      if (req.method !== 'POST') return next();
-		        const body = await readJsonBody(req);
+      if (asyncRequested) {
+        const submitted = submitPipelineTask(req, res, {
+          kind: 'asset.video.generate',
+          route: '/api/asset/video/generate',
+          run: async () => {
+            const internalBase = String(env.VISION_INTERNAL_BASE_URL || `http://127.0.0.1:${String(env.PORT || '3000')}`).replace(/\/$/, '');
+            const internalUrl = `${internalBase}/api/asset/video/generate?bypassPipeline=1`;
+            const resp = await fetch(internalUrl, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                [VISION_USER_ID_HEADER]: userId,
+                'x-vision-internal-pipeline': '1',
+              },
+              body: JSON.stringify({ ...body, async: false }),
+            });
+            const data = (await resp.json().catch(() => null)) as any;
+            if (!resp.ok) {
+              const err: any = new Error(String(data?.error || `HTTP ${resp.status}`));
+              err.status = resp.status;
+              err.debug = data?.debug;
+              throw err;
+            }
+            return data;
+          },
+          mapResult: (out: any) => ({
+            ok: Boolean(out?.videoUrl),
+            videoUrl: String(out?.videoUrl || ''),
+            operationName: String(out?.operationName || ''),
+          }),
+        });
+        if (!submitted) return;
+        return sendJson(res, 202, {
+          ok: true,
+          accepted: true,
+          taskId: submitted.taskId,
+          statusUrl: submitted.statusUrl,
+        });
+      }
+
+      if (bypassPipeline) return runVideoGenerate();
+      return withPipelineTask(req, res, {
+        kind: 'asset.video.generate',
+        route: '/api/asset/video/generate',
+        run: runVideoGenerate,
+      });
+	    });
+
+	    // Store client-generated (e.g. cropped) images into the local generated-assets directory.
+	    // This keeps ShotVersion.imageUrl small (`/__generated__/...`) instead of embedding huge data URLs.
+	    middlewares.use('/api/asset/image/store', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'POST') return next();
+        return withPipelineTask(req, res, {
+          kind: 'asset.image.store',
+          route: '/api/asset/image/store',
+          run: async () => {
+        const userId = getRequestUserId(req);
+	      const body = await readJsonBody(req);
+	      const dataUrl = String(body?.dataUrl || '').trim();
+	      const filenameHint = String(body?.filenameHint || '').trim();
+	      if (!dataUrl.startsWith('data:image/')) return sendJson(res, 400, { ok: false, error: 'Expected dataUrl (data:image/*;base64,...)' });
+	      const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(dataUrl);
+	      if (!m) return sendJson(res, 400, { ok: false, error: 'Invalid dataUrl' });
+	      const mimeType = String(m[1] || 'image/png').toLowerCase();
+	      const b64 = String(m[2] || '');
+	      let bytes: Buffer;
+	      try {
+	        bytes = Buffer.from(b64, 'base64');
+	      } catch {
+	        return sendJson(res, 400, { ok: false, error: 'Invalid base64' });
+	      }
+	      if (!bytes.length) return sendJson(res, 400, { ok: false, error: 'Empty image bytes' });
+	      // Avoid OOM / accidental giant payloads.
+	      if (bytes.length > 12 * 1024 * 1024) return sendJson(res, 413, { ok: false, error: 'Image too large (max 12MB)' });
+
+	      const ext =
+	        mimeType === 'image/jpeg' ? '.jpg' :
+	          mimeType === 'image/webp' ? '.webp' :
+	            '.png';
+	      ensureGeneratedDir(userId);
+	      const hash = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+	      const safeHint = filenameHint.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 48);
+	      const filename = `${Date.now()}-${safeHint ? `${safeHint}-` : ''}${hash}${ext}`;
+	      fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), bytes);
+	      return sendJson(res, 200, { ok: true, imageUrl: buildGeneratedAssetUrl(userId, filename), mimeType, bytes: bytes.length });
+          },
+        });
+	    });
+
+	    middlewares.use('/api/asset/image/describe', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'POST') return next();
+        return withPipelineTask(req, res, {
+          kind: 'asset.image.describe',
+          route: '/api/asset/image/describe',
+          run: async () => {
+        const userId = getRequestUserId(req);
+	      const body = await readJsonBody(req);
+	      const imageUrl = String(body?.imageUrl || '').trim();
+	      if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
+	      const describeApiKey = geminiApiKey;
+	      const describeBaseUrl = geminiBaseUrl || undefined;
+	      if (!describeApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+
+	      const loadImageBytes = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
+	        const u = String(url || '').trim();
+	        if (!u) return null;
+	        if (u.startsWith('/__generated__/')) {
+	          const clean = u.split('?')[0].split('#')[0];
+            const fileCandidates = safeGeneratedAssetPaths(clean, userId);
+            for (const filePath of fileCandidates) {
+              try {
+                const bytes = await fs.promises.readFile(filePath);
+                return { mimeType: mimeByExt(path.extname(filePath)), bytes };
+              } catch {
+                // try next candidate
+              }
+            }
+            return null;
+	        }
+	        if (u.startsWith('data:image/')) {
+	          const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(u);
+	          if (!match) return null;
+	          return { mimeType: match[1], bytes: Buffer.from(match[2], 'base64') };
+	        }
+	        if (u.startsWith('http://') || u.startsWith('https://')) {
+	          const controller = new AbortController();
+	          const timeout = setTimeout(() => controller.abort(), 20_000);
+	          try {
+	            const init: any = { signal: controller.signal };
+	            const dispatcher = getProxyDispatcher(u, env);
+	            if (dispatcher) init.dispatcher = dispatcher;
+	            const resp = await fetch(u, init);
+	            if (!resp.ok) return null;
+	            const ct = String(resp.headers.get('content-type') || '');
+	            if (!ct.startsWith('image/')) return null;
+	            const bytes = Buffer.from(await resp.arrayBuffer());
+	            if (!bytes.length) return null;
+	            return { mimeType: ct.split(';')[0] || 'image/png', bytes };
+	          } finally {
+	            clearTimeout(timeout);
+	          }
+	        }
+	        return null;
+	      };
+
+	      const loaded = await loadImageBytes(imageUrl);
+	      if (!loaded?.bytes?.length) return sendJson(res, 400, { ok: false, error: 'Could not load imageUrl bytes' });
+
+	      const describeModel = String(env.VISION_DESCRIBE_MODEL || env.GEMINI_VISION_MODEL || 'gemini-2.0-flash').trim();
+	      const prompt =
+	        'You are a vision assistant. Analyze the provided image frame for refinement.\n' +
+	        'Return JSON with:\n' +
+	        '- description: 1-2 sentences, literal visual facts\n' +
+	        '- keySubjects: list of key subjects (names if visible, otherwise generic)\n' +
+	        '- environment: brief setting description\n' +
+	        '- composition: framing and layout (shot scale, subject placement)\n' +
+	        '- camera: angle and lens impression (if inferable)\n' +
+	        '- lighting: direction, quality, color temperature\n' +
+	        '- style: material/texture/grade keywords (literal)\n' +
+	        '- constraints: do-not-change items for refinement\n' +
+	        'Do not mention grids/contact sheets unless clearly present. Do not invent story context.';
+
+	      try {
+	        const out = await callGeminiVisionJson({
+	          apiKey: describeApiKey,
+	          model: describeModel,
+	          temperature: 0.2,
+	          maxOutputTokens: 768,
+	          prompt,
+	          image: loaded,
+	          env,
+	          responseSchema: GEMINI_SCHEMA.imageDescribe,
+	          baseUrl: describeBaseUrl,
+	        });
+	        return sendJson(res, 200, { ok: true, describe: out.value, usage: out.usage });
+	      } catch (e: any) {
+	        const errText = formatFetchError(e);
+	        return sendJson(res, 502, { ok: false, error: errText });
+	      }
+          },
+        });
+	    });
+
+			    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
+			      if (req.method !== 'POST') return next();
+            return withPipelineTask(req, res, {
+              kind: 'asset.image.generate',
+              route: '/api/asset/image/generate',
+              run: async () => {
+            const userId = getRequestUserId(req);
+			        const body = await readJsonBody(req);
 
 		        const prompt = String(body?.prompt || '').trim();
 		        const promptSpec = body?.promptSpec;
@@ -1846,51 +2881,61 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
         if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
 
-	        let promptUsed = prompt;
-	        let composed: any = null;
-	        const promptPreview = prompt.slice(0, 120);
+		        let promptUsed = prompt;
+		        let composed: any = null;
+            let composeUsage: TokenUsage | undefined;
+		        const promptPreview = prompt.slice(0, 120);
 
-	        try {
-	          if (provider === 'gemini' && geminiApiKey) {
-	            const usedModel = normalizeGeminiImageModel(model);
-	            ensureGeneratedDir();
-	
-	            if (composePrompt && promptSpec && typeof promptSpec === 'object') {
-	              try {
-	                const composerModel = String(composeSettings?.model || env?.VISION_PROMPT_COMPOSER_MODEL || 'gemini-3-pro-preview');
-	                const composerTemp = Number.isFinite(Number(composeSettings?.temperature)) ? Number(composeSettings.temperature) : 0.2;
-	                const composerMaxTokens = Number.isFinite(Number(composeSettings?.maxOutputTokens)) ? Number(composeSettings.maxOutputTokens) : 512;
-	                const trimmedSpec = JSON.parse(JSON.stringify(promptSpec));
-	                if (typeof trimmedSpec?.styleGuide === 'string' && trimmedSpec.styleGuide.length > 2000) {
-	                  trimmedSpec.styleGuide = trimmedSpec.styleGuide.slice(0, 2000);
-	                }
-	                const composePromptText =
-	                  `You are a senior visual direction prompt engineer.\n` +
-	                  `Compose the BEST single prompt for Gemini image generation (model: ${usedModel}).\n` +
-	                  `Goal: produce a narrative keyframe (mid-action), not a poster, not concept art, not posed.\n` +
-	                  `Write a cohesive prompt (1-3 short paragraphs). No headings like TASK/SCENE. No bullet lists. No JSON inside the prompt.\n` +
-	                  `Preserve the medium/style in the input spec. Do not drift into generic photoreal/CGI wording unless explicitly requested.\n` +
-	                  `Include: concrete frame description, composition, lighting mood, and style constraints. Add lens/DoF jargon only when it helps the requested medium.\n` +
-	                  `Return ONLY JSON: {"prompt": string, "negativePrompt": string}.\n` +
-	                  `Input spec JSON:\n${JSON.stringify(trimmedSpec)}\n`;
-	                composed = await callGeminiJson({
-	                  apiKey: geminiApiKey,
-	                  model: composerModel,
-	                  temperature: composerTemp,
-	                  maxOutputTokens: composerMaxTokens,
-	                  prompt: composePromptText,
-	                  env,
-	                  responseSchema: GEMINI_SCHEMA.promptCompose,
-	                });
-	                const p = String(composed?.prompt || '').trim();
-	                const n = String(composed?.negativePrompt || '').trim();
-	                if (p) {
-	                  promptUsed = n ? `${p}\n\nNegative: ${n}` : p;
-	                }
-	              } catch (e: any) {
-	                composed = { error: formatFetchError(e) };
-	              }
-	            }
+		        try {
+		          if (provider === 'gemini') {
+		            const usedModel = normalizeGeminiImageModel(model);
+		            ensureGeneratedDir(userId);
+
+                // Prompt composer uses the same direct Gemini transport in homework.
+		            if (composePrompt && promptSpec && typeof promptSpec === 'object') {
+		              try {
+		                const composerModel = String(composeSettings?.model || env?.VISION_PROMPT_COMPOSER_MODEL || 'gemini-3-pro-preview');
+		                const composerTemp = Number.isFinite(Number(composeSettings?.temperature)) ? Number(composeSettings.temperature) : 0.2;
+		                const composerMaxTokens = Number.isFinite(Number(composeSettings?.maxOutputTokens)) ? Number(composeSettings.maxOutputTokens) : 512;
+		                const trimmedSpec = JSON.parse(JSON.stringify(promptSpec));
+		                if (typeof trimmedSpec?.styleGuide === 'string' && trimmedSpec.styleGuide.length > 2000) {
+		                  trimmedSpec.styleGuide = trimmedSpec.styleGuide.slice(0, 2000);
+		                }
+		                const composePromptText =
+		                  `You are a senior visual direction prompt engineer.\n` +
+		                  `Compose the BEST single prompt for Gemini image generation (model: ${usedModel}).\n` +
+		                  `Goal: produce a narrative keyframe (mid-action), not a poster, not concept art, not posed.\n` +
+		                  `Write a cohesive prompt (1-3 short paragraphs). No headings like TASK/SCENE. No bullet lists. No JSON inside the prompt.\n` +
+		                  `Preserve the medium/style in the input spec. Do not drift into generic photoreal/CGI wording unless explicitly requested.\n` +
+		                  `Include: concrete frame description, composition, lighting mood, and style constraints. Add lens/DoF jargon only when it helps the requested medium.\n` +
+		                  `Return ONLY JSON: {"prompt": string, "negativePrompt": string}.\n` +
+		                  `Input spec JSON:\n${JSON.stringify(trimmedSpec)}\n`;
+
+                  const composerApiKey = geminiApiKey;
+                  const composerBaseUrl = geminiBaseUrl;
+                  if (!composerApiKey) throw new Error('Missing GEMINI_API_KEY for prompt composition');
+
+			                const composedRes = await callGeminiJson({
+			                  apiKey: composerApiKey,
+			                  baseUrl: composerBaseUrl || undefined,
+			                  model: composerModel,
+			                  temperature: composerTemp,
+			                  maxOutputTokens: composerMaxTokens,
+			                  prompt: composePromptText,
+			                  env,
+			                  responseSchema: GEMINI_SCHEMA.promptCompose,
+			                });
+                      composeUsage = composedRes.usage;
+	                    composed = composedRes.value;
+			                const p = String(composed?.prompt || '').trim();
+			                const n = String(composed?.negativePrompt || '').trim();
+		                if (p) {
+		                  promptUsed = n ? `${p}\n\nNegative: ${n}` : p;
+		                }
+		              } catch (e: any) {
+		                composed = { error: formatFetchError(e) };
+		              }
+		            }
 
 		            const loadReference = async (url: string): Promise<{ mimeType: string; bytes: Buffer } | null> => {
 	              const u = String(url || '').trim();
@@ -1899,11 +2944,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              // Local generated assets: /__generated__/...
 	              if (u.startsWith('/__generated__/')) {
 	                const clean = u.split('?')[0].split('#')[0];
-	                const filePath = safeGeneratedAssetPath(clean);
-	                if (!filePath) return null;
-	                const bytes = await fs.promises.readFile(filePath);
-	                const mimeType = mimeByExt(path.extname(filePath));
-	                return { mimeType, bytes };
+                  const fileCandidates = safeGeneratedAssetPaths(clean, userId);
+                  for (const filePath of fileCandidates) {
+                    try {
+                      const bytes = await fs.promises.readFile(filePath);
+                      const mimeType = mimeByExt(path.extname(filePath));
+                      return { mimeType, bytes };
+                    } catch {
+                      // try next
+                    }
+                  }
+                  return null;
 	              }
 
               // data: URLs
@@ -2005,15 +3056,20 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              throw new Error(`Missing required reference image(s): ${list || 'unknown'}`);
 	            }
 
-			            const out = await callGeminiImage({
-			              apiKey: geminiApiKey,
-			              model: usedModel,
-			              temperature,
-			              prompt: promptUsed,
-			              aspectRatio,
-			              references: loadedRefs,
-			              env,
-			            });
+                if (!geminiApiKey) throw new Error('Missing GEMINI_API_KEY');
+                const out = await callGeminiImage({
+                  apiKey: geminiApiKey,
+                  baseUrl: geminiBaseUrl,
+                  model: usedModel,
+                  temperature,
+                  prompt: promptUsed,
+                  aspectRatio,
+                  references: loadedRefs,
+                  env,
+                });
+                const gateway = 'gemini-direct';
+                const baseUrlUsed = geminiBaseUrl;
+                  const usage = mergeTokenUsage(out?.usage, composeUsage);
 
             const ext =
               out.mimeType === 'image/png'
@@ -2029,40 +3085,43 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              .digest('hex')
 	              .slice(0, 16);
             const filename = `${Date.now()}-${hash}.${ext}`;
-            fs.writeFileSync(path.join(GENERATED_ASSETS_DIR, filename), out.bytes);
-	            return sendJson(res, 200, {
-	              imageUrl: `/__generated__/${filename}`,
-			              debug: {
-			                transport: 'http',
-			                provider,
-			                model: usedModel,
-	                    baseUrl: geminiBaseUrl,
-			                mimeType: out.mimeType,
-			                bytes: out.bytes.length,
-			                promptPreview,
-			                promptUsedPreview: String(promptUsed || '').slice(0, 240),
-			                promptUsed: String(promptUsed || '').slice(0, 4000),
-			                composed,
-			                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
-			                requireAllReferences,
-			                missingReferences: missingRefs,
-			              },
-		            });
-		          }
-		        } catch (e: any) {
-          return sendJson(res, 200, {
-            imageUrl:
-              `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
-              `${Math.floor(Math.random() * 100000)}`,
-            debug: {
-              transport: 'mock',
-              provider,
-              model,
-              promptPreview,
-              error: formatFetchError(e),
-            },
-          });
-        }
+			            fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), out.bytes);
+			            return sendJson(res, 200, {
+			              imageUrl: buildGeneratedAssetUrl(userId, filename),
+				              debug: {
+				                transport: 'http',
+				                provider,
+				                model: usedModel,
+				                    baseUrl: baseUrlUsed || geminiBaseUrl,
+                        gateway,
+                        attemptedTransports: transports.map((t) => t.id),
+                        usage,
+				                mimeType: out.mimeType,
+				                bytes: out.bytes.length,
+				                promptPreview,
+				                promptUsedPreview: String(promptUsed || '').slice(0, 240),
+				                promptUsed: String(promptUsed || '').slice(0, 4000),
+				                composed,
+				                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
+				                requireAllReferences,
+				                missingReferences: missingRefs,
+				              },
+			            });
+				          }
+				        } catch (e: any) {
+	          return sendJson(res, 200, {
+	            imageUrl:
+	              `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
+	              `${Math.floor(Math.random() * 100000)}`,
+	            debug: {
+	              transport: 'mock',
+	              provider,
+	              model,
+	              promptPreview,
+	              error: formatFetchError(e),
+	            },
+	          });
+	        }
 
         const url =
           `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
@@ -2073,6 +3132,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           imageUrl: url,
           debug: { transport: 'mock', provider, model, promptPreview },
         });
+              },
+            });
       });
 
     const writeSseHeaders = (res: any) => {
@@ -2106,7 +3167,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	      const plannerSettings = body?.plannerSettings || {};
       const provider = String(settings?.provider || 'gemini');
       // Gemini 1.5 models were shut down in 2025; default to a supported model.
-      const model = String(settings?.model || 'gemini-3-pro-preview');
+      const model = String(settings?.model || 'gemini-3-flash-preview');
       const temperature = Number(settings?.temperature ?? 0.6);
       const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
       const plannerModel = String(plannerSettings?.model || '');
@@ -2412,34 +3473,65 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	            return `Scene ${idx + 1}`;
 	          };
 
-	          const mappedSequences = sequences.map((s: any) => {
-	            const seqId = mkId('seq');
-	            const rawScenes = Array.isArray(s?.scenes)
-	              ? s.scenes
-	              : [{ title: '', summary: '', shots: Array.isArray(s?.shots) ? s.shots : [] }];
-	            let seqCounter = 0;
-	            const mappedScenes = rawScenes.map((sc: any, scIdx: number) => {
-	              const rawShots = Array.isArray(sc?.shots) ? sc.shots : [];
-	              const mappedShots = rawShots.map((sh: any) => {
-	                seqCounter += 1;
-	                return mapShot(sh, seqCounter);
-	              });
-	              return {
-	                id: mkId('scene'),
-	                title: inferSceneTitle(sc?.title, rawShots, scIdx),
-	                summary: String(sc?.summary || '').trim() || undefined,
-	                shots: mappedShots,
-	              };
-	            });
-	            const flatShots = mappedScenes.flatMap((sc: any) => sc.shots || []);
-	            return {
-	              id: seqId,
-	              title: String(s?.title || 'Sequence'),
-	              context: String(s?.context || ''),
-	              scenes: mappedScenes,
-	              shots: flatShots,
-	            };
-	          });
+		          const mappedSequences = sequences.map((s: any) => {
+		            const seqId = mkId('seq');
+                const rawDecision = (s && typeof s === 'object' ? (s.sceneDecision || s.scenePlan || s.scene_strategy) : null) as any;
+		            const rawScenes = Array.isArray(s?.scenes)
+		              ? s.scenes
+		              : [{ title: '', summary: '', shots: Array.isArray(s?.shots) ? s.shots : [] }];
+		            let seqCounter = 0;
+		            const mappedScenes = rawScenes.map((sc: any, scIdx: number) => {
+		              const rawShots = Array.isArray(sc?.shots) ? sc.shots : [];
+		              const mappedShots = rawShots.map((sh: any) => {
+		                seqCounter += 1;
+		                return mapShot(sh, seqCounter);
+		              });
+		              return {
+		                id: mkId('scene'),
+		                title: inferSceneTitle(sc?.title, rawShots, scIdx),
+		                summary: String(sc?.summary || '').trim() || undefined,
+		                shots: mappedShots,
+		              };
+		            });
+		            const flatShots = mappedScenes.flatMap((sc: any) => sc.shots || []);
+                const inferredSplit = mappedScenes.length > 1;
+                const decisionSplit =
+                  typeof rawDecision?.split === 'boolean'
+                    ? rawDecision.split
+                    : typeof rawDecision?.splitScenes === 'boolean'
+                      ? rawDecision.splitScenes
+                      : inferredSplit;
+                const decisionSceneCountRaw =
+                  typeof rawDecision?.sceneCount === 'number'
+                    ? rawDecision.sceneCount
+                    : typeof rawDecision?.count === 'number'
+                      ? rawDecision.count
+                      : mappedScenes.length || 1;
+                const decisionSceneCount = Math.max(1, Math.min(8, Math.floor(decisionSceneCountRaw)));
+                const decisionRationale =
+                  String(rawDecision?.rationale || rawDecision?.reason || '').trim() ||
+                  (Array.isArray(s?.scenes) && s.scenes.length
+                    ? decisionSplit
+                      ? `Split into ${decisionSceneCount} scenes based on narrative beats.`
+                      : 'Kept as one scene for tighter continuity and flow.'
+                    : 'No scene breakdown provided by scaffold; defaulted to 1 scene.');
+                const decisionCriteria = Array.isArray(rawDecision?.criteria)
+                  ? rawDecision.criteria.map((x: any) => String(x || '').trim()).filter(Boolean).slice(0, 8)
+                  : undefined;
+		            return {
+		              id: seqId,
+		              title: String(s?.title || 'Sequence'),
+		              context: String(s?.context || ''),
+                  sceneDecision: {
+                    split: Boolean(decisionSplit),
+                    sceneCount: decisionSplit ? Math.max(2, decisionSceneCount) : 1,
+                    rationale: decisionRationale,
+                    ...(decisionCriteria?.length ? { criteria: decisionCriteria } : {}),
+                  },
+		              scenes: mappedScenes,
+		              shots: flatShots,
+		            };
+		          });
 
 	          // Ensure each mapped location appears in at least one shot to avoid orphan environment assets.
 	          const usedLocationIds = new Set(
@@ -2522,7 +3614,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              ],
 	              actions: [{ type: 'SCAFFOLD_PROJECT' }],
 	            },
-	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source, ...(debugExtra || {}) },
+	            debug: { transport: 'http', provider: usedProvider, model: usedModel, source, ...(usedProvider === 'gemini' ? { gateway: 'compass' } : {}), ...(debugExtra || {}) },
 	            bindingAudit,
 	          };
 	        };
@@ -2555,28 +3647,58 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			              ) => {
 			                const started = Date.now();
 			                const meta = getPromptMetaForAgent('scaffold', agent);
-			                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
-			                try {
-			                  const out = await callGeminiJson({
-	                    apiKey: geminiApiKey,
-	                    model: String(opts?.model || chosenModel),
-                    temperature: Number(opts?.temperature ?? chosenTemperature),
-                    maxOutputTokens: Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192),
-                    prompt,
-                    env,
-                    responseSchema: opts?.responseSchema,
-                  });
-			                  const trace = {
-			                    agent,
-			                    provider: p,
-			                    model: String(opts?.model || chosenModel),
-			                    ms: Date.now() - started,
-			                    ok: true,
-			                    promptId: meta?.id,
-			                    promptVersion: meta?.version,
-			                  };
-			                  teamTrace.push(trace);
-			                  teamMessages.push({
+				                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+				                try {
+                          const runGemini = async (args: { promptText: string; temperature: number; maxTokens: number }) =>
+                            callGeminiJson({
+                              apiKey: compassApiKey,
+                              baseUrl: compassBaseUrl || undefined,
+                              model: String(opts?.model || chosenModel),
+                              temperature: args.temperature,
+                              maxOutputTokens: args.maxTokens,
+                              prompt: args.promptText,
+                              env,
+                              responseSchema: opts?.responseSchema,
+                            });
+                          const baseTemp = Number(opts?.temperature ?? chosenTemperature);
+                          const baseTokens = Number(opts?.maxOutputTokens ?? chosenMaxOutputTokens ?? 8192);
+                          let retryUsed = false;
+                          let outRes: any;
+                          try {
+                            outRes = await runGemini({ promptText: prompt, temperature: baseTemp, maxTokens: baseTokens });
+                          } catch (firstErr: any) {
+                            const firstMsg = String(firstErr?.message || firstErr || '');
+                            const shouldRetryCompact = /not valid json/i.test(firstMsg);
+                            if (!shouldRetryCompact) throw firstErr;
+                            retryUsed = true;
+                            const compactPrompt =
+                              `${prompt}\n\n` +
+                              `CRITICAL OUTPUT FIX:\n` +
+                              `- Return ONLY one valid JSON object matching the schema.\n` +
+                              `- No markdown/code fences/comments.\n` +
+                              `- Keep all string fields concise.\n` +
+                              `- If content is long, shorten prose but keep required keys complete.\n`;
+                            outRes = await runGemini({
+                              promptText: compactPrompt,
+                              temperature: Math.min(baseTemp, 0.2),
+                              maxTokens: Math.min(16384, Math.max(baseTokens + 1024, Math.floor(baseTokens * 1.5))),
+                            });
+                          }
+                          const out = outRes.value;
+				                  const trace = {
+				                    agent,
+				                    provider: p,
+				                    model: String(opts?.model || chosenModel),
+				                    ms: Date.now() - started,
+				                    ok: true,
+                            ...(retryUsed ? { retryUsed: 'compact-json' } : {}),
+                            gateway: 'compass',
+                            usage: outRes.usage,
+				                    promptId: meta?.id,
+				                    promptVersion: meta?.version,
+				                  };
+				                  teamTrace.push(trace);
+				                  teamMessages.push({
 			                    agent,
 			                    ok: true,
 			                    ms: trace.ms,
@@ -2588,16 +3710,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			                  emit('trace', trace);
 			                  return out;
 			                } catch (e: any) {
-			                  const trace = {
-			                    agent,
-			                    provider: p,
-			                    model: String(opts?.model || chosenModel),
-			                    ms: Date.now() - started,
-			                    ok: false,
-			                    error: formatFetchError(e),
-			                    promptId: meta?.id,
-			                    promptVersion: meta?.version,
-			                  };
+				                  const trace = {
+				                    agent,
+				                    provider: p,
+				                    model: String(opts?.model || chosenModel),
+				                    ms: Date.now() - started,
+				                    ok: false,
+				                    error: formatFetchError(e),
+                            gateway: 'compass',
+				                    promptId: meta?.id,
+				                    promptVersion: meta?.version,
+				                  };
 			                  teamTrace.push(trace);
 			                  teamMessages.push({
 			                    agent,
@@ -2648,15 +3771,208 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }),
                   { model: workerModel, temperature: workerTemperature, maxOutputTokens: resolvedWorkerTokens, responseSchema: GEMINI_SCHEMA.scaffoldEditor },
                 );
-                const cameraArtSpec = await call(
-                  'camera_art',
-                  buildTeamScaffoldCameraArtPrompt({
-                    directorBriefJson,
-                    editorJson: JSON.stringify(editorSpec),
-                    aspectRatio,
-                  }),
-                  { model: workerModel, temperature: workerTemperature, maxOutputTokens: resolvedWorkerTokens, responseSchema: GEMINI_SCHEMA.scaffoldCameraArt },
-                );
+                const CAMERA_ART_BATCH_SIZE = 6;
+                const normalizeDurationForPanelCount = (v: any) => {
+                  const n = Number(v);
+                  if (n <= 5) return 4;
+                  if (n <= 7) return 6;
+                  return 8;
+                };
+                const buildCompactEditorForCameraArt = (editorLike: any) => {
+                  const sequences = Array.isArray(editorLike?.sequences) ? editorLike.sequences : [];
+                  return {
+                    sequences: sequences.map((seq: any) => ({
+                      title: String(seq?.title || 'Sequence'),
+                      context: String(seq?.context || '').slice(0, 240),
+                      scenes: (Array.isArray(seq?.scenes) ? seq.scenes : []).map((scene: any) => ({
+                        title: String(scene?.title || 'Scene'),
+                        summary: String(scene?.summary || '').slice(0, 220),
+                        shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((shot: any) => ({
+                          description: String(shot?.description || shot?.beat || '').slice(0, 260),
+                          timeOfDay: String(shot?.timeOfDay || '').slice(0, 60),
+                          duration: normalizeDurationForPanelCount(shot?.duration),
+                          locationName: String(shot?.locationName || '').slice(0, 100),
+                          castNames: Array.isArray(shot?.castNames) ? shot.castNames.slice(0, 4).map((x: any) => String(x || '').slice(0, 48)) : [],
+                          script: String(shot?.script || '').slice(0, 320),
+                        })),
+                      })),
+                    })),
+                  };
+                };
+                const collectEditorShotRefs = (editorLike: any) => {
+                  const refs: Array<{ seqIdx: number; sceneIdx: number; shotIdx: number }> = [];
+                  const seqs = Array.isArray(editorLike?.sequences) ? editorLike.sequences : [];
+                  for (let si = 0; si < seqs.length; si++) {
+                    const scenes = Array.isArray(seqs[si]?.scenes) ? seqs[si].scenes : [];
+                    for (let ci = 0; ci < scenes.length; ci++) {
+                      const shots = Array.isArray(scenes[ci]?.shots) ? scenes[ci].shots : [];
+                      for (let hi = 0; hi < shots.length; hi++) refs.push({ seqIdx: si, sceneIdx: ci, shotIdx: hi });
+                    }
+                  }
+                  return refs;
+                };
+                const buildEditorChunkByRefs = (
+                  compactEditor: any,
+                  refs: Array<{ seqIdx: number; sceneIdx: number; shotIdx: number }>,
+                ) => {
+                  const keep = new Set(refs.map((r) => `${r.seqIdx}|${r.sceneIdx}|${r.shotIdx}`));
+                  const out = {
+                    sequences: (Array.isArray(compactEditor?.sequences) ? compactEditor.sequences : []).map((seq: any, seqIdx: number) => ({
+                      title: String(seq?.title || 'Sequence'),
+                      context: String(seq?.context || ''),
+                      scenes: (Array.isArray(seq?.scenes) ? seq.scenes : [])
+                        .map((scene: any, sceneIdx: number) => ({
+                          title: String(scene?.title || 'Scene'),
+                          summary: String(scene?.summary || ''),
+                          shots: (Array.isArray(scene?.shots) ? scene.shots : []).filter((_: any, shotIdx: number) =>
+                            keep.has(`${seqIdx}|${sceneIdx}|${shotIdx}`),
+                          ),
+                        }))
+                        .filter((sc: any) => Array.isArray(sc.shots) && sc.shots.length > 0),
+                    })),
+                  };
+                  out.sequences = out.sequences.filter((seq: any) => Array.isArray(seq.scenes) && seq.scenes.length > 0);
+                  return out;
+                };
+                const readCameraShotByPath = (cameraArtLike: any, seqIdx: number, sceneIdx: number, shotIdx: number) => {
+                  const seq = Array.isArray(cameraArtLike?.sequences) ? cameraArtLike.sequences[seqIdx] : null;
+                  const scene = seq && Array.isArray(seq?.scenes) ? seq.scenes[sceneIdx] : null;
+                  const shot = scene && Array.isArray(scene?.shots) ? scene.shots[shotIdx] : null;
+                  return shot || null;
+                };
+                const buildCameraArtFallbackSpec = (editorLike: any, briefLike: any, ar: string) => {
+                  const styleBible = (briefLike && typeof briefLike === 'object' ? (briefLike as any).styleBible : {}) || {};
+                  const styleHeader = [
+                    styleBible.genre ? `genre=${String(styleBible.genre)}` : '',
+                    styleBible.tone ? `tone=${String(styleBible.tone)}` : '',
+                    styleBible.cameraLanguage ? `camera=${String(styleBible.cameraLanguage)}` : '',
+                    Array.isArray(styleBible.visualKeywords) && styleBible.visualKeywords.length
+                      ? `look=${styleBible.visualKeywords.slice(0, 4).join(', ')}`
+                      : '',
+                  ]
+                    .filter(Boolean)
+                    .join('; ');
+                  const rootSeq = Array.isArray((editorLike as any)?.sequences) ? (editorLike as any).sequences : [];
+                  return {
+                    sequences: rootSeq.map((seq: any) => ({
+                      title: String(seq?.title || 'Sequence'),
+                      scenes: (Array.isArray(seq?.scenes) ? seq.scenes : []).map((scene: any) => ({
+                        title: String(scene?.title || 'Scene'),
+                        shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((shot: any) => {
+                          const shotDesc = String(shot?.description || shot?.beat || '').trim();
+                          const script = String(shot?.script || '').trim();
+                          const locationName = String(shot?.locationName || '').trim();
+                          const castNames = Array.isArray(shot?.castNames) ? shot.castNames.slice(0, 4).map((x: any) => String(x || '').trim()).filter(Boolean) : [];
+                          const timeOfDay = String(shot?.timeOfDay || '').trim();
+                          const duration = normalizeDurationForPanelCount(shot?.duration);
+                          const hasDialogue = /[:：]["“”'A-Za-z0-9\u4e00-\u9fa5]/.test(script) || /LIN|WEI|INT\.|EXT\./i.test(script);
+                          const camera = `Narrative ${ar} shot, motivated movement, composition focused on ${castNames[0] || 'the key subject'}.`;
+                          const lighting =
+                            timeOfDay
+                              ? `${timeOfDay} motivated cinematic lighting, soft contrast, practical highlights that support mood.`
+                              : 'Cinematic motivated lighting with controlled contrast and practical highlights.';
+                          const audio = hasDialogue
+                            ? 'Natural ambience plus clear dialogue focus; subtle score supports emotional beats.'
+                            : 'Natural ambience and subtle score; no distracting foreground noise.';
+                          const videoPrompt = [
+                            `STYLE: ${styleHeader || 'cinematic realism with controlled palette and emotional camera language'}.`,
+                            `SHOT: ${shotDesc || 'Character-driven dramatic beat'}${locationName ? ` at ${locationName}` : ''}.`,
+                            castNames.length ? `CAST: ${castNames.join(', ')}.` : '',
+                            `ACTION: Translate the scripted beat into clear physical performance with readable emotion shifts${script ? `; script context: ${script.slice(0, 220)}` : ''}.`,
+                            `CAMERA: ${camera}`,
+                            `LIGHTING: ${lighting}`,
+                            `AUDIO: ${audio}`,
+                            'CONSTRAINTS: preserve character identity/wardrobe continuity, avoid flicker/morphing artifacts, no text/watermark.',
+                          ]
+                            .filter(Boolean)
+                            .join(' ');
+                          return {
+                            camera,
+                            lighting,
+                            audio,
+                            videoPrompt,
+                            keyframePlan: {
+                              panelCount: duration === 8 ? 9 : 4,
+                              panelGuidance: duration === 8
+                                ? ['establish spatial relation', 'action escalation', 'emotional turn', 'resolve beat']
+                                : ['establish beat', 'emotional shift', 'end beat'],
+                            },
+                          };
+                        }),
+                      })),
+                    })),
+                  };
+                };
+                let cameraArtSpec: any;
+                try {
+                  const compactEditor = buildCompactEditorForCameraArt(editorSpec);
+                  const allRefs = collectEditorShotRefs(compactEditor);
+                  if (!allRefs.length) {
+                    cameraArtSpec = { sequences: [] };
+                  } else {
+                    const mergedByPath = new Map<string, any>();
+                    for (let i = 0; i < allRefs.length; i += CAMERA_ART_BATCH_SIZE) {
+                      const chunkRefs = allRefs.slice(i, i + CAMERA_ART_BATCH_SIZE);
+                      const chunkEditor = buildEditorChunkByRefs(compactEditor, chunkRefs);
+                      const chunkOut = await call(
+                        'camera_art',
+                        buildTeamScaffoldCameraArtPrompt({
+                          directorBriefJson,
+                          editorJson: JSON.stringify(chunkEditor),
+                          aspectRatio,
+                        }),
+                        {
+                          model: workerModel,
+                          temperature: workerTemperature,
+                          maxOutputTokens: resolvedWorkerTokens,
+                          responseSchema: GEMINI_SCHEMA.scaffoldCameraArt,
+                        },
+                      );
+                      // Map chunk output shots back by order to original editor path.
+                      const chunkInputRefs = collectEditorShotRefs(chunkEditor);
+                      const chunkOutputRefs = collectEditorShotRefs(chunkOut);
+                      const pairCount = Math.min(chunkInputRefs.length, chunkOutputRefs.length);
+                      for (let j = 0; j < pairCount; j++) {
+                        const src = chunkInputRefs[j];
+                        const out = chunkOutputRefs[j];
+                        const outShot = readCameraShotByPath(chunkOut, out.seqIdx, out.sceneIdx, out.shotIdx);
+                        if (!outShot) continue;
+                        mergedByPath.set(`${src.seqIdx}|${src.sceneIdx}|${src.shotIdx}`, outShot);
+                      }
+                    }
+                    const fallback = buildCameraArtFallbackSpec(compactEditor, directorBrief, String(aspectRatio || '16:9'));
+                    cameraArtSpec = {
+                      sequences: (Array.isArray(compactEditor?.sequences) ? compactEditor.sequences : []).map((seq: any, seqIdx: number) => ({
+                        title: String(seq?.title || 'Sequence'),
+                        scenes: (Array.isArray(seq?.scenes) ? seq.scenes : []).map((scene: any, sceneIdx: number) => ({
+                          title: String(scene?.title || 'Scene'),
+                          shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((_: any, shotIdx: number) => {
+                            const key = `${seqIdx}|${sceneIdx}|${shotIdx}`;
+                            const resolved = mergedByPath.get(key);
+                            if (resolved) return resolved;
+                            return (
+                              readCameraShotByPath(fallback, seqIdx, sceneIdx, shotIdx) || {
+                                camera: '',
+                                lighting: '',
+                                audio: '',
+                                videoPrompt: '',
+                                keyframePlan: { panelCount: 4, panelGuidance: [] },
+                              }
+                            );
+                          }),
+                        })),
+                      })),
+                    };
+                  }
+                } catch (e: any) {
+                  cameraArtSpec = buildCameraArtFallbackSpec(buildCompactEditorForCameraArt(editorSpec), directorBrief, String(aspectRatio || '16:9'));
+                  teamMessages.push({
+                    agent: 'camera_art',
+                    ok: false,
+                    degraded: true,
+                    error: `camera_art failed, used fallback template: ${formatFetchError(e)}`,
+                  });
+                }
 
                 const spec = await call(
                   'director.merge',
@@ -2695,24 +4011,28 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                const started = Date.now();
 		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
 		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
-		                const spec = await callGeminiJson({
-		                  apiKey: geminiApiKey,
-		                  model: chosenModel,
-		                  temperature: chosenTemperature,
-                  maxOutputTokens: resolvedMergeTokens,
-                  prompt: scaffoldPrompt,
-		                  env,
-		                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
-		                });
-			                const trace = {
-			                  agent: 'scaffold.single',
-			                  provider: p,
+			                const specRes = await callGeminiJson({
+			                  apiKey: compassApiKey,
+                        baseUrl: compassBaseUrl || undefined,
 			                  model: chosenModel,
-			                  ms: Date.now() - started,
-			                  ok: true,
-			                  promptId: meta?.id,
-			                  promptVersion: meta?.version,
-			                };
+			                  temperature: chosenTemperature,
+	                  maxOutputTokens: resolvedMergeTokens,
+	                  prompt: scaffoldPrompt,
+			                  env,
+			                  responseSchema: GEMINI_SCHEMA.scaffoldFinal,
+			                });
+                      const spec = specRes.value;
+				                const trace = {
+				                  agent: 'scaffold.single',
+				                  provider: p,
+				                  model: chosenModel,
+				                  ms: Date.now() - started,
+				                  ok: true,
+                          gateway: 'compass',
+                          usage: specRes.usage,
+				                  promptId: meta?.id,
+				                  promptVersion: meta?.version,
+				                };
 			                teamTrace.push(trace);
 			                teamMessages.push({
 			                  agent: 'scaffold.single',
@@ -2743,30 +4063,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		              const traceId = crypto.randomUUID();
 		              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
 		                const started = Date.now();
-		                const meta = getPromptMetaForAgent('scaffold', agent);
-		                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
-		                try {
-		                  const out = await callOpenAICompatibleJson({
-	                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-	                    apiKey: env.OPENAI_API_KEY,
-	                    model: String(opts?.model || chosenModel),
-                    temperature: Number(opts?.temperature ?? chosenTemperature),
-		                    prompt,
-		                    env,
-		                  });
-		                  const trace = {
-		                    agent,
-		                    provider: p,
+			                const meta = getPromptMetaForAgent('scaffold', agent);
+			                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+			                try {
+			                  const outRes = await callOpenAICompatibleJson({
+		                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+		                    apiKey: env.OPENAI_API_KEY,
 		                    model: String(opts?.model || chosenModel),
-		                    ms: Date.now() - started,
-		                    ok: true,
-		                    promptId: meta?.id,
-		                    promptVersion: meta?.version,
-		                  };
-		                  teamTrace.push(trace);
-		                  emit('trace', trace);
-		                  return out;
-		                } catch (e: any) {
+	                    temperature: Number(opts?.temperature ?? chosenTemperature),
+			                    prompt,
+			                    env,
+			                  });
+			                  const trace = {
+			                    agent,
+			                    provider: p,
+			                    model: String(opts?.model || chosenModel),
+			                    ms: Date.now() - started,
+			                    ok: true,
+                          usage: outRes.usage,
+			                    promptId: meta?.id,
+			                    promptVersion: meta?.version,
+			                  };
+			                  teamTrace.push(trace);
+			                  emit('trace', trace);
+			                  return outRes.value;
+			                } catch (e: any) {
 		                  const trace = {
 		                    agent,
 		                    provider: p,
@@ -2849,26 +4170,28 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                    mode: 'multi-agent',
 		                  });
 		                }
-		                const started = Date.now();
-		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
-		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
-		                const spec = await callOpenAICompatibleJson({
-		                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-		                  apiKey: env.OPENAI_API_KEY,
-	                  model: chosenModel,
-                  temperature: chosenTemperature,
-		                  prompt: scaffoldPrompt,
-		                  env,
-		                });
-		                const trace = {
-		                  agent: 'scaffold.single',
-		                  provider: p,
+			                const started = Date.now();
+			                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+			                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
+			                const specRes = await callOpenAICompatibleJson({
+			                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+			                  apiKey: env.OPENAI_API_KEY,
 		                  model: chosenModel,
-		                  ms: Date.now() - started,
-		                  ok: true,
-		                  promptId: meta?.id,
-		                  promptVersion: meta?.version,
-		                };
+	                  temperature: chosenTemperature,
+			                  prompt: scaffoldPrompt,
+			                  env,
+			                });
+                      const spec = specRes.value;
+			                const trace = {
+			                  agent: 'scaffold.single',
+			                  provider: p,
+			                  model: chosenModel,
+			                  ms: Date.now() - started,
+			                  ok: true,
+                        usage: specRes.usage,
+			                  promptId: meta?.id,
+			                  promptVersion: meta?.version,
+			                };
 		                teamTrace.push(trace);
 		                emit('trace', trace);
 		                return finish(
@@ -2883,30 +4206,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		              const traceId = crypto.randomUUID();
 		              const call = async (agent: string, prompt: string, opts?: { model?: string; temperature?: number }) => {
 		                const started = Date.now();
-		                const meta = getPromptMetaForAgent('scaffold', agent);
-		                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
-		                try {
-		                  const out = await callOpenAICompatibleJson({
-	                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-	                    apiKey: env.DEEPSEEK_API_KEY,
-	                    model: String(opts?.model || chosenModel),
-                    temperature: Number(opts?.temperature ?? chosenTemperature),
-		                    prompt,
-		                    env,
-		                  });
-		                  const trace = {
-		                    agent,
-		                    provider: p,
+			                const meta = getPromptMetaForAgent('scaffold', agent);
+			                emit('progress', { agent, provider: p, model: String(opts?.model || chosenModel) });
+			                try {
+			                  const outRes = await callOpenAICompatibleJson({
+		                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+		                    apiKey: env.DEEPSEEK_API_KEY,
 		                    model: String(opts?.model || chosenModel),
-		                    ms: Date.now() - started,
-		                    ok: true,
-		                    promptId: meta?.id,
-		                    promptVersion: meta?.version,
-		                  };
-		                  teamTrace.push(trace);
-		                  emit('trace', trace);
-		                  return out;
-		                } catch (e: any) {
+	                    temperature: Number(opts?.temperature ?? chosenTemperature),
+			                    prompt,
+			                    env,
+			                  });
+			                  const trace = {
+			                    agent,
+			                    provider: p,
+			                    model: String(opts?.model || chosenModel),
+			                    ms: Date.now() - started,
+			                    ok: true,
+                          usage: outRes.usage,
+			                    promptId: meta?.id,
+			                    promptVersion: meta?.version,
+			                  };
+			                  teamTrace.push(trace);
+			                  emit('trace', trace);
+			                  return outRes.value;
+			                } catch (e: any) {
 		                  const trace = {
 		                    agent,
 		                    provider: p,
@@ -2989,26 +4313,28 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		                    mode: 'multi-agent',
 		                  });
 		                }
-		                const started = Date.now();
-		                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
-		                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
-		                const spec = await callOpenAICompatibleJson({
-		                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-		                  apiKey: env.DEEPSEEK_API_KEY,
-	                  model: chosenModel,
-                  temperature: chosenTemperature,
-		                  prompt: scaffoldPrompt,
-		                  env,
-		                });
-		                const trace = {
-		                  agent: 'scaffold.single',
-		                  provider: p,
+			                const started = Date.now();
+			                const meta = getPromptMetaForAgent('scaffold', 'scaffold.single');
+			                emit('progress', { agent: 'scaffold.single', provider: p, model: chosenModel });
+			                const specRes = await callOpenAICompatibleJson({
+			                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+			                  apiKey: env.DEEPSEEK_API_KEY,
 		                  model: chosenModel,
-		                  ms: Date.now() - started,
-		                  ok: true,
-		                  promptId: meta?.id,
-		                  promptVersion: meta?.version,
-		                };
+	                  temperature: chosenTemperature,
+			                  prompt: scaffoldPrompt,
+			                  env,
+			                });
+                      const spec = specRes.value;
+			                const trace = {
+			                  agent: 'scaffold.single',
+			                  provider: p,
+			                  model: chosenModel,
+			                  ms: Date.now() - started,
+			                  ok: true,
+                        usage: specRes.usage,
+			                  promptId: meta?.id,
+			                  promptVersion: meta?.version,
+			                };
 		                teamTrace.push(trace);
 		                emit('trace', trace);
 		                return finish(
@@ -3052,12 +4378,24 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
     };
 
     middlewares.use('/api/agent/scaffold/stream', async (req, res, next) => {
-      const handled = await handleScaffold(req, res, { stream: true });
+      if (req.method !== 'POST') return next();
+      const handled = await withPipelineTask(req, res, {
+        kind: 'agent.scaffold',
+        route: '/api/agent/scaffold/stream',
+        run: async () => handleScaffold(req, res, { stream: true }),
+      });
+      if (handled == null) return;
       if (!handled) return next();
     });
 
     middlewares.use('/api/agent/scaffold', async (req, res, next) => {
-      const handled = await handleScaffold(req, res, { stream: false });
+      if (req.method !== 'POST') return next();
+      const handled = await withPipelineTask(req, res, {
+        kind: 'agent.scaffold',
+        route: '/api/agent/scaffold',
+        run: async () => handleScaffold(req, res, { stream: false }),
+      });
+      if (handled == null) return;
       if (!handled) return next();
     });
 
@@ -3068,6 +4406,10 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 
     middlewares.use('/api/agent/direct', async (req, res, next) => {
         if (req.method !== 'POST') return next();
+        return withPipelineTask(req, res, {
+          kind: 'agent.direct',
+          route: '/api/agent/direct',
+          run: async () => {
         const body = await readJsonBody(req);
 
         const message = String(body?.message || '').trim();
@@ -3077,7 +4419,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const allowSingleFallback = Boolean(body?.allowSingleFallback);
         const useFunctionCalling = Boolean(body?.useFunctionCalling);
         const provider = String(settings?.provider || 'gemini');
-        const model = String(settings?.model || 'gemini-3-pro-preview');
+        const model = String(settings?.model || 'gemini-3-flash-preview');
         const temperature = Number(settings?.temperature ?? 0.6);
         const maxOutputTokens = settings?.maxOutputTokens ? Number(settings.maxOutputTokens) : undefined;
         const tokenFloor = 4096;
@@ -3895,27 +5237,39 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
           for (const p of getProviderCandidates(provider, env)) {
             attemptedProviders.push(p);
             try {
-		          if (p === 'gemini' && geminiApiKey) {
+			          if (p === 'gemini' && compassApiKey && compassBaseUrl) {
 		              const teamTrace: any[] = [];
 		              const teamMessages: any[] = [];
 		              const traceId = crypto.randomUUID();
-              const call = async (agent: string, prompt: string, responseSchema?: any) => {
-                const started = Date.now();
-                const meta = getPromptMetaForAgent('direct', agent);
-                emit?.('agent_start', { agent });
-                try {
-                  const out = await callGeminiJson({ apiKey: geminiApiKey, model, temperature, maxOutputTokens: resolvedTokens, prompt, env, responseSchema });
-                  teamTrace.push({
-                    agent,
-                    provider: p,
-                    model,
-                    ms: Date.now() - started,
-                    ok: true,
-                    promptId: meta?.id,
-                    promptVersion: meta?.version,
-                  });
-                  emit?.('agent_done', { agent, ok: true, ms: Date.now() - started });
-                  teamMessages.push({
+	              const call = async (agent: string, prompt: string, responseSchema?: any) => {
+	                const started = Date.now();
+	                const meta = getPromptMetaForAgent('direct', agent);
+	                emit?.('agent_start', { agent });
+	                try {
+	                  const outRes = await callGeminiJson({
+                      apiKey: compassApiKey,
+                      baseUrl: compassBaseUrl || undefined,
+                      model,
+                      temperature,
+                      maxOutputTokens: resolvedTokens,
+                      prompt,
+                      env,
+                      responseSchema,
+                    });
+                      const out = outRes.value;
+	                  teamTrace.push({
+	                    agent,
+	                    provider: p,
+	                    model,
+	                    ms: Date.now() - started,
+	                    ok: true,
+                      gateway: 'compass',
+                      usage: outRes.usage,
+	                    promptId: meta?.id,
+	                    promptVersion: meta?.version,
+	                  });
+	                  emit?.('agent_done', { agent, ok: true, ms: Date.now() - started });
+	                  teamMessages.push({
                     agent,
                     ok: true,
                     ms: Date.now() - started,
@@ -3956,13 +5310,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                       const started = Date.now();
                       const meta = getPromptMetaForAgent('direct', 'director.plan');
                       emit?.('agent_start', { agent: 'director.plan' });
-                      let toolOut: any;
-                      try {
-                        toolOut = await callGeminiToolCall({
-                          apiKey: geminiApiKey,
-                          model,
-                          temperature,
-                          maxOutputTokens: resolvedTokens,
+	                      let toolOut: any;
+	                      try {
+	                        toolOut = await callGeminiToolCall({
+	                          apiKey: compassApiKey,
+                            baseUrl: compassBaseUrl || undefined,
+	                          model,
+	                          temperature,
+	                          maxOutputTokens: resolvedTokens,
                           prompt:
                             buildTeamDirectPlannerPrompt({
                               selectionJson,
@@ -3983,15 +5338,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                         emit?.('agent_done', { agent: 'director.plan', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
                         throw e;
                       }
-                      teamTrace.push({
-                        agent: 'director.plan',
-                        provider: p,
-                        model,
-                        ms: Date.now() - started,
-                        ok: true,
-                        promptId: meta?.id,
-                        promptVersion: meta?.version,
-                      });
+	                      teamTrace.push({
+	                        agent: 'director.plan',
+	                        provider: p,
+	                        model,
+	                        ms: Date.now() - started,
+	                        ok: true,
+                          gateway: 'compass',
+                          usage: toolOut?.usage,
+	                        promptId: meta?.id,
+	                        promptVersion: meta?.version,
+	                      });
                       emit?.('agent_done', { agent: 'director.plan', ok: true, ms: Date.now() - started });
                       teamMessages.push({
                         agent: 'director.plan',
@@ -4044,31 +5401,34 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                             const started = Date.now();
                             const meta = getPromptMetaForAgent('direct', a);
                             emit?.('agent_start', { agent: a });
-                            let toolOut: any;
-                            try {
-                              toolOut = await callGeminiToolCall({
-                                apiKey: geminiApiKey,
-                                model,
-                                temperature,
-                                maxOutputTokens: resolvedTokens,
-                                prompt: prompt + `\n\nIMPORTANT: You MUST call the function \"specialist_response\" exactly once. Do not output JSON text.`,
-                                env,
-                                functionDeclarations: [specialistResponseFunction],
-                                allowedFunctionNames: ['specialist_response'],
-                              });
+	                            let toolOut: any;
+	                            try {
+	                              toolOut = await callGeminiToolCall({
+	                                apiKey: compassApiKey,
+                                  baseUrl: compassBaseUrl || undefined,
+	                                model,
+	                                temperature,
+	                                maxOutputTokens: resolvedTokens,
+	                                prompt: prompt + `\n\nIMPORTANT: You MUST call the function \"specialist_response\" exactly once. Do not output JSON text.`,
+	                                env,
+	                                functionDeclarations: [specialistResponseFunction],
+	                                allowedFunctionNames: ['specialist_response'],
+	                              });
                             } catch (e: any) {
                               emit?.('agent_done', { agent: a, ok: false, ms: Date.now() - started, error: formatFetchError(e) });
                               throw e;
                             }
-                            teamTrace.push({
-                              agent: a,
-                              provider: p,
-                              model,
-                              ms: Date.now() - started,
-                              ok: true,
-                              promptId: meta?.id,
-                              promptVersion: meta?.version,
-                            });
+	                            teamTrace.push({
+	                              agent: a,
+	                              provider: p,
+	                              model,
+	                              ms: Date.now() - started,
+	                              ok: true,
+                                gateway: 'compass',
+                                usage: toolOut?.usage,
+	                              promptId: meta?.id,
+	                              promptVersion: meta?.version,
+	                            });
                             emit?.('agent_done', { agent: a, ok: true, ms: Date.now() - started });
                             teamMessages.push({
                               agent: a,
@@ -4110,34 +5470,37 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     ? await (async () => {
                         const started = Date.now();
                         const meta = getPromptMetaForAgent('direct', 'director.merge');
-                        emit?.('agent_start', { agent: 'director.merge' });
-                        let out: any;
-                        try {
-                          out = await callGeminiToolCall({
-                            apiKey: geminiApiKey,
-                            model,
-                            temperature,
-                            maxOutputTokens: resolvedMergeTokens,
-                            prompt:
-                              mergePrompt +
-                              `\n\nIMPORTANT: You MUST call the function \"director_actions\" exactly once. Do not output JSON text.`,
-                            env,
-                            functionDeclarations: [directorActionsFunction],
-                            allowedFunctionNames: ['director_actions'],
-                          });
+	                        emit?.('agent_start', { agent: 'director.merge' });
+	                        let out: any;
+	                        try {
+	                          out = await callGeminiToolCall({
+	                            apiKey: compassApiKey,
+                              baseUrl: compassBaseUrl || undefined,
+	                            model,
+	                            temperature,
+	                            maxOutputTokens: resolvedMergeTokens,
+	                            prompt:
+	                              mergePrompt +
+	                              `\n\nIMPORTANT: You MUST call the function \"director_actions\" exactly once. Do not output JSON text.`,
+	                            env,
+	                            functionDeclarations: [directorActionsFunction],
+	                            allowedFunctionNames: ['director_actions'],
+	                          });
                         } catch (e: any) {
                           emit?.('agent_done', { agent: 'director.merge', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
                           throw e;
                         }
-                        teamTrace.push({
-                          agent: 'director.merge',
-                          provider: p,
-                          model,
-                          ms: Date.now() - started,
-                          ok: true,
-                          promptId: meta?.id,
-                          promptVersion: meta?.version,
-                        });
+	                        teamTrace.push({
+	                          agent: 'director.merge',
+	                          provider: p,
+	                          model,
+	                          ms: Date.now() - started,
+	                          ok: true,
+                            gateway: 'compass',
+                            usage: out?.usage,
+	                          promptId: meta?.id,
+	                          promptVersion: meta?.version,
+	                        });
                         emit?.('agent_done', { agent: 'director.merge', ok: true, ms: Date.now() - started });
                         teamMessages.push({
                           agent: 'director.merge',
@@ -4176,17 +5539,18 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     actions,
 	                  },
 	                  actions,
-	                  debug: {
-                        transport: 'http',
-                        provider: p,
-                        model,
-                        teamTrace,
-                        teamMessages,
-                        traceId,
-                        mode: useFunctionCalling ? 'multi-agent-fc' : 'multi-agent',
-                        specialistErrors,
-                        taskCheck,
-                      },
+		                  debug: {
+	                        transport: 'http',
+	                        provider: p,
+	                        model,
+                          gateway: 'compass',
+	                        teamTrace,
+	                        teamMessages,
+	                        traceId,
+	                        mode: useFunctionCalling ? 'multi-agent-fc' : 'multi-agent',
+	                        specialistErrors,
+	                        taskCheck,
+	                      },
 	                };
 	                return sendResult(response, 200);
 				              } catch (e: any) {
@@ -4214,11 +5578,13 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    storyJson: story ? storyJson : undefined,
 	                    directive: message,
 		                  });
-                    let output: any;
-                    try {
-                      output = useFunctionCalling
-                        ? (await callGeminiToolCall({
-                            apiKey: geminiApiKey,
+	                    let output: any;
+                      let outputUsage: TokenUsage | undefined;
+	                    try {
+	                      if (useFunctionCalling) {
+                          const toolRes = await callGeminiToolCall({
+                            apiKey: compassApiKey,
+                            baseUrl: compassBaseUrl || undefined,
                             model,
                             temperature,
                             maxOutputTokens: resolvedMergeTokens,
@@ -4228,28 +5594,37 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                             env,
                             functionDeclarations: [directorActionsFunction],
                             allowedFunctionNames: ['director_actions'],
-                          })).args
-                        : await callGeminiJson({
-                            apiKey: geminiApiKey,
+                          });
+                          output = toolRes.args;
+                          outputUsage = toolRes.usage;
+                        } else {
+                          const outRes = await callGeminiJson({
+                            apiKey: compassApiKey,
+                            baseUrl: compassBaseUrl || undefined,
                             model,
                             temperature,
                             maxOutputTokens: resolvedMergeTokens,
                             prompt: singlePrompt,
                             env,
                           });
-                    } catch (e: any) {
-                      emit?.('agent_done', { agent: 'director.actions', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
-                      throw e;
-                    }
-                teamTrace.push({
-                  agent: 'director.actions',
-                  provider: p,
-                  model,
-                  ms: Date.now() - started,
-                  ok: true,
-                  promptId: meta?.id,
-                  promptVersion: meta?.version,
-                });
+                          output = outRes.value;
+                          outputUsage = outRes.usage;
+                        }
+	                    } catch (e: any) {
+	                      emit?.('agent_done', { agent: 'director.actions', ok: false, ms: Date.now() - started, error: formatFetchError(e) });
+	                      throw e;
+	                    }
+	                teamTrace.push({
+	                  agent: 'director.actions',
+	                  provider: p,
+	                  model,
+	                  ms: Date.now() - started,
+	                  ok: true,
+                    gateway: 'compass',
+                    usage: outputUsage,
+	                  promptId: meta?.id,
+	                  promptVersion: meta?.version,
+	                });
                 emit?.('agent_done', { agent: 'director.actions', ok: true, ms: Date.now() - started });
 			                teamMessages.push({
 			                  agent: 'director.actions',
@@ -4280,16 +5655,17 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     actions,
                   },
                   actions,
-                  debug: {
-                    transport: 'http',
-                    provider: p,
-                    model,
-                    teamTrace,
-                    teamMessages,
-                    traceId,
-                    mode: useFunctionCalling ? 'single-call-fc' : 'single-call',
-                    multiAgentError: e?.message || String(e),
-                  },
+	                  debug: {
+	                    transport: 'http',
+	                    provider: p,
+	                    model,
+                      gateway: 'compass',
+	                    teamTrace,
+	                    teamMessages,
+	                    traceId,
+	                    mode: useFunctionCalling ? 'single-call-fc' : 'single-call',
+	                    multiAgentError: e?.message || String(e),
+	                  },
 			                };
 			                return sendResult(response, 200);
 			              }
@@ -4299,28 +5675,29 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              const teamTrace: any[] = [];
 	              const traceId = crypto.randomUUID();
 	              const call = async (agent: string, prompt: string) => {
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', agent);
-	                try {
-	                  const out = await callOpenAICompatibleJson({
-                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-                    apiKey: env.OPENAI_API_KEY,
-                    model,
-                    temperature,
-	                    prompt,
-	                    env,
-	                  });
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', agent);
+		                try {
+		                  const outRes = await callOpenAICompatibleJson({
+	                    baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+	                    apiKey: env.OPENAI_API_KEY,
 	                    model,
-	                    ms: Date.now() - started,
-	                    ok: true,
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  return out;
-	                } catch (e: any) {
+	                    temperature,
+		                    prompt,
+		                    env,
+		                  });
+		                  teamTrace.push({
+		                    agent,
+		                    provider: p,
+		                    model,
+		                    ms: Date.now() - started,
+		                    ok: true,
+                        usage: outRes.usage,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  });
+		                  return outRes.value;
+		                } catch (e: any) {
 	                  teamTrace.push({
 	                    agent,
 	                    provider: p,
@@ -4328,6 +5705,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                    ms: Date.now() - started,
 	                    ok: false,
 	                    error: formatFetchError(e),
+                      gateway: 'compass',
 	                    promptId: meta?.id,
 	                    promptVersion: meta?.version,
 	                  });
@@ -4428,29 +5806,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     mode: 'multi-agent',
                   }, 502);
                 }
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', 'director.actions');
-	                const output = await callOpenAICompatibleJson({
-	                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
-	                  apiKey: env.OPENAI_API_KEY,
-                  model,
-                  temperature,
-                  prompt: buildDirectorActionsPrompt({
-                    selectionJson,
-                    storyJson: story ? storyJson : undefined,
-                    directive: message,
-	                  }),
-	                  env,
-	                });
-	                teamTrace.push({
-	                  agent: 'director.actions',
-	                  provider: p,
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', 'director.actions');
+		                const outputRes = await callOpenAICompatibleJson({
+		                  baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com',
+		                  apiKey: env.OPENAI_API_KEY,
 	                  model,
-	                  ms: Date.now() - started,
-	                  ok: true,
-	                  promptId: meta?.id,
-	                  promptVersion: meta?.version,
-	                });
+	                  temperature,
+	                  prompt: buildDirectorActionsPrompt({
+	                    selectionJson,
+	                    storyJson: story ? storyJson : undefined,
+	                    directive: message,
+		                  }),
+		                  env,
+		                });
+                    const output = outputRes.value;
+		                teamTrace.push({
+		                  agent: 'director.actions',
+		                  provider: p,
+		                  model,
+		                  ms: Date.now() - started,
+		                  ok: true,
+                      usage: outputRes.usage,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                });
                 const actions = Array.isArray(output?.actions) ? output.actions : [];
                 const response = {
                   reply: String(output?.reply || 'OK'),
@@ -4474,28 +5854,29 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              const teamTrace: any[] = [];
 	              const traceId = crypto.randomUUID();
 	              const call = async (agent: string, prompt: string) => {
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', agent);
-	                try {
-	                  const out = await callOpenAICompatibleJson({
-                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-                    apiKey: env.DEEPSEEK_API_KEY,
-                    model,
-                    temperature,
-	                    prompt,
-	                    env,
-	                  });
-	                  teamTrace.push({
-	                    agent,
-	                    provider: p,
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', agent);
+		                try {
+		                  const outRes = await callOpenAICompatibleJson({
+	                    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+	                    apiKey: env.DEEPSEEK_API_KEY,
 	                    model,
-	                    ms: Date.now() - started,
-	                    ok: true,
-	                    promptId: meta?.id,
-	                    promptVersion: meta?.version,
-	                  });
-	                  return out;
-	                } catch (e: any) {
+	                    temperature,
+		                    prompt,
+		                    env,
+		                  });
+		                  teamTrace.push({
+		                    agent,
+		                    provider: p,
+		                    model,
+		                    ms: Date.now() - started,
+		                    ok: true,
+                        usage: outRes.usage,
+		                    promptId: meta?.id,
+		                    promptVersion: meta?.version,
+		                  });
+		                  return outRes.value;
+		                } catch (e: any) {
 	                  teamTrace.push({
 	                    agent,
 	                    provider: p,
@@ -4601,29 +5982,31 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                     mode: 'multi-agent',
                   }, 502);
                 }
-	                const started = Date.now();
-	                const meta = getPromptMetaForAgent('direct', 'director.actions');
-	                const output = await callOpenAICompatibleJson({
-	                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-	                  apiKey: env.DEEPSEEK_API_KEY,
-                  model,
-                  temperature,
-                  prompt: buildDirectorActionsPrompt({
-                    selectionJson,
-                    storyJson: story ? storyJson : undefined,
-                    directive: message,
-	                  }),
-	                  env,
-	                });
-	                teamTrace.push({
-	                  agent: 'director.actions',
-	                  provider: p,
+		                const started = Date.now();
+		                const meta = getPromptMetaForAgent('direct', 'director.actions');
+		                const outputRes = await callOpenAICompatibleJson({
+		                  baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+		                  apiKey: env.DEEPSEEK_API_KEY,
 	                  model,
-	                  ms: Date.now() - started,
-	                  ok: true,
-	                  promptId: meta?.id,
-	                  promptVersion: meta?.version,
-	                });
+	                  temperature,
+	                  prompt: buildDirectorActionsPrompt({
+	                    selectionJson,
+	                    storyJson: story ? storyJson : undefined,
+	                    directive: message,
+		                  }),
+		                  env,
+		                });
+                    const output = outputRes.value;
+		                teamTrace.push({
+		                  agent: 'director.actions',
+		                  provider: p,
+		                  model,
+		                  ms: Date.now() - started,
+		                  ok: true,
+                      usage: outputRes.usage,
+		                  promptId: meta?.id,
+		                  promptVersion: meta?.version,
+		                });
                 const actions = Array.isArray(output?.actions) ? output.actions : [];
                 const response = {
                   reply: String(output?.reply || 'OK'),
@@ -4658,6 +6041,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               error: lastError?.message || String(lastError || 'No provider keys configured'),
             },
           }, 200);
+          },
+        });
       });
   };
 

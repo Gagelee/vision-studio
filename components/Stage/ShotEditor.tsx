@@ -1,8 +1,10 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ElementType, Shot, ShotVersion, AspectRatio, ModelRuntimeSettings, Story } from '../../types';
+import { buildStylePromptTranslation } from '../../lib/ai/styleIntent';
 import { generateImageFromPrompt, type ImageReference } from '../../lib/ai/image/generate';
-import { buildShotKeyframePrompt } from '../../lib/ai/prompts';
+import { describeImageForRefine } from '../../lib/ai/image/describe';
+import { buildRefineFromDescribePrompt, buildShotKeyframePrompt } from '../../lib/ai/prompts';
 import { selectContactSheetPanelCount } from '../../lib/ai/prompts/image';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info, ChevronRight } from 'lucide-react';
 import {
@@ -12,6 +14,9 @@ import {
   resolveShotActiveVideo,
 } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
+import { addDebugEvent } from '../../lib/debug/eventLog';
+import { computeGridPanelBBoxes } from '../../lib/ui/gridSplit';
+import { getVisionUserRequestHeaders } from '../../lib/userSession';
 
 interface ShotEditorProps {
   shot: Shot;
@@ -54,8 +59,634 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const activeVideoState = resolveShotActiveVideo(shot, { allowLegacyUnboundFallback: true });
   const scopedVideoVariants = activeVideoState.variants;
   const activeVideoVariant = activeVideoState.activeVariant;
-  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
-  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
+	  const activeVideoUrl = String(activeVideoVariant?.videoUrl || '').trim();
+	  const activeVideoIndex = scopedVideoVariants.findIndex((v) => v.id === activeVideoVariant?.id);
+	  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
+	  const probedVideoUrlsRef = useRef<Set<string>>(new Set());
+	  const [previewMode, setPreviewMode] = useState<'video' | 'frame'>('frame');
+	  const prevVideoUrlRef = useRef<string>('');
+
+  const [isSplittingGrid, setIsSplittingGrid] = useState(false);
+  const [splitError, setSplitError] = useState<string | null>(null);
+  const [activePanelIndex, setActivePanelIndex] = useState(0);
+  const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string>('');
+
+	  useEffect(() => {
+	    setVideoLoadFailed(false);
+	  }, [activeVideoUrl, activeVideoVariant?.id]);
+
+	  useEffect(() => {
+	    // Default: whenever a (new) video URL exists, prefer previewing video.
+	    const prev = prevVideoUrlRef.current;
+	    if (!activeVideoUrl) setPreviewMode('frame');
+	    if (activeVideoUrl && activeVideoUrl !== prev) setPreviewMode('video');
+	    prevVideoUrlRef.current = activeVideoUrl;
+	  }, [activeVideoUrl]);
+
+	  useEffect(() => {
+	    if (videoLoadFailed) setPreviewMode('frame');
+	  }, [videoLoadFailed]);
+
+  useEffect(() => {
+    setActivePanelIndex(0);
+  }, [activeVersion?.id]);
+
+  useEffect(() => {
+    // Clear multi-select when switching active version normally.
+    // Keeps behavior predictable and avoids "accidentally grouping" old selections.
+    setSelectedVersionIds([]);
+    setSelectionAnchorId('');
+  }, [shot.activeVersionId]);
+
+  const probeVideoHead = async (url: string) => {
+    const u = String(url || '').trim();
+    if (!u) return;
+    try {
+      const resp = await fetch(u, { method: 'HEAD', cache: 'no-store' as any });
+      addDebugEvent({
+        level: resp.ok ? 'warn' : 'error',
+        scope: 'asset.video',
+        message: 'Video playback failed (HEAD probe)',
+        data: {
+          url: u,
+          status: resp.status,
+          contentType: resp.headers.get('content-type') || '',
+          contentLength: resp.headers.get('content-length') || '',
+          acceptRanges: resp.headers.get('accept-ranges') || '',
+          cacheControl: resp.headers.get('cache-control') || '',
+        },
+      });
+    } catch (e) {
+      addDebugEvent({
+        level: 'error',
+        scope: 'asset.video',
+        message: 'Video playback failed (HEAD probe error)',
+        data: { url: u, error: e instanceof Error ? e.message : String(e) },
+      });
+    }
+  };
+
+  const isContactSheetGrid = useMemo(() => {
+    const v: any = activeVersion as any;
+    const mode = String(v?.metadata?.keyframe?.mode || '').trim();
+    if (mode === 'contact_sheet') return true;
+    return false;
+  }, [activeVersion]);
+
+  const getPanelCount = () => {
+    const pc = Number((activeVersion as any)?.metadata?.keyframe?.panelCount);
+    if (pc === 4 || pc === 9) return pc as 4 | 9;
+    const byPlan = Number((shot as any)?.keyframePlan?.panelCount);
+    if (byPlan === 4 || byPlan === 9) return byPlan as 4 | 9;
+    return selectContactSheetPanelCount(Number(shot.duration || 0));
+  };
+
+  const storeImageDataUrl = async (dataUrl: string, filenameHint: string) => {
+    const resp = await fetch('/api/asset/image/store', {
+      method: 'POST',
+      headers: getVisionUserRequestHeaders({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ dataUrl, filenameHint }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`Store image failed (HTTP ${resp.status})${text ? `: ${text}` : ''}`);
+    }
+    const json = (await resp.json().catch(() => null)) as any;
+    const url = String(json?.imageUrl || '').trim();
+    if (!url) throw new Error('Store image failed: missing imageUrl');
+    return url;
+  };
+
+  const imageUrlToPngDataUrl = async (imageUrl: string, crop: { x: number; y: number; w: number; h: number }) => {
+    const res = await fetch(imageUrl, { cache: 'no-store' as any });
+    if (!res.ok) throw new Error(`Fetch image failed (HTTP ${res.status})`);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const img = new Image();
+      img.decoding = 'async';
+      img.crossOrigin = 'anonymous';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to decode image'));
+        img.src = objectUrl;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.floor(crop.w));
+      canvas.height = Math.max(1, Math.floor(crop.h));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas not supported');
+      ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, canvas.width, canvas.height);
+      return await new Promise<string>((resolve, reject) => {
+        canvas.toBlob(
+          (b) => {
+            if (!b) return reject(new Error('Canvas export failed'));
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Read blob failed'));
+            reader.readAsDataURL(b);
+          },
+          'image/png',
+          0.92,
+        );
+      });
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+
+  const getActivePreviewImageUrl = () => {
+    if (!activeVersion) return '';
+    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+    const panels = Array.isArray(group?.panels) ? group.panels : [];
+    if (String((activeVersion as any)?.type || '') !== 'panel_group' || !panels.length) {
+      return String(activeVersion.imageUrl || '').trim();
+    }
+    const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
+    const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
+    return String(hit?.refinedImageUrl || hit?.imageUrl || activeVersion.imageUrl || '').trim();
+  };
+
+  const handleSplitGrid = async (panelCount: 4 | 9) => {
+    if (isSplittingGrid || !activeVersion) return;
+    if (String((activeVersion as any)?.type || '') === 'panel_group') return;
+    if (!String(activeVersion.imageUrl || '').trim()) return;
+    setSplitError(null);
+    setIsSplittingGrid(true);
+    const gridVersion = activeVersion;
+    const gridLabel = panelCount === 9 ? '3x3' : '2x2';
+    const startedAt = Date.now();
+    try {
+      const res = await fetch(String(gridVersion.imageUrl || '').trim(), { cache: 'no-store' as any });
+      if (!res.ok) throw new Error(`Fetch grid image failed (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      let width = 0;
+      let height = 0;
+      try {
+        const img = new Image();
+        img.decoding = 'async';
+        img.crossOrigin = 'anonymous';
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error('Failed to decode grid image'));
+          img.src = objectUrl;
+        });
+        width = img.naturalWidth || img.width;
+        height = img.naturalHeight || img.height;
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      if (!width || !height) throw new Error('Grid image has invalid dimensions');
+
+      const panels = computeGridPanelBBoxes({ panelCount, insetPct: 0.035 });
+      const storedPanels = await Promise.all(
+        panels.map(async (p) => {
+          const crop = {
+            x: Math.round(p.bbox.x * width),
+            y: Math.round(p.bbox.y * height),
+            w: Math.round(p.bbox.w * width),
+            h: Math.round(p.bbox.h * height),
+          };
+          const dataUrl = await imageUrlToPngDataUrl(gridVersion.imageUrl, crop);
+          const imageUrl = await storeImageDataUrl(dataUrl, `shot-${shot.sequence}-panel-${p.index + 1}`);
+          return { index: p.index, imageUrl, bbox: p.bbox };
+        }),
+      );
+
+      const now = Date.now();
+      const existing = Array.isArray(shot.versions) ? shot.versions : [];
+      const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+      const baseList = cleaned.length ? cleaned : existing;
+      const groupVersion: ShotVersion = {
+        id: `v${baseList.length + 1}-${now}`,
+        imageUrl: storedPanels[0]?.imageUrl || gridVersion.imageUrl,
+        createdAt: now,
+        type: 'panel_group',
+        metadata: {
+          ...(gridVersion.metadata || {}),
+          keyframe: { mode: 'contact_sheet', panelCount, grid: gridLabel },
+          source: { sourceType: 'grid_panel_group', sourceGridId: gridVersion.id },
+          panelGroup: {
+            kind: 'stack',
+            activeIndex: 0,
+            panels: storedPanels.map((p) => ({ index: p.index, imageUrl: p.imageUrl, originalImageUrl: p.imageUrl, refinedImageUrl: '', refinedAt: 0, bbox: p.bbox })),
+          },
+        } as any,
+      };
+
+      addDebugEvent({
+        level: 'info',
+        scope: 'asset.image',
+        message: 'Split grid into panels',
+        data: { shotId: shot.id, gridVersionId: gridVersion.id, panelCount, panels: storedPanels.length, ms: Date.now() - startedAt },
+      });
+
+      onUpdateShot({
+        ...shot,
+        versions: [...baseList, groupVersion],
+        activeVersionId: groupVersion.id,
+        thumbnailUrl: groupVersion.imageUrl,
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      setSplitError(err);
+      addDebugEvent({ level: 'error', scope: 'asset.image', message: 'Split grid failed', data: { error: err } });
+    } finally {
+      setIsSplittingGrid(false);
+    }
+  };
+
+  const refineFromActivePanel = async () => {
+    if (isBusyGenerating || !activeVersion) return;
+    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+    const panels = Array.isArray(group?.panels) ? group.panels : [];
+    if (!panels.length) return;
+    const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
+    const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
+    const panelUrl = String(hit?.refinedImageUrl || hit?.imageUrl || '').trim();
+    if (!panelUrl) return;
+
+    const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
+    const references: ImageReference[] = pickRefineReferences({ frameUrl: panelUrl, parentRefs, story });
+
+    const settings =
+      imageSettings || {
+        provider: 'mock',
+        model: 'mock',
+        temperature: 0.5,
+      };
+
+    const loc = story?.locations?.find((l) => l.id === shot.locationId);
+    const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
+    const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+    const castArr = Array.isArray(cast) ? cast : [];
+    const castNames = (castArr || [])
+      .map((c: any) => {
+        const master = story?.characters?.find((x) => x.id === String(c?.id || ''));
+        if (!master) return null;
+        const activeLookId = String(c?.activeLookId || '');
+        const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
+        return `${master.name}${look?.name ? ` (${look.name})` : ''}`;
+      })
+      .filter(Boolean) as string[];
+
+    const startedAt = Date.now();
+    setIsGenerating(true);
+    setGenerationError(null);
+    try {
+      const inferredStyleTranslation = buildStylePromptTranslation({
+        texts: [String((story as any)?.intent || '').trim(), styleGuide, String(loc?.visualStyle || '').trim()],
+        maxItems: 6,
+      });
+      const describe = await describeImageForRefine({ imageUrl: panelUrl });
+      const prompt = buildRefineFromDescribePrompt({
+        describe,
+        styleGuide: styleGuide || String(loc?.visualStyle || '').trim(),
+        styleTranslation: inferredStyleTranslation,
+        extraConstraints: [
+          `Aspect ratio: ${aspectRatio}.`,
+          castNames.length ? `Key subjects must match references: ${castNames.join(', ')}.` : '',
+          `Panel context: ${idx + 1}/${panels.length}.`,
+        ].filter(Boolean),
+      });
+
+      const img = await generateImageFromPrompt({
+        prompt,
+        settings,
+        aspectRatio,
+        references,
+        promptSpec: {
+          kind: 'shot',
+          styleGuide,
+          aspectRatio,
+          keyframeMode: 'single_frame',
+          source: {
+            sourceType: 'grid_panel_group',
+            sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+            panelIndex: idx,
+          },
+          environment: loc ? { name: loc.name, description: loc.description, visualStyle: loc.visualStyle } : null,
+          cast: castNames,
+          shot: {
+            id: shot.id,
+            description: shot.description,
+            timeOfDay: shot.timeOfDay,
+            duration: shot.duration,
+            script: String((shot.elements as any)?.SCRIPT?.prompt || '').trim(),
+            camera: String((shot.elements as any)?.CAMERA?.prompt || '').trim(),
+            lighting: String((shot.elements as any)?.LIGHTING?.prompt || '').trim(),
+            audio: String((shot.elements as any)?.AUDIO?.prompt || '').trim(),
+          },
+        },
+        composePrompt: true,
+        composeSettings: { model: 'gemini-3-pro-preview', temperature: 0.2, maxOutputTokens: 512 },
+        strict: true,
+        requireAllReferences: references.length > 0,
+      });
+
+      const now = Date.now();
+      const effectivePanels = Array.isArray((activeVersion as any)?.metadata?.panelGroup?.panels)
+        ? ((activeVersion as any).metadata.panelGroup.panels as any[])
+        : [];
+      const nextPanels = effectivePanels.map((p: any) => {
+        if (Number(p?.index) !== idx) return p;
+        const originalImageUrl = String(p?.originalImageUrl || p?.imageUrl || '').trim();
+        return {
+          ...p,
+          originalImageUrl: originalImageUrl || String(p?.imageUrl || '').trim(),
+          imageUrl: String(img.imageUrl || '').trim(),
+          refinedImageUrl: String(img.imageUrl || '').trim(),
+          refinedAt: now,
+          refine: {
+            prompt,
+            references,
+            settings: {
+              provider: settings.provider,
+              model: settings.model,
+              temperature: settings.temperature,
+            },
+            describe,
+          },
+        };
+      });
+
+      const firstPanel = nextPanels.find((p: any) => Number(p?.index) === 0) || nextPanels[0];
+      const stackThumb = String(firstPanel?.refinedImageUrl || firstPanel?.imageUrl || '').trim() || String(activeVersion.imageUrl || '').trim();
+      const updatedVersion: ShotVersion = {
+        ...(activeVersion as any),
+        imageUrl: stackThumb,
+        metadata: {
+          ...((activeVersion as any)?.metadata || {}),
+          panelGroup: {
+            ...((activeVersion as any)?.metadata?.panelGroup || {}),
+            panels: nextPanels,
+          },
+        },
+      };
+
+      addDebugEvent({
+        level: 'info',
+        scope: 'asset.image',
+        message: 'Refine stack panel',
+        data: { ms: Date.now() - startedAt, panelIndex: idx, imageUrl: img.imageUrl, stackId: activeVersion.id },
+      });
+
+      const existing = Array.isArray(shot.versions) ? shot.versions : [];
+      const nextVersions = existing.map((v) => (String(v?.id || '') === String(activeVersion.id || '') ? updatedVersion : v));
+      onUpdateShot({
+        ...shot,
+        versions: nextVersions,
+        activeVersionId: updatedVersion.id,
+        thumbnailUrl: stackThumb || shot.thumbnailUrl,
+        aiState: 'idle',
+        aiPrompt: '',
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      setGenerationError(err);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const refineActiveVersionInPlace = async () => {
+    if (isBusyGenerating || !activeVersion) return;
+    if (String((activeVersion as any)?.type || '') === 'panel_group') return;
+    if (!String((activeVersion as any)?.imageUrl || '').trim()) return;
+
+    const settings =
+      imageSettings || {
+        provider: 'mock',
+        model: 'mock',
+        temperature: 0.5,
+      };
+
+    const loc = story?.locations?.find((l) => l.id === shot.locationId);
+    const styleGuide = story ? String((story as any).styleGuide || '').trim() : '';
+    const cast = (shot.elements as any)?.[ElementType.CASTING]?.metadata?.characters;
+    const castArr = Array.isArray(cast) ? cast : [];
+    const castNames = (castArr || [])
+      .map((c: any) => {
+        const master = story?.characters?.find((x) => x.id === String(c?.id || ''));
+        if (!master) return null;
+        const activeLookId = String(c?.activeLookId || '');
+        const look = activeLookId ? master.looks?.find((lk) => lk.id === activeLookId) : master.looks?.[0];
+        return `${master.name}${look?.name ? ` (${look.name})` : ''}`;
+      })
+      .filter(Boolean) as string[];
+
+    const baseImageUrl = String((activeVersion as any)?.metadata?.source?.originalImageUrl || (activeVersion as any)?.imageUrl || '').trim();
+    const parentRefs = Array.isArray((activeVersion as any)?.metadata?.references) ? (activeVersion as any).metadata.references : [];
+    const references: ImageReference[] = pickRefineReferences({ frameUrl: baseImageUrl, parentRefs, story });
+
+    const startedAt = Date.now();
+    setIsGenerating(true);
+    setGenerationError(null);
+    try {
+      const inferredStyleTranslation = buildStylePromptTranslation({
+        texts: [String((story as any)?.intent || '').trim(), styleGuide, String(loc?.visualStyle || '').trim()],
+        maxItems: 6,
+      });
+      const describe = await describeImageForRefine({ imageUrl: baseImageUrl });
+      const prompt = buildRefineFromDescribePrompt({
+        describe,
+        styleGuide: styleGuide || String(loc?.visualStyle || '').trim(),
+        styleTranslation: inferredStyleTranslation,
+        extraConstraints: [
+          `Aspect ratio: ${aspectRatio}.`,
+          castNames.length ? `Key subjects must match references: ${castNames.join(', ')}.` : '',
+        ].filter(Boolean),
+      });
+
+      const img = await generateImageFromPrompt({
+        prompt,
+        settings,
+        aspectRatio,
+        references,
+        promptSpec: {
+          kind: 'shot',
+          styleGuide,
+          aspectRatio,
+          keyframeMode: 'single_frame',
+          source: {
+            sourceType: String((activeVersion as any)?.metadata?.source?.sourceType || ''),
+            sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+            sourcePanelGroupId: String((activeVersion as any)?.metadata?.source?.sourcePanelGroupId || ''),
+            panelIndex: (activeVersion as any)?.metadata?.source?.panelIndex,
+          },
+          environment: loc ? { name: loc.name, description: loc.description, visualStyle: loc.visualStyle } : null,
+          cast: castNames,
+          shot: {
+            id: shot.id,
+            description: shot.description,
+            timeOfDay: shot.timeOfDay,
+            duration: shot.duration,
+            script: String((shot.elements as any)?.SCRIPT?.prompt || '').trim(),
+            camera: String((shot.elements as any)?.CAMERA?.prompt || '').trim(),
+            lighting: String((shot.elements as any)?.LIGHTING?.prompt || '').trim(),
+            audio: String((shot.elements as any)?.AUDIO?.prompt || '').trim(),
+          },
+        },
+        composePrompt: true,
+        composeSettings: { model: 'gemini-3-pro-preview', temperature: 0.2, maxOutputTokens: 512 },
+        strict: true,
+        requireAllReferences: references.length > 0,
+      });
+
+      const now = Date.now();
+      const prevUrl = String((activeVersion as any)?.imageUrl || '').trim();
+      const sourcePrev = (activeVersion as any)?.metadata?.source || {};
+      const originalImageUrl = String(sourcePrev?.originalImageUrl || prevUrl).trim();
+
+      const updatedVersion: ShotVersion = {
+        ...(activeVersion as any),
+        imageUrl: String(img.imageUrl || '').trim(),
+        metadata: {
+          ...((activeVersion as any)?.metadata || {}),
+          prompt,
+          refine: {
+            prompt,
+            describe,
+          },
+          references,
+          settings: { provider: settings.provider, model: settings.model, temperature: settings.temperature },
+          keyframe: { mode: 'single_frame' },
+          source: {
+            ...(sourcePrev && typeof sourcePrev === 'object' ? sourcePrev : {}),
+            originalImageUrl,
+            refinedImageUrl: String(img.imageUrl || '').trim(),
+            refinedAt: now,
+            sourceDescription: String(describe?.description || '').trim(),
+            refine: {
+              describe,
+            },
+          },
+        } as any,
+      };
+
+      const existing = Array.isArray(shot.versions) ? shot.versions : [];
+      const nextVersions = existing.map((v) => (String(v?.id || '') === String(activeVersion.id || '') ? updatedVersion : v));
+      onUpdateShot({
+        ...shot,
+        versions: nextVersions,
+        activeVersionId: updatedVersion.id,
+        thumbnailUrl: updatedVersion.imageUrl || shot.thumbnailUrl,
+        aiState: 'idle',
+        aiPrompt: '',
+      });
+
+      addDebugEvent({
+        level: 'info',
+        scope: 'asset.image',
+        message: 'Refine version in-place',
+        data: { ms: Date.now() - startedAt, versionId: updatedVersion.id, imageUrl: updatedVersion.imageUrl },
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      setGenerationError(err);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const stripPanelGroupMeta = (meta: any) => {
+    if (!meta || typeof meta !== 'object') return {};
+    const { panelGroup, ...rest } = meta as any;
+    return rest;
+  };
+
+  const extractActivePanelAsVersion = () => {
+    if (!activeVersion) return;
+    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+    const panels = Array.isArray(group?.panels) ? group.panels : [];
+    if (!panels.length) return;
+    const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
+    const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
+    const panelUrl = String(hit?.refinedImageUrl || hit?.imageUrl || '').trim();
+    if (!panelUrl) return;
+
+    const now = Date.now();
+    const existing = Array.isArray(shot.versions) ? shot.versions : [];
+    const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+    const baseList = cleaned.length ? cleaned : existing;
+    const newVersion: ShotVersion = {
+      id: `v${baseList.length + 1}-${now}`,
+      imageUrl: panelUrl,
+      createdAt: now,
+      type: 'grid_panel',
+      metadata: {
+        ...stripPanelGroupMeta(activeVersion.metadata || {}),
+        keyframe: { mode: 'single_frame' },
+        refine: hit?.refine && typeof hit.refine === 'object' ? { ...hit.refine } : undefined,
+        source: {
+          sourceType: 'grid_panel',
+          sourcePanelGroupId: activeVersion.id,
+          sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+          originalImageUrl: panelUrl,
+          sourceDescription: String((hit as any)?.refine?.describe?.description || '').trim(),
+          refine: (hit as any)?.refine && typeof (hit as any).refine === 'object' ? { describe: (hit as any).refine.describe } : undefined,
+          panelIndex: idx,
+          panelBBox: (hit as any)?.bbox,
+        },
+      } as any,
+    };
+    onUpdateShot({
+      ...shot,
+      versions: [...baseList, newVersion],
+      activeVersionId: newVersion.id,
+      thumbnailUrl: newVersion.imageUrl,
+    });
+  };
+
+  const ungroupPanelsToVersions = () => {
+	    if (!activeVersion) return;
+	    const group: any = (activeVersion as any)?.metadata?.panelGroup;
+	    const panels = Array.isArray(group?.panels) ? group.panels : [];
+	    if (!panels.length) return;
+	    if (!window.confirm(`Ungroup into ${panels.length} separate versions?`)) return;
+
+	    const existing = Array.isArray(shot.versions) ? shot.versions : [];
+	    const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+	    const baseList = cleaned.length ? cleaned : existing;
+	    // Remove the stack itself; ungroup is a destructive "split" action.
+	    const baseListWithoutGroup = baseList.filter((v) => String(v?.id || '') !== String(activeVersion.id || ''));
+	    const baseIndex = baseListWithoutGroup.length;
+	    const now = Date.now();
+    const created = panels.map((p: any, i: number): ShotVersion => {
+      const panelUrl = String(p?.refinedImageUrl || p?.imageUrl || '').trim();
+      return {
+        id: `v${baseIndex + i + 1}-${now + i}`,
+        imageUrl: panelUrl || String(activeVersion.imageUrl || '').trim(),
+        createdAt: now + i,
+        type: 'grid_panel',
+        metadata: {
+          ...stripPanelGroupMeta(activeVersion.metadata || {}),
+          keyframe: { mode: 'single_frame' },
+          refine: p?.refine && typeof p.refine === 'object' ? { ...p.refine } : undefined,
+          source: {
+            sourceType: 'grid_panel',
+            sourcePanelGroupId: activeVersion.id,
+            sourceGridId: String((activeVersion as any)?.metadata?.source?.sourceGridId || ''),
+            originalImageUrl: panelUrl || String(activeVersion.imageUrl || '').trim(),
+            sourceDescription: String((p as any)?.refine?.describe?.description || '').trim(),
+            refine: (p as any)?.refine && typeof (p as any).refine === 'object' ? { describe: (p as any).refine.describe } : undefined,
+            panelIndex: Number(p?.index) || i,
+            panelBBox: p?.bbox,
+          },
+        } as any,
+      };
+    });
+	    const nextActive = created[0] || null;
+	    if (!nextActive) return;
+	    onUpdateShot({
+	      ...shot,
+	      versions: [...baseListWithoutGroup, ...created],
+	      activeVersionId: nextActive.id,
+	      thumbnailUrl: nextActive.imageUrl,
+	    });
+	  };
 
   const selectVideoVariant = (variantId: string) => {
     const hit = scopedVideoVariants.find((v) => v.id === variantId);
@@ -89,6 +720,135 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             thumbnailUrl: version.imageUrl 
         });
     }
+  };
+
+  const timelineVersions = useMemo(() => displayVersions.slice().reverse(), [displayVersions]);
+  const selectedSet = useMemo(() => new Set(selectedVersionIds), [selectedVersionIds]);
+
+  const clearSelection = () => {
+    setSelectedVersionIds([]);
+    setSelectionAnchorId('');
+  };
+
+  const selectRange = (toId: string) => {
+    const ids = timelineVersions.map((v) => String(v?.id || '')).filter(Boolean);
+    const anchor = String(selectionAnchorId || '').trim() || toId;
+    const a = ids.indexOf(anchor);
+    const b = ids.indexOf(toId);
+    if (a < 0 || b < 0) {
+      setSelectedVersionIds([toId]);
+      setSelectionAnchorId(toId);
+      return;
+    }
+    const [lo, hi] = a < b ? [a, b] : [b, a];
+    const next = ids.slice(lo, hi + 1);
+    setSelectedVersionIds(next);
+    setSelectionAnchorId(anchor);
+  };
+
+  const toggleSelected = (id: string) => {
+    const next = selectedSet.has(id) ? selectedVersionIds.filter((x) => x !== id) : [...selectedVersionIds, id];
+    setSelectedVersionIds(next);
+    if (!selectionAnchorId) setSelectionAnchorId(id);
+  };
+
+  const createStackFromSelection = () => {
+    const ids = selectedVersionIds.map((x) => String(x || '').trim()).filter(Boolean);
+    const byId = new Map(timelineVersions.map((v) => [String(v?.id || ''), v] as const));
+    const selected = ids.map((id) => byId.get(id)).filter(Boolean) as ShotVersion[];
+    const usable = selected.filter((v) => String(v?.type || '') !== 'placeholder' && String(v?.type || '') !== 'panel_group');
+    if (usable.length < 2) {
+      setSplitError('Select at least 2 non-stack versions to create a new stack.');
+      return;
+    }
+    const now = Date.now();
+    const existing = Array.isArray(shot.versions) ? shot.versions : [];
+    const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
+    const baseList = cleaned.length ? cleaned : existing;
+
+    const panels = usable.map((v, i) => ({ index: i, imageUrl: String(v.imageUrl || '').trim() })).filter((p) => p.imageUrl);
+    if (panels.length < 2) {
+      setSplitError('Selected versions are missing image URLs.');
+      return;
+    }
+
+    // Merge semantics: remove selected versions from the timeline once grouped.
+    const removeIds = new Set(usable.map((v) => String(v?.id || '')).filter(Boolean));
+    const baseListWithoutSelected = baseList.filter((v) => !removeIds.has(String(v?.id || '')));
+
+    const groupVersion: ShotVersion = {
+      id: `v${baseListWithoutSelected.length + 1}-${now}`,
+      imageUrl: panels[0].imageUrl,
+      createdAt: now,
+      type: 'panel_group',
+      metadata: {
+        keyframe: { mode: 'single_frame' },
+        source: { sourceType: 'manual_group', mergedFromVersionIds: Array.from(removeIds) },
+        panelGroup: { kind: 'stack', activeIndex: 0, panels },
+      } as any,
+    };
+
+    onUpdateShot({
+      ...shot,
+      versions: [...baseListWithoutSelected, groupVersion],
+      activeVersionId: groupVersion.id,
+      thumbnailUrl: groupVersion.imageUrl,
+    });
+    setActivePanelIndex(0);
+    clearSelection();
+  };
+
+  const mergeReferences = (primary: ImageReference[], extra: ImageReference[]) => {
+    const seen = new Set<string>();
+    const out: ImageReference[] = [];
+    for (const r of [...primary, ...extra]) {
+      const url = String(r?.url || '').trim();
+      if (!url) continue;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({ url, label: r?.label });
+    }
+    return out;
+  };
+
+  const pickRefineReferences = (args: {
+    frameUrl: string;
+    parentRefs?: any[];
+    story?: Story;
+  }): ImageReference[] => {
+    const frameUrl = String(args.frameUrl || '').trim();
+    const rawParent = Array.isArray(args.parentRefs) ? args.parentRefs : [];
+    const parent: ImageReference[] = rawParent
+      .map((r: any) => ({ url: String(r?.url || '').trim(), label: r?.label ? String(r.label) : undefined }))
+      .filter((r) => r.url);
+
+    const isP1 = (r: ImageReference) => {
+      const label = String(r.label || '').toLowerCase();
+      // Matches how we label refs elsewhere in this file.
+      if (label.startsWith('environment:')) return true;
+      if (label.startsWith('character:')) return true;
+      return false;
+    };
+
+    const p1 = parent.filter(isP1);
+    const other = parent.filter((r) => !isP1(r));
+
+    // Order within our hard cap (server also caps at 6):
+    // P0 frame -> P1 env/character -> any remaining refs.
+    return mergeReferences(
+      [{ url: frameUrl, label: 'frame (refine target)' }, ...p1],
+      [...other],
+    ).slice(0, 6);
+  };
+
+  const onVersionCardClick = (e: React.MouseEvent, versionId: string) => {
+    e.stopPropagation();
+    const id = String(versionId || '').trim();
+    if (!id) return;
+    if (e.shiftKey) return selectRange(id);
+    if (e.metaKey || e.ctrlKey) return toggleSelected(id);
+    clearSelection();
+    handleVersionSelect(id);
   };
 
   const ratioStyles: Record<AspectRatio, string> = {
@@ -225,16 +985,17 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         strict: true,
         requireAllReferences: references.length > 0,
       });
-      const versionMeta = {
-        prompt: fullPrompt,
-        references,
-        settings: {
-          provider: settings.provider,
-          model: settings.model,
-          temperature: settings.temperature,
-        },
-        aspectRatio,
-      };
+	      const versionMeta = {
+	        prompt: fullPrompt,
+	        references,
+	        settings: {
+	          provider: settings.provider,
+	          model: settings.model,
+	          temperature: settings.temperature,
+	        },
+	        aspectRatio,
+	        keyframe: { mode: 'contact_sheet' as const, panelCount, grid: panelCount === 9 ? '3x3' as const : '2x2' as const },
+	      };
 
       const now = Date.now();
       const existing = Array.isArray(shot.versions) ? shot.versions : [];
@@ -372,31 +1133,103 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 )}
               </div>
             )}
-             <button className="flex items-center gap-2 bg-white text-black hover:bg-zinc-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-white/5">
-                <Download className="w-3.5 h-3.5" />
-                Export Frame
-            </button>
-        </div>
-      </div>
+	             <button className="flex items-center gap-2 bg-white text-black hover:bg-zinc-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-white/5">
+	                <Download className="w-3.5 h-3.5" />
+	                Export Frame
+	            </button>
+		            {activeVersion && !isPlaceholderActive && isContactSheetGrid && String((activeVersion as any)?.type || '') !== 'panel_group' && (
+		              <>
+	                <button
+	                  type="button"
+	                  onClick={() => void handleSplitGrid(4)}
+	                  disabled={isSplittingGrid}
+	                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg ${
+	                    isSplittingGrid
+	                      ? 'bg-white/10 text-white/50 cursor-not-allowed shadow-white/5'
+	                      : 'bg-indigo-500 text-white hover:bg-indigo-400 shadow-indigo-500/20'
+	                  }`}
+	                  title="Split as 2x2 (4 panels)"
+	                >
+	                  <Layers className={`w-3.5 h-3.5 ${isSplittingGrid ? 'animate-spin' : ''}`} />
+	                  Split 4
+	                </button>
+	                <button
+	                  type="button"
+	                  onClick={() => void handleSplitGrid(9)}
+	                  disabled={isSplittingGrid}
+	                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg ${
+	                    isSplittingGrid
+	                      ? 'bg-white/10 text-white/50 cursor-not-allowed shadow-white/5'
+	                      : 'bg-indigo-500 text-white hover:bg-indigo-400 shadow-indigo-500/20'
+	                  }`}
+	                  title="Split as 3x3 (9 panels)"
+	                >
+	                  <Layers className={`w-3.5 h-3.5 ${isSplittingGrid ? 'animate-spin' : ''}`} />
+	                  Split 9
+	                </button>
+		              </>
+		            )}
+		            {activeVideoUrl && (
+		              <div className="flex items-center rounded-lg border border-white/10 bg-white/5 overflow-hidden">
+		                <button
+		                  type="button"
+		                  onClick={() => {
+		                    setVideoLoadFailed(false);
+		                    setPreviewMode('video');
+		                  }}
+		                  disabled={videoLoadFailed}
+		                  className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+		                    previewMode === 'video'
+		                      ? 'bg-white text-black'
+		                      : videoLoadFailed
+		                        ? 'text-white/40 cursor-not-allowed'
+		                        : 'text-white/70 hover:text-white'
+		                  }`}
+		                  title={videoLoadFailed ? 'Video failed to load' : 'Preview video'}
+		                >
+		                  Video
+		                </button>
+		                <button
+		                  type="button"
+		                  onClick={() => setPreviewMode('frame')}
+		                  className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+		                    previewMode === 'frame' ? 'bg-white text-black' : 'text-white/70 hover:text-white'
+		                  }`}
+		                  title="Preview keyframe/frame"
+		                >
+		                  Frame
+		                </button>
+		              </div>
+		            )}
+		        </div>
+		      </div>
 
       {/* Main Preview Area */}
       <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
-                {activeVideoUrl ? (
-                    <>
-                      <video
-                          src={activeVideoUrl}
-                          className="w-full h-full object-contain bg-black"
+		                {previewMode === 'video' && activeVideoUrl && !videoLoadFailed ? (
+		                    <>
+		                      <video
+		                          src={activeVideoUrl}
+		                          className="w-full h-full object-contain bg-black"
                           controls
                           loop
-                          playsInline
-                          preload="metadata"
-                      />
-                      {scopedVideoVariants.length > 1 && (
-                        <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
-                          <button
-                            type="button"
+	                          playsInline
+	                          preload="metadata"
+	                          onError={() => {
+	                            setVideoLoadFailed(true);
+	                            const u = String(activeVideoUrl || '').trim();
+	                            if (u && !probedVideoUrlsRef.current.has(u)) {
+	                              probedVideoUrlsRef.current.add(u);
+	                              void probeVideoHead(u);
+	                            }
+	                          }}
+	                      />
+	                      {scopedVideoVariants.length > 1 && (
+	                        <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
+	                          <button
+	                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               shiftVideoVariant('prev');
@@ -423,33 +1256,161 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                         </div>
                       )}
                     </>
-                ) : activeVersion ? (
-                    isPlaceholderActive ? (
-                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
-                        <MonitorPlay className="w-14 h-14 opacity-50" />
-                        <span>Placeholder</span>
-                      </div>
-                    ) : (
-                      <img 
-                          src={activeVersion.imageUrl} 
-                          alt={`Shot ${shot.sequence} - Version ${activeVersion.id}`}
-                          className="w-full h-full object-contain bg-black cursor-zoom-in"
-                          onClick={() => activeVersion?.imageUrl && openLightbox({ url: activeVersion.imageUrl, title: `Shot #${shot.sequence}` })}
-                      />
-                    )
-                ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
-                        <MonitorPlay className="w-12 h-12 opacity-50" />
+	                ) : activeVersion ? (
+	                    isPlaceholderActive ? (
+	                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
+	                        <MonitorPlay className="w-14 h-14 opacity-50" />
+	                        <span>Placeholder</span>
+	                      </div>
+	                    ) : (
+	                      <>
+	                        <img 
+	                            src={getActivePreviewImageUrl()} 
+	                            alt={`Shot ${shot.sequence} - Version ${activeVersion.id}`}
+	                            className="w-full h-full object-contain bg-black cursor-zoom-in"
+	                            onClick={() => {
+	                              const url = getActivePreviewImageUrl();
+	                              if (url) openLightbox({ url, title: `Shot #${shot.sequence}` });
+	                            }}
+	                        />
+	                        {previewMode === 'frame' && String((activeVersion as any)?.type || '') === 'panel_group' && (
+	                          <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
+	                            {(() => {
+	                              const group: any = (activeVersion as any)?.metadata?.panelGroup;
+	                              const panels = Array.isArray(group?.panels) ? group.panels : [];
+	                              const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
+	                              const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
+	                              const refined = Boolean(String(hit?.refinedImageUrl || '').trim());
+	                              const label = refined ? 'Re-Refine' : 'Refine';
+	                              const title = refined ? 'Refine again (replaces the refined panel)' : 'Refine this panel into a single-frame keyframe';
+	                              return (
+	                                <>
+	                            <div className="px-2.5 py-1 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-bold uppercase tracking-wider">
+	                              Stack
+	                            </div>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                const group: any = (activeVersion as any)?.metadata?.panelGroup;
+	                                const panels = Array.isArray(group?.panels) ? group.panels : [];
+	                                if (!panels.length) return;
+	                                setActivePanelIndex((prev) => (prev - 1 + panels.length) % panels.length);
+	                              }}
+	                              className="w-8 h-8 rounded-full bg-black/60 border border-white/20 text-white flex items-center justify-center hover:bg-black/75"
+	                              title="Previous panel"
+	                            >
+	                              <ChevronLeft className="w-4 h-4" />
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                const group: any = (activeVersion as any)?.metadata?.panelGroup;
+	                                const panels = Array.isArray(group?.panels) ? group.panels : [];
+	                                if (!panels.length) return;
+	                                setActivePanelIndex((prev) => (prev + 1) % panels.length);
+	                              }}
+	                              className="w-8 h-8 rounded-full bg-black/60 border border-white/20 text-white flex items-center justify-center hover:bg-black/75"
+	                              title="Next panel"
+	                            >
+	                              <ChevronRight className="w-4 h-4" />
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                void refineFromActivePanel();
+	                              }}
+	                              disabled={isBusyGenerating}
+	                              className={`px-3 py-2 rounded-full border text-[10px] font-black uppercase tracking-widest ${
+	                                isBusyGenerating
+	                                  ? 'bg-white/5 border-white/10 text-white/50 cursor-not-allowed'
+	                                  : 'bg-white/10 border-white/20 text-white hover:bg-white/15'
+	                              }`}
+	                              title={title}
+	                            >
+	                              {label}
+	                            </button>
+	                                </>
+	                              );
+	                            })()}
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                extractActivePanelAsVersion();
+	                              }}
+	                              className="px-3 py-2 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-black uppercase tracking-widest hover:bg-black/75"
+	                              title="Create a normal version from the current panel image"
+	                            >
+	                              Extract
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                ungroupPanelsToVersions();
+	                              }}
+	                              className="px-3 py-2 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-black uppercase tracking-widest hover:bg-black/75"
+	                              title="Create separate versions for all panels"
+	                            >
+	                              Ungroup
+	                            </button>
+	                          </div>
+	                        )}
+	                        {previewMode === 'frame' && String((activeVersion as any)?.type || '') === 'grid_panel' && (
+	                          <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
+	                            {(() => {
+	                              const refined = Boolean(String((activeVersion as any)?.metadata?.source?.refinedImageUrl || '').trim());
+	                              const label = refined ? 'Re-Refine' : 'Refine';
+	                              const title = refined ? 'Refine again (replaces this version)' : 'Refine this panel into a single-frame keyframe (replaces this version)';
+	                              return (
+	                                <>
+	                            <div className="px-2.5 py-1 rounded-full bg-black/60 border border-white/20 text-white text-[10px] font-bold uppercase tracking-wider">
+	                              Panel
+	                            </div>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                void refineActiveVersionInPlace();
+	                              }}
+	                              disabled={isBusyGenerating}
+	                              className={`px-3 py-2 rounded-full border text-[10px] font-black uppercase tracking-widest ${
+	                                isBusyGenerating
+	                                  ? 'bg-white/5 border-white/10 text-white/50 cursor-not-allowed'
+	                                  : 'bg-white/10 border-white/20 text-white hover:bg-white/15'
+	                              }`}
+	                              title={title}
+	                            >
+	                              {label}
+	                            </button>
+	                                </>
+	                              );
+	                            })()}
+	                          </div>
+	                        )}
+	                      </>
+	                    )
+	                ) : (
+	                    <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2">
+	                        <MonitorPlay className="w-12 h-12 opacity-50" />
                         <span>No generated keyframe</span>
                     </div>
                 )}
 
                 {/* Hover play hint: only when an actual video is present, never block controls. */}
-                {activeVideoUrl && (
-                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all bg-black/10 backdrop-blur-[1px]">
-                      <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow-[0_0_40px_rgba(255,255,255,0.2)]">
-                          <Play className="w-8 h-8 fill-current ml-2" />
-                      </div>
+	                {previewMode === 'video' && activeVideoUrl && !videoLoadFailed && (
+	                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all bg-black/10 backdrop-blur-[1px]">
+	                      <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow-[0_0_40px_rgba(255,255,255,0.2)]">
+	                          <Play className="w-8 h-8 fill-current ml-2" />
+	                      </div>
+	                  </div>
+	                )}
+                {activeVideoUrl && videoLoadFailed && (
+                  <div className="absolute bottom-3 left-3 right-3 z-20 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200 text-[11px] px-3 py-2">
+                    Video failed to load. Showing keyframe instead — try regenerating or switching variant.
                   </div>
                 )}
             </div>
@@ -478,50 +1439,110 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
         
         <div className={`flex-1 pt-4 px-4 pb-10 overflow-x-auto flex items-center gap-4 custom-scrollbar transition-opacity duration-300 ${isHistoryOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
             {/* Generate New Button */}
-            <button 
-                onClick={(e) => { e.stopPropagation(); handleGenerateVersion(); }}
-                disabled={isBusyGenerating}
-                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-indigo-400 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all group disabled:opacity-40 disabled:cursor-not-allowed"
-            >
+	            <button 
+	                onClick={(e) => { e.stopPropagation(); handleGenerateVersion(); }}
+	                disabled={isBusyGenerating}
+	                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-indigo-400 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all group disabled:opacity-40 disabled:cursor-not-allowed"
+	            >
                 <div className="p-3 rounded-full bg-zinc-900 group-hover:bg-indigo-500/20 transition-colors">
                     <RefreshCw className={`w-6 h-6 ${isBusyGenerating ? 'animate-spin' : 'group-hover:animate-spin'}`} />
                 </div>
                 <span className="text-xs font-bold uppercase tracking-wide">
                   {assetStatus === 'queued' ? 'Queued…' : isBusyGenerating ? 'Generating...' : isPlaceholderActive ? 'Generate' : 'Generate Variant'}
-                </span>
-            </button>
+	                </span>
+	            </button>
 
-            {/* Version List */}
-            {displayVersions.slice().reverse().map((version, index) => {
-                const isActive = version.id === shot.activeVersionId;
-                const versionNumber = displayVersions.length - index;
-                return (
-                    <div 
-                        key={version.id}
-                        onClick={(e) => { e.stopPropagation(); handleVersionSelect(version.id); }}
-                        className={`relative flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden border-2 cursor-pointer transition-all group shadow-lg ${isActive ? 'border-indigo-500 ring-4 ring-indigo-500/10' : 'border-zinc-800 hover:border-zinc-600'}`}
-                    >
+	            {selectedVersionIds.length > 0 && (
+	              <div className="flex-shrink-0 h-32 w-64 rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 flex flex-col justify-between">
+	                <div>
+	                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Selection</div>
+	                  <div className="mt-1 text-xs text-zinc-200 font-bold">{selectedVersionIds.length} selected</div>
+	                  <div className="mt-1 text-[10px] text-zinc-500">Cmd/Ctrl click: toggle, Shift: range</div>
+	                </div>
+	                <div className="flex items-center gap-2">
+	                  <button
+	                    type="button"
+	                    onClick={(e) => {
+	                      e.stopPropagation();
+	                      createStackFromSelection();
+	                    }}
+	                    disabled={selectedVersionIds.length < 2}
+	                    className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest border ${
+	                      selectedVersionIds.length < 2
+	                        ? 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'
+	                        : 'bg-indigo-500/20 border-indigo-500/30 text-indigo-200 hover:bg-indigo-500/30'
+	                    }`}
+	                    title="Create a stack group from the selected versions"
+	                  >
+	                    Create Stack
+	                  </button>
+	                  <button
+	                    type="button"
+	                    onClick={(e) => {
+	                      e.stopPropagation();
+	                      clearSelection();
+	                    }}
+	                    className="px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest border bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+	                    title="Clear selection"
+	                  >
+	                    Clear
+	                  </button>
+	                </div>
+	              </div>
+	            )}
+
+	            {/* Version List */}
+	            {timelineVersions.map((version, index) => {
+	                const isActive = version.id === shot.activeVersionId;
+	                const isSelected = selectedSet.has(String(version.id || ''));
+	                const versionNumber = displayVersions.length - index;
+	                return (
+	                    <div 
+	                        key={version.id}
+	                        onClick={(e) => onVersionCardClick(e, version.id)}
+	                        className={`relative flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden border-2 cursor-pointer transition-all group shadow-lg ${
+	                          isActive
+	                            ? 'border-indigo-500 ring-4 ring-indigo-500/10'
+	                            : isSelected
+	                              ? 'border-amber-400 ring-4 ring-amber-400/10'
+	                              : 'border-zinc-800 hover:border-zinc-600'
+	                        }`}
+	                    >
                         {String(version.type || '') === 'placeholder' ? (
                           <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-600">
                             <MonitorPlay className="w-8 h-8 opacity-60" />
                           </div>
                         ) : (
-                          <img
-                            src={version.imageUrl}
-                            className="w-full h-full object-cover cursor-zoom-in"
-                            loading="lazy"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openLightbox({ url: version.imageUrl, title: `Shot #${shot.sequence} (${version.id})` });
-                            }}
-                          />
-                        )}
+	                          <img
+	                            src={version.imageUrl}
+	                            className="w-full h-full object-cover cursor-zoom-in"
+	                            loading="lazy"
+	                            onClick={(e) => {
+	                              e.stopPropagation();
+	                              if (e.shiftKey || e.metaKey || e.ctrlKey) {
+	                                onVersionCardClick(e as any, version.id);
+	                                return;
+	                              }
+	                              openLightbox({ url: version.imageUrl, title: `Shot #${shot.sequence} (${version.id})` });
+	                            }}
+	                          />
+	                        )}
                         
-                        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
-                            v{versionNumber}
-                        </div>
-                        {version.metadata && (
-                          <button
+		                        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
+		                            v{versionNumber}
+		                        </div>
+		                        {isSelected && (
+		                          <div className="absolute bottom-2 left-2 bg-amber-500/30 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-amber-100 border border-amber-500/30">
+		                            Selected
+		                          </div>
+		                        )}
+		                        {String((version as any)?.type || '') === 'panel_group' && Array.isArray((version as any)?.metadata?.panelGroup?.panels) && (
+		                          <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white border border-white/10">
+		                            stack {((version as any).metadata.panelGroup.panels as any[]).length}
+		                          </div>
+		                        )}
+	                        {version.metadata && (
+	                          <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setVersionInfo(version);
@@ -562,14 +1583,21 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                 );
             })}
         </div>
-        {generationError && !isImmersive && (
-          <div className="px-4 pb-4">
-            <div className="text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
-              Generate failed: {generationError}
-            </div>
-          </div>
-        )}
-      </div>
+	        {generationError && !isImmersive && (
+	          <div className="px-4 pb-4">
+	            <div className="text-xs text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3">
+	              Generate failed: {generationError}
+	            </div>
+	          </div>
+	        )}
+	        {splitError && !isImmersive && (
+	          <div className="px-4 pb-4">
+	            <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-2xl p-3">
+	              Split grid failed: {splitError}
+	            </div>
+	          </div>
+	        )}
+	      </div>
       {versionInfo && (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[60]" onClick={() => setVersionInfo(null)}>
           <div

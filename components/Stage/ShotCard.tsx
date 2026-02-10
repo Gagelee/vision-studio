@@ -2,6 +2,7 @@
 import React from 'react';
 import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2, Clock, Info } from 'lucide-react';
 import { Shot, ElementType, AspectRatio } from '../../types';
+import { getShotPreviewImageUrl } from '../../lib/ai/assetRefs';
 
 interface ShotCardProps {
   shot: Shot;
@@ -90,11 +91,11 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
         </div>
       </div>
 
-      {/* Visual Preview Container */}
-      <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-100 dark:bg-zinc-950 relative overflow-hidden transition-all duration-500 ease-in-out`}>
-        {/* Actual Image */}
+	      {/* Visual Preview Container */}
+	      <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-100 dark:bg-zinc-950 relative overflow-hidden transition-all duration-500 ease-in-out`}>
+	        {/* Actual Image */}
 	        <img 
-	          src={shot.thumbnailUrl} 
+	          src={getShotPreviewImageUrl(shot)} 
 	          alt="Shot storyboard" 
 	          className={`w-full h-full object-cover transition-all duration-700 cursor-pointer ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
 	          onClick={(e) => {

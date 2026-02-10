@@ -26,7 +26,7 @@ const levelStyle: Record<string, string> = {
 export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory, agentHistory, onClose }) => {
   const [events, setEvents] = useState<DebugEvent[]>(() => getDebugEvents());
   const [filter, setFilter] = useState<'all' | 'error' | 'warn'>('all');
-  const [tab, setTab] = useState<'events' | 'trace' | 'registry'>('events');
+  const [tab, setTab] = useState<'events' | 'trace' | 'tokens' | 'registry'>('events');
   const [copyStatus, setCopyStatus] = useState<'idle' | 'ok' | 'err'>('idle');
   const [copyMessage, setCopyMessage] = useState<string>('');
 
@@ -78,6 +78,46 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
     return sessions.sort((a, b) => b.ts - a.ts);
   }, [events]);
 
+  const tokenStats = useMemo(() => {
+    type Usage = { promptTokens?: number; outputTokens?: number; totalTokens?: number };
+    type Totals = { calls: number; promptTokens: number; outputTokens: number; totalTokens: number };
+    const emptyTotals = (): Totals => ({ calls: 0, promptTokens: 0, outputTokens: 0, totalTokens: 0 });
+    const addUsage = (acc: Totals, usage: Usage | null | undefined) => {
+      if (!usage) return;
+      const p = Number(usage.promptTokens ?? 0);
+      const o = Number(usage.outputTokens ?? 0);
+      const t = Number(usage.totalTokens ?? 0) || (Number.isFinite(p) && Number.isFinite(o) ? p + o : 0);
+      if (Number.isFinite(p) && p > 0) acc.promptTokens += p;
+      if (Number.isFinite(o) && o > 0) acc.outputTokens += o;
+      if (Number.isFinite(t) && t > 0) acc.totalTokens += t;
+      acc.calls += 1;
+    };
+
+    const overall = emptyTotals();
+    const byProvider: Record<string, Totals> = {};
+    const byScope: Record<string, Totals> = {};
+
+    for (const e of events) {
+      if (e.scope !== 'agent.scaffold' && e.scope !== 'agent.direct') continue;
+      if (e.message !== 'Response' && e.message !== 'HTTP error') continue;
+      const json = (e as any)?.data?.json;
+      const dbg = json?.debug || null;
+      const tt: any[] = Array.isArray(dbg?.teamTrace) ? dbg.teamTrace : Array.isArray(json?.teamTrace) ? json.teamTrace : [];
+      for (const t of tt) {
+        const provider = String(t?.provider || dbg?.provider || json?.provider || e.scope || 'unknown');
+        const scope = String(e.scope || 'unknown');
+        const usage = (t?.usage && typeof t.usage === 'object') ? (t.usage as Usage) : undefined;
+        addUsage(overall, usage);
+        byProvider[provider] = byProvider[provider] || emptyTotals();
+        addUsage(byProvider[provider], usage);
+        byScope[scope] = byScope[scope] || emptyTotals();
+        addUsage(byScope[scope], usage);
+      }
+    }
+
+    return { overall, byProvider, byScope };
+  }, [events]);
+
   const diagnostics = useMemo(() => {
     const exportedEvents = events.slice(-EXPORT_EVENT_LIMIT);
     const exportedHistory = (agentHistory || []).slice(-EXPORT_HISTORY_LIMIT);
@@ -103,8 +143,9 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
         : null,
       agentHistory: compactDebugValue(exportedHistory),
       debugEvents: compactDebugValue(exportedEvents),
+      tokenStats: compactDebugValue(tokenStats),
     };
-  }, [aiSettings, activeStory, agentHistory, events]);
+  }, [aiSettings, activeStory, agentHistory, events, tokenStats]);
 
   const copyDiagnostics = async () => {
     const text = JSON.stringify(diagnostics, null, 2);
@@ -215,6 +256,16 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
                 Trace
               </button>
               <button
+                onClick={() => setTab('tokens')}
+                className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
+                  tab === 'tokens'
+                    ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-black dark:border-white'
+                    : 'bg-transparent text-zinc-500 border-zinc-200 dark:text-zinc-400 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-900'
+                }`}
+              >
+                Tokens
+              </button>
+              <button
                 onClick={() => setTab('registry')}
                 className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
                   tab === 'registry'
@@ -311,10 +362,16 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
 
           {/* Right: event log */}
           <div className="xl:col-span-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden flex flex-col min-h-0">
-            <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20 flex items-center justify-between">
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
-                {tab === 'events' ? 'Event Log' : tab === 'trace' ? 'LLM Trace' : 'Agent & Prompt Registry'}
-              </div>
+	            <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20 flex items-center justify-between">
+	              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+	                {tab === 'events'
+	                  ? 'Event Log'
+	                  : tab === 'trace'
+	                    ? 'LLM Trace'
+	                    : tab === 'tokens'
+	                      ? 'Token Usage (Session)'
+	                      : 'Agent & Prompt Registry'}
+	              </div>
               {tab === 'events' && (
                 <div className="flex items-center gap-2">
                 <button
@@ -495,6 +552,110 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ aiSettings, activeStory,
                 ))
               )}
                 </>
+              )}
+
+              {tab === 'tokens' && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Calls</div>
+                      <div className="mt-2 text-2xl font-black tracking-tight text-zinc-900 dark:text-zinc-100">
+                        {tokenStats.overall.calls.toLocaleString()}
+                      </div>
+                      <div className="mt-1 text-[11px] text-zinc-500">Counted from agent traces</div>
+                    </div>
+                    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Prompt Tokens</div>
+                      <div className="mt-2 text-2xl font-black tracking-tight text-zinc-900 dark:text-zinc-100">
+                        {tokenStats.overall.promptTokens.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Output Tokens</div>
+                      <div className="mt-2 text-2xl font-black tracking-tight text-zinc-900 dark:text-zinc-100">
+                        {tokenStats.overall.outputTokens.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Total Tokens</div>
+                      <div className="mt-2 text-2xl font-black tracking-tight text-zinc-900 dark:text-zinc-100">
+                        {tokenStats.overall.totalTokens.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">By Provider</div>
+                    </div>
+                    <div className="p-4 overflow-x-auto">
+                      {Object.keys(tokenStats.byProvider).length === 0 ? (
+                        <div className="text-zinc-500 text-sm italic">No token usage captured yet.</div>
+                      ) : (
+                        <table className="w-full text-left text-[12px]">
+                          <thead>
+                            <tr className="text-zinc-500">
+                              <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Provider</th>
+                              <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Calls</th>
+                              <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Prompt</th>
+                              <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Output</th>
+                              <th className="py-2 pr-0 font-black uppercase tracking-widest text-[10px]">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(tokenStats.byProvider)
+                              .sort((a, b) => (b[1].totalTokens || 0) - (a[1].totalTokens || 0))
+                              .map(([provider, totals]) => (
+                                <tr key={provider} className="border-t border-zinc-100 dark:border-zinc-800/60">
+                                  <td className="py-2 pr-4 font-mono text-zinc-800 dark:text-zinc-200">{provider}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-500">{totals.calls.toLocaleString()}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-500">{totals.promptTokens.toLocaleString()}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-500">{totals.outputTokens.toLocaleString()}</td>
+                                  <td className="py-2 pr-0 font-mono text-zinc-500">{totals.totalTokens.toLocaleString()}</td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/20">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">By Scope</div>
+                    </div>
+                    <div className="p-4 overflow-x-auto">
+                      {Object.keys(tokenStats.byScope).length === 0 ? (
+                        <div className="text-zinc-500 text-sm italic">No token usage captured yet.</div>
+                      ) : (
+                        <table className="w-full text-left text-[12px]">
+                          <thead>
+                            <tr className="text-zinc-500">
+                              <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Scope</th>
+                              <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Calls</th>
+                              <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Prompt</th>
+                              <th className="py-2 pr-4 font-black uppercase tracking-widest text-[10px]">Output</th>
+                              <th className="py-2 pr-0 font-black uppercase tracking-widest text-[10px]">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(tokenStats.byScope)
+                              .sort((a, b) => (b[1].totalTokens || 0) - (a[1].totalTokens || 0))
+                              .map(([scope, totals]) => (
+                                <tr key={scope} className="border-t border-zinc-100 dark:border-zinc-800/60">
+                                  <td className="py-2 pr-4 font-mono text-zinc-800 dark:text-zinc-200">{scope}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-500">{totals.calls.toLocaleString()}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-500">{totals.promptTokens.toLocaleString()}</td>
+                                  <td className="py-2 pr-4 font-mono text-zinc-500">{totals.outputTokens.toLocaleString()}</td>
+                                  <td className="py-2 pr-0 font-mono text-zinc-500">{totals.totalTokens.toLocaleString()}</td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                </div>
               )}
 
               {tab === 'registry' && (
