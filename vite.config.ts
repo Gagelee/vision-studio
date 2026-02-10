@@ -1477,6 +1477,52 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	      }
 	    });
 
+      middlewares.use('/api/local-assets/delete', async (req: any, res: any, next: any) => {
+        if (req.method !== 'POST') return next();
+        const body = await readJsonBody(req);
+        const rawUrls = Array.isArray(body?.urls) ? body.urls : [];
+        const urls = Array.from(
+          new Set(
+            rawUrls
+              .map((u: any) => String(u || '').trim())
+              .filter((u: string) => Boolean(u)),
+          ),
+        ).slice(0, 2000);
+
+        let deleted = 0;
+        let missing = 0;
+        let rejected = 0;
+        const errors: string[] = [];
+
+        for (const u of urls) {
+          const p = safeGeneratedAssetPath(u);
+          if (!p) {
+            rejected += 1;
+            continue;
+          }
+          try {
+            await fs.promises.unlink(p);
+            deleted += 1;
+          } catch (e: any) {
+            const code = String(e?.code || '');
+            if (code === 'ENOENT') {
+              missing += 1;
+              continue;
+            }
+            errors.push(`${path.basename(p)}:${code || 'ERR'}`);
+          }
+        }
+
+        return sendJson(res, 200, {
+          ok: true,
+          requested: urls.length,
+          deleted,
+          missing,
+          rejected,
+          errors: errors.slice(0, 20),
+        });
+      });
+
 	    middlewares.use('/api/asset/video/generate', async (req: any, res: any, next: any) => {
 	      if (req.method !== 'POST') return next();
 	      const body = await readJsonBody(req);

@@ -70,6 +70,60 @@ interface PendingInteractionGeneration {
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
 const STALE_GENERATION_MAX_AGE_MS = 5 * 60_000;
 const STALE_PRODUCTION_MAX_AGE_MS = 20 * 60_000;
+const GENERATED_PREFIX = '/__generated__/';
+
+const collectGeneratedAssetUrlsFromStory = (story: Story): string[] => {
+  const out = new Set<string>();
+  const push = (raw: unknown) => {
+    const v = String(raw || '').trim();
+    if (!v || !v.startsWith(GENERATED_PREFIX)) return;
+    out.add(v.split('?')[0].split('#')[0]);
+  };
+
+  push((story as any)?.keyVisualUrl);
+  for (const kv of (story as any)?.keyVisualVersions || []) push((kv as any)?.imageUrl);
+
+  for (const loc of story.locations || []) {
+    push((loc as any)?.previewUrl);
+    for (const v of (loc as any)?.previewVersions || []) push((v as any)?.imageUrl);
+  }
+
+  for (const ch of story.characters || []) {
+    push((ch as any)?.avatarUrl);
+    for (const v of (ch as any)?.avatarVersions || []) push((v as any)?.imageUrl);
+    for (const lk of ch.looks || []) {
+      push((lk as any)?.previewUrl);
+      for (const v of (lk as any)?.previewVersions || []) push((v as any)?.imageUrl);
+    }
+  }
+
+  for (const seq of story.sequences || []) {
+    for (const sh of seq.shots || []) {
+      push((sh as any)?.thumbnailUrl);
+      for (const v of (sh as any)?.versions || []) {
+        push((v as any)?.imageUrl);
+        const meta: any = (v as any)?.metadata || {};
+        for (const r of meta?.references || []) push((r as any)?.url);
+        push(meta?.source?.originalImageUrl);
+        push(meta?.source?.refinedImageUrl);
+        for (const p of meta?.panelGroup?.panels || []) {
+          push((p as any)?.imageUrl);
+          push((p as any)?.originalImageUrl);
+          push((p as any)?.refinedImageUrl);
+          for (const r of (p as any)?.refine?.references || []) push((r as any)?.url);
+        }
+      }
+      for (const pv of (sh as any)?.production?.variants || []) {
+        push((pv as any)?.videoUrl);
+        push((pv as any)?.metadata?.sourceImageUrl);
+        for (const r of (pv as any)?.metadata?.referenceImageUrls || []) push(r);
+      }
+      push((sh as any)?.production?.videoUrl);
+    }
+  }
+
+  return Array.from(out);
+};
 
 const assetJobKey = (projectId: string, job: AssetJob): string => {
   if (job.kind === 'masterkv') return `${projectId}|masterkv`;
@@ -1169,6 +1223,33 @@ export default function App() {
     setKvConsoleActionRequest({ id: Date.now() + Math.floor(Math.random() * 1000), type });
   };
 
+  const deleteLocalGeneratedAssets = async (urls: string[]) => {
+    const unique = Array.from(new Set((urls || []).map((u) => String(u || '').trim()).filter(Boolean)));
+    if (!unique.length) return { deleted: 0, missing: 0, rejected: 0 };
+    try {
+      const res = await fetch('/api/local-assets/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ urls: unique }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as any;
+      return {
+        deleted: Number(data?.deleted || 0),
+        missing: Number(data?.missing || 0),
+        rejected: Number(data?.rejected || 0),
+      };
+    } catch (e) {
+      addDebugEvent({
+        level: 'warn',
+        scope: 'local.assets',
+        message: 'Failed to delete local generated assets',
+        data: { error: e instanceof Error ? e.message : String(e), count: unique.length },
+      });
+      return null;
+    }
+  };
+
   // ----- Workspace / Project Library -----
 
   const openProject = (projectId: string) => {
@@ -1196,7 +1277,7 @@ export default function App() {
     addToast('Project renamed', 'success');
   };
 
-  const handleDeleteProject = (projectId: string) => {
+  const handleDeleteProject = async (projectId: string) => {
     const existing = workspace.projects.find((p) => p.id === projectId);
     if (!existing) return;
     if (!window.confirm(`Delete project "${existing.title}"? This cannot be undone.`)) return;
@@ -1220,7 +1301,16 @@ export default function App() {
       return { ...prev, projects: nextProjects, activeProjectId };
     });
 
+    const deletionStats = await deleteLocalGeneratedAssets(collectGeneratedAssetUrlsFromStory(existing));
     if (workspace.activeProjectId === projectId) setScreen('library');
+    if (deletionStats) {
+      const extra =
+        deletionStats.missing || deletionStats.rejected
+          ? ` (${deletionStats.deleted} deleted, ${deletionStats.missing} missing, ${deletionStats.rejected} skipped)`
+          : ` (${deletionStats.deleted} files deleted)`;
+      addToast(`Project deleted${extra}`, 'info');
+      return;
+    }
     addToast('Project deleted', 'info');
   };
 
