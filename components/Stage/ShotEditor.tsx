@@ -7,12 +7,13 @@ import { describeImageForRefine } from '../../lib/ai/image/describe';
 import { buildRefineFromDescribePrompt, buildShotKeyframePrompt } from '../../lib/ai/prompts';
 import { selectContactSheetPanelCount } from '../../lib/ai/prompts/image';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info, ChevronRight } from 'lucide-react';
-import {
-  getCharacterActiveAvatarUrl,
-  getLocationActivePreviewUrl,
-  getLookActivePreviewUrl,
-  resolveShotActiveVideo,
-} from '../../lib/ai/assetRefs';
+  import {
+    getCharacterActiveAvatarUrl,
+    getLocationActivePreviewUrl,
+    getLookActivePreviewUrl,
+    getShotVideoVariantsForVersion,
+    resolveShotActiveVideo,
+  } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 import { addDebugEvent } from '../../lib/debug/eventLog';
 import { computeGridPanelBBoxes } from '../../lib/ui/gridSplit';
@@ -65,6 +66,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	  const probedVideoUrlsRef = useRef<Set<string>>(new Set());
 	  const [previewMode, setPreviewMode] = useState<'video' | 'frame'>('frame');
 	  const prevVideoUrlRef = useRef<string>('');
+  const suppressAutoVideoSwitchRef = useRef(false);
 
   const [isSplittingGrid, setIsSplittingGrid] = useState(false);
   const [splitError, setSplitError] = useState<string | null>(null);
@@ -81,7 +83,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	    // Default: whenever a (new) video URL exists, prefer previewing video.
 	    const prev = prevVideoUrlRef.current;
 	    if (!activeVideoUrl) setPreviewMode('frame');
-	    if (activeVideoUrl && activeVideoUrl !== prev) setPreviewMode('video');
+	    if (activeVideoUrl && activeVideoUrl !== prev) {
+      if (suppressAutoVideoSwitchRef.current) {
+        setPreviewMode('frame');
+        suppressAutoVideoSwitchRef.current = false;
+      } else {
+        setPreviewMode('video');
+      }
+    }
 	    prevVideoUrlRef.current = activeVideoUrl;
 	  }, [activeVideoUrl]);
 
@@ -691,6 +700,9 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     });
 	    const nextActive = created[0] || null;
 	    if (!nextActive) return;
+      // Keep ungroup result on frame mode even if the source stack already had a playable video.
+      suppressAutoVideoSwitchRef.current = true;
+      setPreviewMode('frame');
 	    onUpdateShot({
 	      ...shot,
 	      versions: [...baseListWithoutGroup, ...created],
@@ -1521,12 +1533,15 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	            )}
 
 	            {/* Version List */}
-	            {timelineVersions.map((version, index) => {
-	                const isActive = version.id === shot.activeVersionId;
-	                const isSelected = selectedSet.has(String(version.id || ''));
-	                const versionNumber = displayVersions.length - index;
-	                return (
-	                    <div 
+		            {timelineVersions.map((version, index) => {
+		                const isActive = version.id === shot.activeVersionId;
+		                const isSelected = selectedSet.has(String(version.id || ''));
+		                const versionNumber = displayVersions.length - index;
+                    const hasPlayableVideo = getShotVideoVariantsForVersion(shot, version, { allowLegacyUnboundFallback: true }).some(
+                      (v) => Boolean(String(v?.videoUrl || '').trim()),
+                    );
+		                return (
+		                    <div 
 	                        key={version.id}
 	                        onClick={(e) => onVersionCardClick(e, version.id)}
 	                        className={`relative flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden border-2 cursor-pointer transition-all group shadow-lg ${
@@ -1605,12 +1620,20 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                           </button>
                         )}
                         
-                        <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <span className="bg-white text-black text-[10px] font-bold px-2 py-1 rounded shadow-lg uppercase tracking-widest">Select</span>
-                        </div>
-                    </div>
-                );
-            })}
+		                        <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+		                            <span className="bg-white text-black text-[10px] font-bold px-2 py-1 rounded shadow-lg uppercase tracking-widest">Select</span>
+		                        </div>
+                        {hasPlayableVideo && (
+                          <>
+                            <div className="pointer-events-none absolute inset-0 bg-emerald-400/16" />
+                            <div className="absolute bottom-2 left-2 bg-emerald-500/22 backdrop-blur px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider text-emerald-100 border border-emerald-400/35">
+                              Video Ready
+                            </div>
+                          </>
+                        )}
+		                    </div>
+		                );
+		            })}
         </div>
 	        {generationError && !isImmersive && (
 	          <div className="px-4 pb-4">
