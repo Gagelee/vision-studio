@@ -71,6 +71,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const [activePanelIndex, setActivePanelIndex] = useState(0);
   const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string>('');
+  const normalizeImageUrl = (u: any) => String(u || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
 
 	  useEffect(() => {
 	    setVideoLoadFailed(false);
@@ -611,6 +612,16 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     const existing = Array.isArray(shot.versions) ? shot.versions : [];
     const cleaned = existing.filter((v) => String(v?.type || '') !== 'placeholder');
     const baseList = cleaned.length ? cleaned : existing;
+    const existingHit = baseList.find((v: any) => normalizeImageUrl(v?.imageUrl) === normalizeImageUrl(panelUrl));
+    if (existingHit) {
+      onUpdateShot({
+        ...shot,
+        versions: baseList,
+        activeVersionId: String((existingHit as any).id || ''),
+        thumbnailUrl: String((existingHit as any).imageUrl || panelUrl),
+      });
+      return;
+    }
     const newVersion: ShotVersion = {
       id: `v${baseList.length + 1}-${now}`,
       imageUrl: panelUrl,
@@ -1022,6 +1033,24 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       }
 
       const baseList = cleaned.length ? cleaned : existing;
+      const existingHit = baseList.find((v) => normalizeImageUrl((v as any)?.imageUrl) === normalizeImageUrl(img.imageUrl));
+      if (existingHit) {
+        onUpdateShot({
+          ...shot,
+          versions: baseList,
+          activeVersionId: String((existingHit as any).id || ''),
+          thumbnailUrl: img.imageUrl,
+          aiState: 'idle',
+          aiPrompt: '',
+          assetState: {
+            ...(shot.assetState || { status: 'idle' }),
+            status: 'done',
+            lastError: '',
+            lastAttemptAt: startedAt,
+          },
+        });
+        return;
+      }
       const newVersion: ShotVersion = {
         id: `v${baseList.length + 1}-${now}`,
         imageUrl: img.imageUrl,

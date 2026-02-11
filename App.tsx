@@ -40,6 +40,8 @@ import {
   type AssetJob,
 } from './lib/ai/assetExecutor';
 import { generateVideoFromImage } from './lib/ai/video/generate';
+import { composeVideoPromptWithLlm } from './lib/ai/video/compose';
+import { describeImageForRefine } from './lib/ai/image/describe';
 import { buildActingDirection, composeStructuredVideoPrompt, extractDialogueLines, resolveVideoSourceBundle } from './lib/ai/videoPromptComposer';
 import { getOrCreateVisionUserId, getVisionUserRequestHeaders } from './lib/userSession';
 import { appendProjectTransferLog, buildProjectExportEnvelope, parseProjectImportText } from './lib/projectTransfer';
@@ -838,8 +840,12 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
           const baseRaw = existing.length ? existing : seededBase;
           const isPlaceholder = isLikelyPlaceholderImageUrl(url);
           const base = isPlaceholder ? baseRaw : baseRaw.filter((v: any) => String(v?.type || '') !== 'placeholder');
-          const id = `kv-${now}-${rand()}`;
-          const versions = [...base, { id, imageUrl: url, createdAt: now, type: base.length ? 'variation' : 'base' }];
+          const normalizeImageUrl = (u: any) => String(u || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
+          const existingHit = (base || []).find((v: any) => normalizeImageUrl(v?.imageUrl) === normalizeImageUrl(url));
+          const id = existingHit ? String(existingHit.id || '') : `kv-${now}-${rand()}`;
+          const versions = existingHit
+            ? base
+            : [...base, { id, imageUrl: url, createdAt: now, type: base.length ? 'variation' : 'base' }];
           next = {
             ...next,
             keyVisualVersions: versions as any,
@@ -1204,6 +1210,37 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
         ...acc,
         locations: acc.locations.filter((l) => l.id !== locationId),
         sequences: acc.sequences.map((seq) => syncSequenceFromShots(seq, seq.shots.map((shot) => (shot.locationId === locationId ? { ...shot, locationId: '' } : shot)))),
+        updatedAt: Date.now(),
+      };
+    }
+
+    if (action.type === 'DELETE_LOCATION_VARIANT') {
+      const locationId = String(action.payload?.locationId || '');
+      const variantId = String(action.payload?.variantId || action.payload?.versionId || action.payload?.id || '');
+      if (!locationId || !variantId) return acc;
+      return {
+        ...acc,
+        locations: acc.locations.map((l) => {
+          if (String(l.id || '') !== locationId) return l;
+          const versions = Array.isArray((l as any).previewVersions) ? ((l as any).previewVersions as any[]) : [];
+          const remaining = versions.filter((v: any) => String(v?.id || '') !== variantId);
+          if (!remaining.length) return l;
+          const prevActive = String((l as any).activePreviewVersionId || '');
+          const nextActiveId =
+            prevActive === variantId
+              ? String(remaining[remaining.length - 1]?.id || '')
+              : prevActive;
+          const selected =
+            remaining.find((v: any) => String(v?.id || '') === nextActiveId) ||
+            remaining[remaining.length - 1];
+          if (!selected?.imageUrl) return l;
+          return {
+            ...l,
+            previewUrl: String(selected.imageUrl),
+            previewVersions: remaining as any,
+            activePreviewVersionId: String(selected.id || '') as any,
+          };
+        }),
         updatedAt: Date.now(),
       };
     }
@@ -2013,6 +2050,150 @@ export default function App() {
     };
   };
 
+  const composeRuntimeVideoPromptWithLlm = async (args: { story: Story; seq: any; shot: any; sourceBundle: any; authoredPrompt?: string }) => {
+    const base = composeRuntimeVideoPrompt(args);
+    const sourceKind = String(args?.sourceBundle?.sourceKind || '').trim() === 'stack' ? 'stack' : 'single';
+    if (!String(base.videoPrompt || '').trim()) return { ...base, mode: 'rules-empty' as const };
+    if (sourceKind !== 'stack') return { ...base, mode: 'rules-only' as const };
+    try {
+      const composed = await composeVideoPromptWithLlm({
+        basePrompt: String(base.videoPrompt || '').trim(),
+        sourceKind: sourceKind as any,
+        frameDescription: String(base.frameDescription || '').trim(),
+        shotAction: String(base.shotAction || '').trim(),
+        shotDescription: String((args.shot as any)?.description || '').trim(),
+        sequenceContext: String((args.seq as any)?.context || '').trim(),
+        cameraPrompt: String(base.cameraPrompt || '').trim(),
+        lightingPrompt: String(base.lightingPrompt || '').trim(),
+        styleGuide: String(base.styleGuide || '').trim(),
+        locationStyle: String(base.locationStyle || '').trim(),
+        dialogue: Array.isArray(base.dialogue) ? base.dialogue : [],
+        referenceFrames: Array.isArray(args?.sourceBundle?.referenceFrames) ? args.sourceBundle.referenceFrames : [],
+      });
+      const videoPrompt = String(composed?.videoPrompt || '').trim() || String(base.videoPrompt || '').trim();
+      return { ...base, videoPrompt, mode: 'llm-synthesized' as const };
+    } catch (e) {
+      addDebugEvent({
+        level: 'warn',
+        scope: 'video.prompt',
+        message: 'Video prompt LLM compose failed, fallback to rule composer',
+        data: {
+          shotId: String((args.shot as any)?.id || ''),
+          sequenceId: String((args.seq as any)?.id || ''),
+          error: String((e as any)?.message || e || 'unknown'),
+        },
+      });
+      return { ...base, mode: 'rules-fallback' as const };
+    }
+  };
+
+  const buildVideoPromptSourceSignature = (args: { sourceBundle: any; activeVersion: any }) => {
+    const sourceKind = String(args?.sourceBundle?.sourceKind || '').trim();
+    const sourceImageUrl = String(args?.sourceBundle?.sourceImageUrl || '').trim();
+    if (sourceKind !== 'stack') return `single:${sourceImageUrl}`;
+    const versionId = String(args?.activeVersion?.id || '').trim();
+    const refs = Array.isArray(args?.sourceBundle?.referenceFrames) ? args.sourceBundle.referenceFrames : [];
+    const ordered = refs
+      .map((f: any, i: number) => {
+        const idx = Number.isFinite(Number(f?.panelIndex)) ? Number(f.panelIndex) : i;
+        const url = String(f?.url || '').trim();
+        return `${idx}:${url}`;
+      })
+      .filter(Boolean)
+      .join('|');
+    return `stack:${versionId}:${ordered}`;
+  };
+
+  const hydrateStackPanelDescriptions = async (args: {
+    storyId: string;
+    sequenceId: string;
+    shotId: string;
+    activeVersion: any;
+  }): Promise<{ activeVersion: any; filledCount: number; failedCount: number }> => {
+    const type = String(args.activeVersion?.type || '').trim();
+    if (type !== 'panel_group') return { activeVersion: args.activeVersion, filledCount: 0, failedCount: 0 };
+    const group = (args.activeVersion as any)?.metadata?.panelGroup;
+    const panels = Array.isArray(group?.panels) ? group.panels : [];
+    if (!panels.length) return { activeVersion: args.activeVersion, filledCount: 0, failedCount: 0 };
+
+    const missing = panels
+      .map((p: any, i: number) => {
+        const description = String(p?.refine?.describe?.description || '').trim();
+        const imageUrl = String(p?.refinedImageUrl || p?.imageUrl || '').trim();
+        if (description || !imageUrl) return null;
+        return { panelIndex: Number.isFinite(Number(p?.index)) ? Number(p.index) : i, imageUrl };
+      })
+      .filter(Boolean) as Array<{ panelIndex: number; imageUrl: string }>;
+
+    if (!missing.length) return { activeVersion: args.activeVersion, filledCount: 0, failedCount: 0 };
+
+    const results = await Promise.allSettled(
+      missing.map(async (item) => {
+        const describe = await describeImageForRefine({ imageUrl: item.imageUrl });
+        return { panelIndex: item.panelIndex, describe };
+      }),
+    );
+
+    const okByIndex = new Map<number, any>();
+    let failedCount = 0;
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        okByIndex.set(Number(r.value.panelIndex), r.value.describe);
+      } else {
+        failedCount += 1;
+      }
+    }
+    if (!okByIndex.size) return { activeVersion: args.activeVersion, filledCount: 0, failedCount };
+
+    const now = Date.now();
+    const nextPanels = panels.map((p: any, i: number) => {
+      const panelIndex = Number.isFinite(Number(p?.index)) ? Number(p.index) : i;
+      const describe = okByIndex.get(panelIndex);
+      if (!describe) return p;
+      const prevRefine = p?.refine && typeof p.refine === 'object' ? p.refine : {};
+      return {
+        ...p,
+        describedAt: now,
+        refine: {
+          ...prevRefine,
+          describe,
+        },
+      };
+    });
+
+    const nextVersion = {
+      ...(args.activeVersion as any),
+      metadata: {
+        ...((args.activeVersion as any)?.metadata || {}),
+        panelGroup: {
+          ...(((args.activeVersion as any)?.metadata?.panelGroup as any) || {}),
+          panels: nextPanels,
+        },
+      },
+    };
+
+    updateActiveStory((prev) => ({
+      ...prev,
+      sequences: (prev.sequences || []).map((s) =>
+        s.id !== args.sequenceId
+          ? s
+          : {
+              ...s,
+              shots: (s.shots || []).map((x) =>
+                x.id !== args.shotId
+                  ? x
+                  : {
+                      ...x,
+                      versions: (x.versions || []).map((v) => (v.id === String((args.activeVersion as any)?.id || '') ? ({ ...v, ...nextVersion } as any) : v)),
+                    },
+              ),
+            },
+      ),
+    }));
+
+    return { activeVersion: nextVersion, filledCount: okByIndex.size, failedCount };
+  };
+
   const hydrateShotVideoPromptFromKeyframe = (story: Story, sequenceId: string, shotId: string, nowTs?: number): Story => {
     const seq =
       (story.sequences || []).find((s) => s.id === sequenceId && (s.shots || []).some((x) => x.id === shotId)) ||
@@ -2029,12 +2210,14 @@ export default function App() {
     const sourceBundle = resolveVideoSourceBundle(shot, activeVersion as any);
     const sourceImageUrl = String(sourceBundle.sourceImageUrl || '').trim();
     if (!sourceImageUrl) return story;
+    const sourceSignature = buildVideoPromptSourceSignature({ sourceBundle, activeVersion });
 
     const cameraMeta = ((shot.elements as any)?.[ElementType.CAMERA]?.metadata || {}) as Record<string, any>;
     const existingVideoPrompt = String(cameraMeta.videoPrompt || '').trim();
     const previousSource = String(cameraMeta.videoPromptSourceImageUrl || '').trim();
+    const previousSignature = String(cameraMeta.videoPromptSourceSignature || '').trim();
     const isReady = Boolean(cameraMeta.videoPromptReady);
-    const shouldHydrate = previousSource !== sourceImageUrl || !existingVideoPrompt || !isReady;
+    const shouldHydrate = previousSource !== sourceImageUrl || previousSignature !== sourceSignature || !existingVideoPrompt || !isReady;
     if (!shouldHydrate) return story;
 
     const composed = composeRuntimeVideoPrompt({
@@ -2069,8 +2252,10 @@ export default function App() {
                             videoPromptReady: true,
                             videoPromptReadyReason: 'keyframe-enriched',
                             videoPromptSourceImageUrl: sourceImageUrl,
+                            videoPromptSourceSignature: sourceSignature,
                             videoPromptReadyAt: ts,
                             runtimeVideoPromptGeneratedAt: ts,
+                            runtimeVideoPromptMode: 'rules-sync',
                           },
                         },
                       },
@@ -2092,30 +2277,76 @@ export default function App() {
       return;
     }
 
-	    const activeVersion =
-	      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
-	      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
+    const activeVersion =
+      (Array.isArray(shot.versions) ? shot.versions : []).find((v) => v.id === shot.activeVersionId) ||
+      (Array.isArray(shot.versions) ? shot.versions : [])[Math.max(0, (shot.versions || []).length - 1)];
+    if (!activeVersion) {
+      addToast('Start Production blocked: generate/select a keyframe first.', 'info');
+      return;
+    }
 
-    const sourceBundle = resolveVideoSourceBundle(shot, activeVersion as any);
+    let effectiveActiveVersion: any = activeVersion;
+    try {
+      const hydration = await hydrateStackPanelDescriptions({
+        storyId: String(storyNow.id || ''),
+        sequenceId: args.sequenceId,
+        shotId: args.shotId,
+        activeVersion: effectiveActiveVersion,
+      });
+      effectiveActiveVersion = hydration.activeVersion;
+      if (hydration.filledCount > 0) {
+        addToast(`Prepared stack descriptions: ${hydration.filledCount} frame(s)`, 'info');
+      }
+      if (hydration.failedCount > 0) {
+        addToast(`Some frame descriptions failed (${hydration.failedCount}); continuing with available metadata.`, 'info');
+      }
+    } catch (e) {
+      addDebugEvent({
+        level: 'warn',
+        scope: 'video.prompt',
+        message: 'Stack describe preflight failed; continue with existing metadata',
+        data: { sequenceId: args.sequenceId, shotId: args.shotId, error: String((e as any)?.message || e || 'unknown') },
+      });
+    }
+
+    const shotForCompose =
+      effectiveActiveVersion === activeVersion
+        ? shot
+        : {
+            ...shot,
+            versions: (shot.versions || []).map((v) => (v.id === String((effectiveActiveVersion as any)?.id || '') ? (effectiveActiveVersion as any) : v)),
+          };
+
+    const sourceBundle = resolveVideoSourceBundle(shotForCompose as any, effectiveActiveVersion as any);
     const imageUrl = String(sourceBundle.sourceImageUrl || '').trim();
     if (!imageUrl) {
       addToast('Start Production blocked: generate/select a keyframe first.', 'info');
       return;
     }
+    const sourceSignature = buildVideoPromptSourceSignature({ sourceBundle, activeVersion: effectiveActiveVersion });
 
     const cameraMeta = ((shot.elements as any)?.[ElementType.CAMERA]?.metadata || {}) as Record<string, any>;
     const authoredVideoPrompt = String(cameraMeta.videoPrompt || '').trim();
     const isPromptReady = Boolean(cameraMeta.videoPromptReady);
     const readySourceImageUrl = String(cameraMeta.videoPromptSourceImageUrl || '').trim();
-    const needsLinearEnrich = !authoredVideoPrompt || !isPromptReady || readySourceImageUrl !== imageUrl;
-    const composed = composeRuntimeVideoPrompt({
-      story: storyNow,
-      seq,
-      shot,
-      sourceBundle,
-      authoredPrompt: authoredVideoPrompt,
-    });
-    const videoPrompt = needsLinearEnrich ? composed.videoPrompt : authoredVideoPrompt;
+    const readySourceSignature = String(cameraMeta.videoPromptSourceSignature || '').trim();
+    const needsLinearEnrich = !authoredVideoPrompt || !isPromptReady || readySourceImageUrl !== imageUrl || readySourceSignature !== sourceSignature;
+    const composed = needsLinearEnrich
+      ? await composeRuntimeVideoPromptWithLlm({
+          story: storyNow,
+          seq,
+          shot: shotForCompose,
+          sourceBundle,
+          authoredPrompt: authoredVideoPrompt,
+        })
+      : composeRuntimeVideoPrompt({
+          story: storyNow,
+          seq,
+          shot: shotForCompose,
+          sourceBundle,
+          authoredPrompt: authoredVideoPrompt,
+        });
+    const videoPrompt = needsLinearEnrich ? String(composed.videoPrompt || '').trim() : authoredVideoPrompt;
     if (!videoPrompt) {
       addToast('Start Production blocked: video prompt not ready, regenerate keyframe or retry.', 'info');
       updateActiveStory((prev) => ({
@@ -2139,6 +2370,7 @@ export default function App() {
                               videoPromptReady: false,
                               videoPromptReadyReason: 'blocked-missing-prompt',
                               videoPromptSourceImageUrl: imageUrl,
+                              videoPromptSourceSignature: sourceSignature,
                               videoPromptReadyAt: now,
                             },
                           },
@@ -2180,8 +2412,10 @@ export default function App() {
                             videoPromptReady: true,
                             videoPromptReadyReason: needsLinearEnrich ? 'video-preflight-linear-enrich' : 'precomputed',
                             videoPromptSourceImageUrl: imageUrl,
+                            videoPromptSourceSignature: sourceSignature,
                             videoPromptReadyAt: now,
                             runtimeVideoPromptGeneratedAt: now,
+                            runtimeVideoPromptMode: (composed as any)?.mode || (needsLinearEnrich ? 'rules-only' : 'precomputed'),
                           },
                         },
                       },
@@ -2272,6 +2506,7 @@ export default function App() {
                     ? x
                     : (() => {
                         const prevVariants = Array.isArray(x.production?.variants) ? x.production?.variants : [];
+                        const existingVariant = prevVariants.find((v: any) => String(v?.videoUrl || '').trim() === String(out.videoUrl || '').trim());
                         const newVariant = {
                           id: nextVariantId,
                           videoUrl: out.videoUrl,
@@ -2302,8 +2537,8 @@ export default function App() {
                             resolution: '720p',
                             operationName: out.operationName,
                             videoUrl: out.videoUrl,
-                            variants: [...prevVariants, newVariant],
-                            activeVariantId: newVariant.id,
+                            variants: existingVariant ? prevVariants : [...prevVariants, newVariant],
+                            activeVariantId: String(existingVariant?.id || newVariant.id),
                           },
                         };
                       })(),
@@ -2523,39 +2758,51 @@ export default function App() {
       ...updatedShot,
       duration: normalizeShotDurationSeconds(updatedShot.duration),
     };
-    updateActiveStory((prev) => ({
-      ...prev,
-      sequences: prev.sequences.map((seq) => {
-        if (seq.shots.some((s) => s.id === normalizedShot.id)) {
-          return {
-            ...seq,
-            shots: seq.shots.map((s) => {
-              if (s.id !== normalizedShot.id) return s;
-              const mergedAssetState = mergeAssetGenerationState((s as any)?.assetState, (normalizedShot as any)?.assetState);
-              const mergedProduction = mergeShotProductionState((s as any)?.production, (normalizedShot as any)?.production);
-              const terminalAsset =
-                String((mergedAssetState as any)?.status || '').toLowerCase() === 'done' ||
-                String((mergedAssetState as any)?.status || '').toLowerCase() === 'error' ||
-                String((mergedAssetState as any)?.status || '').toLowerCase() === 'blocked';
-              const terminalProduction =
-                String((mergedProduction as any)?.status || '').toLowerCase() === 'done' ||
-                String((mergedProduction as any)?.status || '').toLowerCase() === 'error';
-              const nextAiState = terminalAsset || terminalProduction ? 'idle' : (normalizedShot.aiState ?? s.aiState);
-              return {
-                ...s,
-                ...normalizedShot,
-                duration: normalizeShotDurationSeconds(normalizedShot.duration),
-                aiState: nextAiState as any,
-                aiPrompt: nextAiState === 'idle' ? '' : (normalizedShot.aiPrompt ?? s.aiPrompt),
-                assetState: mergedAssetState,
-                production: mergedProduction,
-              };
-            }),
-          };
-        }
-        return seq;
-      }),
-    }));
+    updateActiveStory((prev) => {
+      const merged = {
+        ...prev,
+        sequences: prev.sequences.map((seq) => {
+          if (seq.shots.some((s) => s.id === normalizedShot.id)) {
+            return {
+              ...seq,
+              shots: seq.shots.map((s) => {
+                if (s.id !== normalizedShot.id) return s;
+                const mergedAssetState = mergeAssetGenerationState((s as any)?.assetState, (normalizedShot as any)?.assetState);
+                const mergedProduction = mergeShotProductionState((s as any)?.production, (normalizedShot as any)?.production);
+                const terminalAsset =
+                  String((mergedAssetState as any)?.status || '').toLowerCase() === 'done' ||
+                  String((mergedAssetState as any)?.status || '').toLowerCase() === 'error' ||
+                  String((mergedAssetState as any)?.status || '').toLowerCase() === 'blocked';
+                const terminalProduction =
+                  String((mergedProduction as any)?.status || '').toLowerCase() === 'done' ||
+                  String((mergedProduction as any)?.status || '').toLowerCase() === 'error';
+                const nextAiState = terminalAsset || terminalProduction ? 'idle' : (normalizedShot.aiState ?? s.aiState);
+                return {
+                  ...s,
+                  ...normalizedShot,
+                  duration: normalizeShotDurationSeconds(normalizedShot.duration),
+                  aiState: nextAiState as any,
+                  aiPrompt: nextAiState === 'idle' ? '' : (normalizedShot.aiPrompt ?? s.aiPrompt),
+                  assetState: mergedAssetState,
+                  production: mergedProduction,
+                };
+              }),
+            };
+          }
+          return seq;
+        }),
+      } as Story;
+
+      const seq =
+        (merged.sequences || []).find((s) => (s.shots || []).some((x) => x.id === normalizedShot.id)) ||
+        null;
+      if (!seq) return merged;
+      try {
+        return hydrateShotVideoPromptFromKeyframe(merged, String(seq.id || ''), String(normalizedShot.id || ''), Date.now());
+      } catch {
+        return merged;
+      }
+    });
   };
 
   const handleCreateLocation = () => {
@@ -3121,6 +3368,11 @@ export default function App() {
       if (t === 'DELETE_LOCATION') {
         return p?.locationId ? { ok: true } : { ok: false, reason: 'DELETE_LOCATION missing id' };
       }
+      if (t === 'DELETE_LOCATION_VARIANT') {
+        return p?.locationId && (p?.variantId || p?.versionId || p?.id)
+          ? { ok: true }
+          : { ok: false, reason: 'DELETE_LOCATION_VARIANT missing ids' };
+      }
       if (t === 'UPDATE_LOCATION') {
         return p?.locationId ? { ok: true } : { ok: false, reason: 'UPDATE_LOCATION missing id' };
       }
@@ -3254,6 +3506,13 @@ export default function App() {
           return {
             ...withPatch,
             locationId: String(withPatch.locationId || withPatch.id || '').trim(),
+          };
+        }
+        if (a.type === 'DELETE_LOCATION_VARIANT') {
+          return {
+            ...withPatch,
+            locationId: String(withPatch.locationId || withPatch.parentId || '').trim(),
+            variantId: String(withPatch.variantId || withPatch.versionId || withPatch.id || '').trim(),
           };
         }
         if (a.type === 'UPDATE_CHARACTER') {

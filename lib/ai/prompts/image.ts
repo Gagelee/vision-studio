@@ -78,6 +78,40 @@ const compressVisualStyleLock = (raw: string, maxItems = 4) => {
   return out.join('; ');
 };
 
+const buildStructuredStyleLock = (args: {
+  styleGuide: string;
+  compactStyleGuide: string;
+  styleTranslation: string;
+  environmentStyle: string;
+  camera: string;
+  lighting: string;
+}) => {
+  const styleSummary =
+    clampText(
+      [args.compactStyleGuide, args.styleTranslation, args.styleGuide]
+        .map((x) => String(x || '').trim())
+        .find(Boolean) || '',
+      420,
+    ) || '';
+  const visuals = clampText(String(args.environmentStyle || '').trim(), 260);
+  const cameraLine = clampText(
+    uniqueList([String(args.camera || '').trim(), String(args.lighting || '').trim()]).join('; '),
+    260,
+  );
+  const composition = 'cinematic framing with clear foreground/mid/background separation';
+  const finish = 'filmic contrast and disciplined highlight rolloff; story-first staging';
+
+  const lines = [
+    styleSummary ? `- Visuals: ${styleSummary}` : '',
+    visuals ? `- Environment: ${visuals}` : '',
+    cameraLine ? `- Camera: ${cameraLine}` : '',
+    `- Composition: ${composition}`,
+    `- Finish: ${finish}`,
+  ].filter(Boolean);
+
+  return lines.length ? lines.join('\n') : '- Visuals: cinematic realism\n- Finish: controlled contrast, natural texture';
+};
+
 export const buildShotKeyframePrompt = (args: {
   shot: Shot;
   styleGuide?: string;
@@ -91,9 +125,6 @@ export const buildShotKeyframePrompt = (args: {
   const compactStyleGuide = compressVisualStyleLock(styleGuide, 4);
   const envName = clampText(String(args.environmentName || '').trim(), 96);
   const envStyle = clampText(String(args.environmentStyle || '').trim(), 320);
-  const castNames = Array.isArray(args.castNames)
-    ? args.castNames.map((s) => clampText(String(s || '').trim(), 72)).filter(Boolean).slice(0, 5)
-    : [];
   const panelCount = selectContactSheetPanelCount(Number(shot.duration || 0));
   const gridLabel = panelCount === 9 ? '3x3' : '2x2';
   const panelHints = collectPanelHints(shot, panelCount, args.panelHints);
@@ -101,24 +132,27 @@ export const buildShotKeyframePrompt = (args: {
   const camera = clampText(String(shot.elements?.CAMERA?.prompt || '').trim(), 260);
   const lighting = clampText(String(shot.elements?.LIGHTING?.prompt || '').trim(), 240);
   const script = clampText(String((shot.elements as any)?.SCRIPT?.prompt || '').trim(), 420);
-  const audio = clampText(String((shot.elements as any)?.AUDIO?.prompt || '').trim(), 160);
-
   const styleTranslation = buildStylePromptTranslation({
     texts: [compactStyleGuide || styleGuide, envStyle, camera, lighting],
     maxItems: 3,
   });
-  const compactStyleLock = uniqueList([compactStyleGuide, styleTranslation].filter(Boolean)).join('; ');
+  const structuredStyleLock = buildStructuredStyleLock({
+    styleGuide,
+    compactStyleGuide,
+    styleTranslation,
+    environmentStyle: envStyle,
+    camera,
+    lighting,
+  });
 
   const sceneInput = [
     `Scene: ${clampText(String(shot.description || '').trim(), 420) || 'N/A'}`,
     shot.timeOfDay ? `Time of day: ${shot.timeOfDay}` : '',
     envName ? `Setting: ${envName}` : '',
     envStyle ? `Environment style: ${envStyle}` : '',
-    castNames.length ? `Key subjects: ${castNames.join(', ')}` : '',
     camera ? `Camera direction: ${camera}` : '',
     lighting ? `Lighting direction: ${lighting}` : '',
     script ? `Script beat: ${script}` : '',
-    audio ? `Audio mood cue: ${audio}` : '',
   ]
     .filter(Boolean)
     .join('\n- ');
@@ -153,7 +187,8 @@ export const buildShotKeyframePrompt = (args: {
       `${panelGuidance}\n` +
       `Follow these beats when present; otherwise infer a coherent visual progression from the scene.\n\n` +
       `PROJECT STYLE LOCK\n` +
-      `- Keep references as the primary lock. Supplemental visual lock: ${compactStyleLock || 'cinematic realism; controlled contrast; natural texture'}\n` +
+      `- Keep references as the primary lock. Supplemental visual lock:\n` +
+      `${structuredStyleLock}\n` +
       `- Avoid accidental style drift into generic CGI look unless explicitly requested.\n\n` +
       `SCENE INPUT\n` +
       `- ${sceneInput}\n\n` +

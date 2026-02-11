@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Location, ModelRuntimeSettings, Sequence, Shot } from '../../types';
-import { MapPin, Image as ImageIcon, Wand2, Save, Film, AlertCircle, Lock, Unlock, Sparkles, ZoomIn, Upload, Copy } from 'lucide-react';
+import { MapPin, Image as ImageIcon, Wand2, Save, Film, AlertCircle, Lock, Unlock, Sparkles, ZoomIn, Upload, Copy, Trash2 } from 'lucide-react';
 import { generateImageFromPrompt } from '../../lib/ai/image/generate';
 import { buildLocationPreviewPrompt } from '../../lib/ai/prompts';
 import { openLightbox } from '../../lib/ui/lightboxStore';
@@ -125,29 +125,55 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
       const baseVersions =
         Array.isArray((draft as any).previewVersions) && (draft as any).previewVersions.length ? (draft as any).previewVersions : seeded.versions;
       const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
-      const newId = `pv-${now}-${Math.random().toString(16).slice(2, 8)}`;
+      const normalizeImageUrl = (u: any) => String(u || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
+      const existingHit = (cleanedBase || []).find((v: any) => normalizeImageUrl(v?.imageUrl) === normalizeImageUrl(out.imageUrl));
+      const newId = existingHit ? String(existingHit.id || '') : `pv-${now}-${Math.random().toString(16).slice(2, 8)}`;
+      const nextVersions = existingHit
+        ? (cleanedBase || []).map((v: any) =>
+            String(v?.id || '') === String(existingHit.id || '')
+              ? {
+                  ...v,
+                  createdAt: now,
+                  metadata: {
+                    ...((v as any)?.metadata || {}),
+                    prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || buildLocationPreviewPrompt(draft, styleGuide) || '').slice(
+                      0,
+                      4000,
+                    ),
+                    references,
+                    settings: {
+                      provider: imageSettings.provider,
+                      model: imageSettings.model,
+                      temperature: imageSettings.temperature,
+                    },
+                    aspectRatio: aspectRatio || '16:9',
+                  },
+                }
+              : v,
+          )
+        : [
+            ...cleanedBase,
+            {
+              id: newId,
+              imageUrl: out.imageUrl,
+              createdAt: now,
+              type: cleanedBase.length ? 'variation' : 'base',
+              metadata: {
+                prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || buildLocationPreviewPrompt(draft, styleGuide) || '').slice(0, 4000),
+                references,
+                settings: {
+                  provider: imageSettings.provider,
+                  model: imageSettings.model,
+                  temperature: imageSettings.temperature,
+                },
+                aspectRatio: aspectRatio || '16:9',
+              },
+            },
+          ];
       const next: Location = {
         ...draft,
         previewUrl: out.imageUrl,
-        previewVersions: [
-          ...cleanedBase,
-          {
-            id: newId,
-            imageUrl: out.imageUrl,
-            createdAt: now,
-            type: cleanedBase.length ? 'variation' : 'base',
-            metadata: {
-              prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || buildLocationPreviewPrompt(draft, styleGuide) || '').slice(0, 4000),
-              references,
-              settings: {
-                provider: imageSettings.provider,
-                model: imageSettings.model,
-                temperature: imageSettings.temperature,
-              },
-              aspectRatio: aspectRatio || '16:9',
-            },
-          },
-        ] as any,
+        previewVersions: nextVersions as any,
         activePreviewVersionId: newId as any,
         assetState: {
           status: 'done',
@@ -237,6 +263,30 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
       previewUrl: String(v.imageUrl),
       previewVersions,
       activePreviewVersionId: String(versionId) as any,
+    };
+    setDraft(next);
+    onSave(next);
+  };
+
+  const handleDeletePreviewVariant = (versionId: string) => {
+    if (!window.confirm('Delete this environment variant?')) return;
+    const versions = Array.isArray(previewVersions) ? previewVersions : [];
+    const remaining = versions.filter((v: any) => String(v?.id || '') !== String(versionId));
+    if (!remaining.length) return;
+    const activeId = String(activePreviewVersionId || '');
+    const nextActive =
+      activeId === String(versionId)
+        ? String((remaining[remaining.length - 1] as any)?.id || '')
+        : activeId;
+    const selected =
+      remaining.find((v: any) => String(v?.id || '') === String(nextActive)) ||
+      remaining[remaining.length - 1];
+    if (!selected?.imageUrl) return;
+    const next: Location = {
+      ...draft,
+      previewUrl: String(selected.imageUrl),
+      previewVersions: remaining as any,
+      activePreviewVersionId: String(selected.id || '') as any,
     };
     setDraft(next);
     onSave(next);
@@ -335,20 +385,31 @@ export const LocationEditor: React.FC<LocationEditorProps> = ({
 	                                        title={isActive ? 'Active' : 'Set active'}
 	                                    >
 		                                        <img src={String(v.imageUrl)} className="w-full h-full object-cover" />
-	                                        <button
-	                                          type="button"
-	                                          className="absolute top-1 right-1 p-1 rounded-md bg-black/60 text-white hover:bg-black/80 border border-white/10"
-	                                          title="View large"
+                                        <button
+                                          type="button"
+                                          className="absolute top-1 right-1 p-1 rounded-md bg-black/60 text-white hover:bg-black/80 border border-white/10"
+                                          title="View large"
 	                                          onClick={(e) => {
 	                                            e.stopPropagation();
 	                                            openLightbox({ url: String(v.imageUrl), title: `Environment variant: ${draft.name}` });
 	                                          }}
 	                                        >
-	                                          <ZoomIn className="w-3.5 h-3.5" />
-	                                        </button>
-	                                    </button>
-	                                );
-	                            })}
+                                          <ZoomIn className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="absolute bottom-1 right-1 p-1 rounded-md bg-black/60 text-white hover:bg-rose-500/90 border border-white/10"
+                                          title="Delete variant"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeletePreviewVariant(String(v.id));
+                                          }}
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                    </button>
+                                );
+                            })}
 	                        </div>
 		                    </div>
 		                )}

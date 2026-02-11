@@ -322,6 +322,26 @@ const ruleBased = (req: DirectorCommandRequest): DirectorCommandResponse => {
   }
 
   const wantsGenerate = includesAny(msg, ['generate', 'render', 'asset', 'assets', 'image', 'images', '出图', '生成', '渲染', '资产', '缩略图']);
+  const wantsDeleteLocationVariant = includesAny(msg, [
+    'delete location variant',
+    'remove location variant',
+    'delete environment variant',
+    'remove environment variant',
+    '删除环境变体',
+    '删除环境variant',
+    '删除场景变体',
+    '删除variant',
+  ]);
+  if (wantsDeleteLocationVariant && req.selection.type === 'location') {
+    const locationId = String(req.selection.id || '').trim();
+    const variantId =
+      String(raw.match(/\b(?:variant|version)(?:\s*id)?\s*[:：=]?\s*([a-z0-9-]+)/i)?.[1] || '').trim() ||
+      String(raw.match(/\b(pv-[a-z0-9-]+)/i)?.[1] || '').trim();
+    if (locationId && variantId) {
+      actions.push({ type: 'DELETE_LOCATION_VARIANT', payload: { locationId, variantId } });
+      notes.push('delete location variant');
+    }
+  }
   const wantsKvProposalGenerate = includesAny(msg, [
     'update kv',
     'regenerate kv',

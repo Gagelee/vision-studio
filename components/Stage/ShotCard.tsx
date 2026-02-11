@@ -1,8 +1,8 @@
 
 import React from 'react';
-import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2, Clock, Info } from 'lucide-react';
+import { Camera, Mic, Users, Sun, MonitorPlay, Sparkles, Loader2, Clock, Info, ImageOff } from 'lucide-react';
 import { Shot, ElementType, AspectRatio } from '../../types';
-import { getShotPreviewImageUrl } from '../../lib/ai/assetRefs';
+import { getShotPreviewImageUrl, isLikelyPlaceholderImageUrl } from '../../lib/ai/assetRefs';
 
 interface ShotCardProps {
   shot: Shot;
@@ -28,6 +28,8 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
   const versions = Array.isArray((shot as any).versions) ? (shot as any).versions : [];
   const activeVersion = versions.find((v: any) => String(v?.id || '') === String((shot as any).activeVersionId || '')) || versions[versions.length - 1];
   const hasGenerationDetails = Boolean((activeVersion as any)?.metadata);
+  const previewImageUrl = getShotPreviewImageUrl(shot);
+  const isPlaceholderPreview = String((activeVersion as any)?.type || '') === 'placeholder' || isLikelyPlaceholderImageUrl(previewImageUrl);
 
   const ratioStyles: Record<AspectRatio, string> = {
     '16:9': 'aspect-video',
@@ -94,15 +96,22 @@ export const ShotCard: React.FC<ShotCardProps> = ({ shot, isSelected, onSelect, 
 	      {/* Visual Preview Container */}
 	      <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-100 dark:bg-zinc-950 relative overflow-hidden transition-all duration-500 ease-in-out`}>
 	        {/* Actual Image */}
-	        <img 
-	          src={getShotPreviewImageUrl(shot)} 
-	          alt="Shot storyboard" 
-	          className={`w-full h-full object-cover transition-all duration-700 cursor-pointer ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
-	          onClick={(e) => {
-	            e.stopPropagation();
-	            onSelect();
-	          }}
-	        />
+            {isPlaceholderPreview ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-zinc-100 dark:bg-zinc-900 text-zinc-500 dark:text-zinc-400">
+                <ImageOff className="w-8 h-8 opacity-80" />
+                <div className="text-[11px] font-semibold tracking-wide uppercase">No Keyframe Yet</div>
+              </div>
+            ) : (
+		          <img 
+		            src={previewImageUrl} 
+		            alt="Shot storyboard" 
+		            className={`w-full h-full object-cover transition-all duration-700 cursor-pointer ${isProcessing ? 'scale-110 blur-sm opacity-50' : 'opacity-90 hover:opacity-100'}`}
+		            onClick={(e) => {
+		              e.stopPropagation();
+		              onSelect();
+		            }}
+		          />
+            )}
 
         {/* AI "Scanner" Effect Overlay */}
         {isProcessing && (

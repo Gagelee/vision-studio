@@ -32,6 +32,40 @@ const clamp = (s: string, max: number) => {
   return `${t.slice(0, Math.max(0, max - 3)).trim()}...`;
 };
 
+const sanitizeBeatText = (text: string): string =>
+  String(text || '')
+    .replace(/^[\s"'“”‘’`]+|[\s"'“”‘’`]+$/g, '')
+    .replace(/^\s*(?:beat\s*\d+\s*[:.)-]?\s*|[\d]+[.)、]\s*|[-*#]+\s*)/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const isMeaningfulBeat = (text: string): boolean => {
+  const t = sanitizeBeatText(text);
+  if (!t || t.length < 3) return false;
+  if (!/[A-Za-z0-9\u4e00-\u9fa5]/.test(t)) return false;
+  if (/^(INT|EXT)\.?$/i.test(t)) return false;
+  if (/^(INT|EXT)\b/i.test(t)) return false;
+  if (/^(DAY|NIGHT|MORNING|EVENING|DUSK|DAWN)\b/i.test(t)) return false;
+  if (/^[A-Z][A-Z0-9 _-]{1,24}:/.test(t)) return false;
+  return true;
+};
+
+const extractScriptDialogueTurns = (text: string, max = 6): string[] => {
+  const src = String(text || '');
+  const out: string[] = [];
+  for (const m of src.matchAll(/(?:^|\n)\s*([A-Za-z\u4e00-\u9fa5][A-Za-z0-9_\-\u4e00-\u9fa5 ]{0,32})\s*:\s*([^\n]{2,180})/g)) {
+    const speaker = String(m[1] || '').trim();
+    const line = String(m[2] || '').trim();
+    if (!speaker || !line) continue;
+    out.push(`${speaker.toUpperCase()}: "${line}"`);
+  }
+  if (!out.length) {
+    for (const m of src.matchAll(/"([^"]{2,180})"/g)) out.push(`LINE: "${String(m[1]).trim()}"`);
+    for (const m of src.matchAll(/“([^”]{2,180})”/g)) out.push(`LINE: "${String(m[1]).trim()}"`);
+  }
+  return uniq(out).slice(0, max);
+};
+
 export const extractDialogueLines = (text: string, max = 4): string[] => {
   const src = String(text || '');
   const lines: string[] = [];
@@ -48,15 +82,8 @@ const splitPerformanceBeats = (text: string, max = 6): string[] => {
   if (!src) return [];
   return src
     .split(/\n|[.;!?。！？；]/g)
-    .map((s) => s.trim().replace(/\s+/g, ' '))
-    .filter((s) => {
-      if (!s) return false;
-      if (/^(INT|EXT)\.?$/i.test(s)) return false;
-      if (/^(INT|EXT)\b/i.test(s)) return false;
-      if (/^(DAY|NIGHT|MORNING|EVENING|DUSK|DAWN)\b/i.test(s)) return false;
-      if (/^[A-Z][A-Z0-9 _-]{1,24}:/.test(s)) return false;
-      return true;
-    })
+    .map((s) => sanitizeBeatText(s))
+    .filter((s) => isMeaningfulBeat(s))
     .slice(0, max);
 };
 
@@ -99,24 +126,36 @@ export const buildActingDirection = (args: {
   referenceFrames?: VideoSourceFrame[];
 }): string => {
   const frameBeats = (Array.isArray(args.referenceFrames) ? args.referenceFrames : [])
-    .map((f) => String(f?.description || '').trim())
-    .filter(Boolean)
+    .map((f) => sanitizeBeatText(String(f?.description || '').trim()))
+    .filter((s) => isMeaningfulBeat(s))
     .slice(0, 9);
   const textBeats = splitPerformanceBeats(args.script || args.shotDescription || args.frameDescription, 6);
   const beats = uniq([...(args.sourceKind === 'stack' ? frameBeats : []), ...textBeats]).slice(0, 6);
+  const dialogueTurns = uniq([
+    ...extractScriptDialogueTurns(args.script, 6),
+    ...(Array.isArray(args.dialogue) ? args.dialogue.map((x) => `LINE: "${String(x || '').trim()}"`) : []),
+  ]).slice(0, 6);
   const lines: string[] = [];
   if (!beats.length) {
-    lines.push('Beat 1: establish intent through controlled stillness, breath cue, and focused eye-line.');
-    lines.push('Beat 2: clear trigger -> decisive body-weight transfer -> committed gesture path.');
-    lines.push('Beat 3: readable reaction tail with residual tension and controlled settle.');
+    lines.push(
+      'Beat 1:\nAction: establish intent through controlled stillness and focused eye-line.\nPerformance: restrained breathing pattern, latent tension, minimal gesture.',
+    );
+    lines.push(
+      'Beat 2:\nAction: clear trigger followed by decisive body-weight transfer.\nPerformance: committed gesture path and readable emotional escalation.',
+    );
+    lines.push(
+      'Beat 3:\nAction: reaction tail and controlled settle.\nPerformance: residual tension remains visible in posture and gaze.',
+    );
+    if (dialogueTurns.length) lines.push(`Dialogue Beat: ${dialogueTurns[0]}`);
   } else {
     beats.forEach((beat, idx) => {
       const amp = inferActingAmplitude(beat);
       const emotion = inferEmotionCue(beat);
       const motionCue = motionCueForAmplitude(amp);
       const pacingCue = pacingCueForIndex(idx, beats.length);
+      const dialogueCue = String(dialogueTurns[idx] || dialogueTurns[0] || '').trim();
       lines.push(
-        `Beat ${idx + 1}: ${clamp(beat, 180)}. Intent: ${emotion}. Motion detail: ${motionCue}. Pacing: ${pacingCue}.`,
+        `Beat ${idx + 1}:\nAction: ${clamp(sanitizeBeatText(beat), 180)}\nPerformance: intent=${emotion}; motion=${motionCue}; pacing=${pacingCue}${dialogueCue ? `\nDialogue: ${dialogueCue}` : '\nDialogue: (silent beat)'}`,
       );
     });
   }
@@ -187,10 +226,43 @@ export const composeStructuredVideoPrompt = (args: {
     if (args.sourceKind !== 'stack') return '';
     const frames = Array.isArray(args.referenceFrames) ? args.referenceFrames : [];
     if (!frames.length) return '';
+    const inferGridFallbackBeats = (max = 9): string[] => {
+      const fromFrame = splitPerformanceBeats(String(args.frameDescription || '').trim(), max);
+      if (fromFrame.length > 1) return fromFrame;
+      const acting = String(args.actingDirection || '').trim();
+      if (!acting && fromFrame.length) return fromFrame;
+      if (!acting) return [];
+      const out: string[] = [];
+      for (const m of acting.matchAll(/Beat\s+\d+:\s*([\s\S]*?)(?=\nBeat\s+\d+:|$)/g)) {
+        const block = String(m[1] || '').trim();
+        const actionLine =
+          String(block.match(/(?:^|\n)\s*Action:\s*([^\n]+)/i)?.[1] || '').trim() ||
+          String(block.split('\n').find((x) => isMeaningfulBeat(x)) || '').trim();
+        const beat = sanitizeBeatText(actionLine);
+        if (!isMeaningfulBeat(beat)) continue;
+        out.push(beat);
+        if (out.length >= max) break;
+      }
+      const cleaned = uniq(out);
+      return cleaned.length ? cleaned : fromFrame;
+    };
+    const fallbackBeats = inferGridFallbackBeats(9);
+    const makeFallback = (idx: number, total: number): string => {
+      const phase =
+        idx === 0
+          ? 'establish subject placement and intent with stable screen direction'
+          : idx >= total - 1
+            ? 'resolve action with clear reaction and stable spatial continuity'
+            : 'escalate action while preserving left-right continuity and environment lock';
+      const seed = sanitizeBeatText(String(fallbackBeats[idx] || fallbackBeats[fallbackBeats.length - 1] || args.frameDescription || ''));
+      if (!isMeaningfulBeat(seed)) return phase;
+      return `${seed}; ${phase}`;
+    };
     const lines = frames.slice(0, 9).map((f, i) => {
       const idx = Number.isFinite(Number(f?.panelIndex)) ? Number(f.panelIndex) + 1 : i + 1;
-      const d = clamp(String(f?.description || '').trim(), 140);
-      return `Beat ${idx}: ${d || 'follow visual continuity from this frame.'}`;
+      const d = clamp(sanitizeBeatText(String(f?.description || '').trim()), 160);
+      const fb = clamp(makeFallback(i, frames.length), 160);
+      return `Beat ${idx}: ${d || fb}`;
     });
     return lines.join('\n');
   })();

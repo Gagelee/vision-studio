@@ -34,6 +34,9 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `C2) DELETE_LOCATION\n` +
     `   payload: { locationId: string }\n` +
     `\n` +
+    `C3) DELETE_LOCATION_VARIANT\n` +
+    `   payload: { locationId: string, variantId: string }\n` +
+    `\n` +
     `D) CREATE_CHARACTER\n` +
     `   payload: { name?: string, description?: string }\n` +
     `\n` +
@@ -138,6 +141,7 @@ export const buildDirectorActionsPrompt = (args: { selectionJson: string; storyJ
     `- To clear character reference images, use UPDATE_CHARACTER with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- To clear Master KV references, use UPDATE_STORY with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
     `- To clear environment references, use UPDATE_LOCATION with patch.referenceImages = [] and (optionally) referenceMode = "off".\n` +
+    `- To remove a specific environment image variant, use DELETE_LOCATION_VARIANT with both locationId and variantId.\n` +
     `- For CREATE_CHARACTER_LOOK, you MUST provide a concrete name + description (wardrobe/makeup/hair/accessories). If user didn't specify, infer a good default consistent with the character + story.\n` +
     `- Shot duration must be one of: 4, 6, 8 seconds.\n` +
     `- Sequence means a narrative unit/story part (goal/turn/reveal), not a location bucket. Do not split only by environment.\n` +

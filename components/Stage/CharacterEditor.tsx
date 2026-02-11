@@ -183,6 +183,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   const isAvatarBusy = isGeneratingAvatar || avatarStatus === 'running' || avatarStatus === 'queued';
   const referenceImages = Array.isArray((draft as any).referenceImages) ? (draft as any).referenceImages : [];
   const maxReferenceImages = 4;
+  const normalizeImageUrl = (u: any) => String(u || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
   const useReferenceImages = (draft as any).referenceMode !== 'off';
 
   const handleAddLook = () => {
@@ -246,29 +247,57 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
       const baseVersions =
         Array.isArray((draft as any).avatarVersions) && (draft as any).avatarVersions.length ? (draft as any).avatarVersions : seeded.versions;
       const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
-      const newId = `av-${now}-${Math.random().toString(16).slice(2, 8)}`;
+      const existingHit = (cleanedBase || []).find((v: any) => normalizeImageUrl(v?.imageUrl) === normalizeImageUrl(out.imageUrl));
+      const newId = existingHit ? String(existingHit.id || '') : `av-${now}-${Math.random().toString(16).slice(2, 8)}`;
+      const nextAvatarVersions = existingHit
+        ? (cleanedBase || []).map((v: any) =>
+            String(v?.id || '') === String(existingHit.id || '')
+              ? {
+                  ...v,
+                  createdAt: now,
+                  metadata: {
+                    ...((v as any)?.metadata || {}),
+                    prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || buildCharacterAvatarPrompt(draft, styleGuide) || '').slice(
+                      0,
+                      4000,
+                    ),
+                    references,
+                    settings: {
+                      provider: imageSettings.provider,
+                      model: imageSettings.model,
+                      temperature: imageSettings.temperature,
+                    },
+                    aspectRatio: '1:1',
+                  },
+                }
+              : v,
+          )
+        : [
+            ...cleanedBase,
+            {
+              id: newId,
+              imageUrl: out.imageUrl,
+              createdAt: now,
+              type: cleanedBase.length ? 'variation' : 'base',
+              metadata: {
+                prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || buildCharacterAvatarPrompt(draft, styleGuide) || '').slice(
+                  0,
+                  4000,
+                ),
+                references,
+                settings: {
+                  provider: imageSettings.provider,
+                  model: imageSettings.model,
+                  temperature: imageSettings.temperature,
+                },
+                aspectRatio: '1:1',
+              },
+            },
+          ];
       const next: Character = {
         ...draft,
         avatarUrl: out.imageUrl,
-        avatarVersions: [
-          ...cleanedBase,
-          {
-            id: newId,
-            imageUrl: out.imageUrl,
-            createdAt: now,
-            type: cleanedBase.length ? 'variation' : 'base',
-            metadata: {
-              prompt: String(out?.debug?.promptUsed || out?.debug?.promptUsedPreview || buildCharacterAvatarPrompt(draft, styleGuide) || '').slice(0, 4000),
-              references,
-              settings: {
-                provider: imageSettings.provider,
-                model: imageSettings.model,
-                temperature: imageSettings.temperature,
-              },
-              aspectRatio: '1:1',
-            },
-          },
-        ] as any,
+        avatarVersions: nextAvatarVersions as any,
         activeAvatarVersionId: newId as any,
         assetState: {
           status: 'done',
@@ -401,7 +430,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
       const baseVersions =
         Array.isArray((look as any).previewVersions) && (look as any).previewVersions.length ? (look as any).previewVersions : seededLook.versions;
       const cleanedBase = (baseVersions || []).filter((v: any) => String(v?.type || '') !== 'placeholder');
-      const newId = `lv-${now}-${Math.random().toString(16).slice(2, 8)}`;
+      const existingHit = (cleanedBase || []).find((v: any) => normalizeImageUrl(v?.imageUrl) === normalizeImageUrl(out.imageUrl));
+      const newId = existingHit ? String(existingHit.id || '') : `lv-${now}-${Math.random().toString(16).slice(2, 8)}`;
       const activeAvatarId = String((baseCharacter as any)?.activeAvatarVersionId || activeAvatarVersionId || '').trim();
       const next: Character = {
         ...baseCharacter,
@@ -410,31 +440,59 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
             ? {
                 ...l,
                 previewUrl: out.imageUrl,
-                previewVersions: [
-                  ...cleanedBase,
-                  {
-                    id: newId,
-                    imageUrl: out.imageUrl,
-                    createdAt: now,
-                    type: cleanedBase.length ? 'variation' : 'base',
-                    metadata: {
-                      prompt: String(
-                        out?.debug?.promptUsed ||
-                          out?.debug?.promptUsedPreview ||
-                          buildCharacterLookPrompt(baseCharacter, look, styleGuide) ||
-                          '',
-                      ).slice(0, 4000),
-                      references: refs,
-                      settings: {
-                        provider: imageSettings.provider,
-                        model: imageSettings.model,
-                        temperature: imageSettings.temperature,
-                      },
-                      aspectRatio: '1:1',
-                      ...(activeAvatarId ? { sourceAvatarVersionId: activeAvatarId } : {}),
-                    },
-                  },
-                ] as any,
+                previewVersions: (
+                  existingHit
+                    ? (cleanedBase || []).map((v: any) =>
+                        String(v?.id || '') === String(existingHit.id || '')
+                          ? {
+                              ...v,
+                              createdAt: now,
+                              metadata: {
+                                ...((v as any)?.metadata || {}),
+                                prompt: String(
+                                  out?.debug?.promptUsed ||
+                                    out?.debug?.promptUsedPreview ||
+                                    buildCharacterLookPrompt(baseCharacter, look, styleGuide) ||
+                                    '',
+                                ).slice(0, 4000),
+                                references: refs,
+                                settings: {
+                                  provider: imageSettings.provider,
+                                  model: imageSettings.model,
+                                  temperature: imageSettings.temperature,
+                                },
+                                aspectRatio: '1:1',
+                                ...(activeAvatarId ? { sourceAvatarVersionId: activeAvatarId } : {}),
+                              },
+                            }
+                          : v,
+                      )
+                    : [
+                        ...cleanedBase,
+                        {
+                          id: newId,
+                          imageUrl: out.imageUrl,
+                          createdAt: now,
+                          type: cleanedBase.length ? 'variation' : 'base',
+                          metadata: {
+                            prompt: String(
+                              out?.debug?.promptUsed ||
+                                out?.debug?.promptUsedPreview ||
+                                buildCharacterLookPrompt(baseCharacter, look, styleGuide) ||
+                                '',
+                            ).slice(0, 4000),
+                            references: refs,
+                            settings: {
+                              provider: imageSettings.provider,
+                              model: imageSettings.model,
+                              temperature: imageSettings.temperature,
+                            },
+                            aspectRatio: '1:1',
+                            ...(activeAvatarId ? { sourceAvatarVersionId: activeAvatarId } : {}),
+                          },
+                        },
+                      ]
+                ) as any,
                 activePreviewVersionId: newId as any,
                 assetState: {
                   status: 'done',

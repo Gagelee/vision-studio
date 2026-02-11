@@ -121,6 +121,13 @@ const GEMINI_SCHEMA = {
       negativePrompt: schemaString(),
     },
   }),
+  videoPromptCompose: schemaObject({
+    required: ['videoPrompt'],
+    propertyOrdering: ['videoPrompt'],
+    properties: {
+      videoPrompt: schemaString(),
+    },
+  }),
   imageDescribe: schemaObject({
     required: ['description'],
     propertyOrdering: ['description', 'keySubjects', 'environment', 'composition', 'camera', 'lighting', 'style', 'constraints'],
@@ -1440,6 +1447,9 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
   // homework branch: always call Gemini directly.
   const geminiApiKey = String(env.GEMINI_API_KEY || '').trim();
   const geminiBaseUrl = resolveGeminiBaseUrl(env);
+  // Video generation can be pinned to direct Gemini even when llm/image traffic uses a gateway.
+  const geminiVideoApiKey = String(env.GEMINI_VIDEO_API_KEY || geminiApiKey || '').trim();
+  const geminiVideoBaseUrl = String(env.GEMINI_VIDEO_BASE_URL || '').trim().replace(/\/$/, '') || geminiBaseUrl;
 
   type PipelineKind =
     | 'agent.scaffold'
@@ -2058,7 +2068,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       if (!imageUrl) return sendJson(res, 400, { ok: false, error: 'Missing imageUrl' });
       if (resolution !== '720p') return sendJson(res, 400, { ok: false, error: 'Only 720p is supported' });
       // Veo must call direct Gemini. Do NOT route through Compass gateway.
-      if (!geminiApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+      if (!geminiVideoApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_VIDEO_API_KEY (or GEMINI_API_KEY)' });
 
       const composeVeoImageToVideoPrompt = (basePrompt: string, spec: any, refUrls: string[]): string => {
         const core = String(basePrompt || '').trim();
@@ -2163,11 +2173,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         const candidates = new Set<string>();
         const direct = String(rawUrl || '').trim();
         if (direct) candidates.add(direct);
-        if (direct.startsWith('/')) candidates.add(`${resolveGeminiBaseUrl(env)}${direct}`);
+        if (direct.startsWith('/')) candidates.add(`${geminiVideoBaseUrl}${direct}`);
         const queue = Array.from(candidates);
         for (let i = 0; i < queue.length; i++) {
           const c = queue[i];
-          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiApiKey)}`;
+          const withKey = c.includes('key=') ? c : `${c}${c.includes('?') ? '&' : '?'}key=${encodeURIComponent(geminiVideoApiKey)}`;
           for (const u of [c, withKey]) {
             try {
               const resp = await withRetries(
@@ -2175,7 +2185,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   const controller = new AbortController();
                   const timeout = setTimeout(() => controller.abort(), 90_000);
                   try {
-                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiApiKey } };
+                    const init: any = { signal: controller.signal, headers: { 'x-goog-api-key': geminiVideoApiKey } };
                     const dispatcher = getProxyDispatcher(u, env);
                     const runVideoFetch = async (useDispatcher: boolean) => {
                       const reqInit: any = { ...init };
@@ -2272,7 +2282,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
       const fileNameToCandidateUrls = (name: string): string[] => {
         const n = String(name || '').trim().replace(/^\/+/, '');
         if (!n) return [];
-        const base = resolveGeminiBaseUrl(env);
+        const base = geminiVideoBaseUrl;
         if (!/^files\//.test(n)) return [];
         return Array.from(
           new Set([
@@ -2370,7 +2380,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         };
         for (const candidate of modelCandidates) {
           model = candidate;
-          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate, baseUrl: geminiBaseUrl })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const predictUrl = `${buildGeminiPredictLongRunningUrl({ env, model: candidate, baseUrl: geminiVideoBaseUrl })}?key=${encodeURIComponent(geminiVideoApiKey)}`;
           const predictDispatcher = getProxyDispatcher(predictUrl, env);
           const baseParams: Record<string, any> = {
             aspectRatio,
@@ -2470,7 +2480,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             throw new Error(`Gemini Video timeout after ${Math.round((Date.now() - pollStart) / 1000)}s`);
           }
           await sleep(pollIntervalMs);
-          const opUrl = `${buildGeminiOperationUrl({ env, operationName, baseUrl: geminiBaseUrl })}?key=${encodeURIComponent(geminiApiKey)}`;
+          const opUrl = `${buildGeminiOperationUrl({ env, operationName, baseUrl: geminiVideoBaseUrl })}?key=${encodeURIComponent(geminiVideoApiKey)}`;
           const opDispatcher = getProxyDispatcher(opUrl, env);
           opData = await withRetries(
             async () => {
@@ -2570,7 +2580,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               transport: 'http',
               provider: 'gemini',
               model,
-              baseUrl: geminiBaseUrl,
+              baseUrl: geminiVideoBaseUrl,
               durationSeconds,
               resolution,
               aspectRatio,
@@ -2857,6 +2867,83 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
         });
 	    });
 
+	    middlewares.use('/api/asset/video/prompt/compose', async (req: any, res: any, next: any) => {
+	      if (req.method !== 'POST') return next();
+        const body = await readJsonBody(req);
+        const basePrompt = String(body?.basePrompt || '').trim();
+        if (!basePrompt) return sendJson(res, 400, { ok: false, error: 'Missing basePrompt' });
+        const sourceKind = String(body?.sourceKind || 'single').trim() === 'stack' ? 'stack' : 'single';
+        const frameDescription = String(body?.frameDescription || '').trim();
+        const shotAction = String(body?.shotAction || '').trim();
+        const shotDescription = String(body?.shotDescription || '').trim();
+        const sequenceContext = String(body?.sequenceContext || '').trim();
+        const cameraPrompt = String(body?.cameraPrompt || '').trim();
+        const lightingPrompt = String(body?.lightingPrompt || '').trim();
+        const styleGuide = String(body?.styleGuide || '').trim();
+        const locationStyle = String(body?.locationStyle || '').trim();
+        const dialogue = Array.isArray(body?.dialogue)
+          ? body.dialogue.map((x: any) => String(x || '').trim()).filter(Boolean).slice(0, 8)
+          : [];
+        const refs = Array.isArray(body?.referenceFrames)
+          ? body.referenceFrames
+              .map((f: any, i: number) => ({
+                panelIndex: Number.isFinite(Number(f?.panelIndex)) ? Number(f.panelIndex) : i,
+                description: String(f?.description || '').trim(),
+              }))
+              .slice(0, 9)
+          : [];
+
+        if (!geminiApiKey) return sendJson(res, 400, { ok: false, error: 'Missing GEMINI_API_KEY' });
+        const composeModel = String(env.VISION_VIDEO_PROMPT_COMPOSER_MODEL || env.VISION_PROMPT_COMPOSER_MODEL || 'gemini-3-pro-preview').trim();
+        const composePrompt =
+          `You are a senior cinematic prompt composer for image-to-video generation.\n` +
+          `Rewrite and upgrade the draft prompt into one production-ready prompt.\n` +
+          `Style requirement: TV drama screenplay style with complete performance direction and explicit spoken dialogue beats.\n` +
+          `Rules:\n` +
+          `- Preserve identity, environment, chronology, and camera continuity from inputs.\n` +
+          `- For stack inputs, integrate frame beats into a smooth continuous progression.\n` +
+          `- Keep concrete action causality and actor blocking, avoid abstract adjectives without behavior.\n` +
+          `- Include dialogue as spoken lines when provided.\n` +
+          `- Output ONLY JSON: {"videoPrompt": string}.\n` +
+          `Input JSON:\n${JSON.stringify({
+            sourceKind,
+            basePrompt,
+            frameDescription,
+            shotAction,
+            shotDescription,
+            sequenceContext,
+            cameraPrompt,
+            lightingPrompt,
+            styleGuide,
+            locationStyle,
+            dialogue,
+            referenceFrames: refs,
+          })}`;
+
+        try {
+          const out = await callGeminiJson({
+            apiKey: geminiApiKey,
+            baseUrl: geminiBaseUrl || undefined,
+            model: composeModel,
+            temperature: 0.2,
+            maxOutputTokens: 1536,
+            prompt: composePrompt,
+            env,
+            responseSchema: GEMINI_SCHEMA.videoPromptCompose,
+          });
+          const videoPrompt = String(out?.value?.videoPrompt || '').trim() || basePrompt;
+          return sendJson(res, 200, {
+            ok: true,
+            videoPrompt,
+            usage: out.usage,
+            debug: { model: composeModel, sourceKind, usedFallback: videoPrompt === basePrompt },
+          });
+        } catch (e: any) {
+          const errText = formatFetchError(e);
+          return sendJson(res, 502, { ok: false, error: errText });
+        }
+	    });
+
 			    middlewares.use('/api/asset/image/generate', async (req, res, next) => {
 			      if (req.method !== 'POST') return next();
             const userId = getRequestUserId(req);
@@ -2889,6 +2976,20 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		        const model = String(settings?.model || 'nano-banana-pro');
 		        const temperature = Number(settings?.temperature ?? 0.6);
             const simulateGemini = isGeminiSimulationEnabled({ provider, model, env });
+            const debugMock = body?.debugMock && typeof body.debugMock === 'object' ? body.debugMock : {};
+            const asBool = (v: any, fallback = false) => {
+              if (typeof v === 'boolean') return v;
+              const s = String(v || '').trim().toLowerCase();
+              if (!s) return fallback;
+              return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+            };
+            const parseList = (v: any): string[] => {
+              if (Array.isArray(v)) return v.map((x) => String(x || '').trim()).filter(Boolean);
+              return String(v || '')
+                .split(',')
+                .map((x) => x.trim())
+                .filter(Boolean);
+            };
 
         if (!prompt) return sendJson(res, 400, { ok: false, error: 'Missing prompt' });
 
@@ -2896,40 +2997,6 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		        let composed: any = null;
             let composeUsage: TokenUsage | undefined;
 		        const promptPreview = prompt.slice(0, 120);
-
-            if (simulateGemini) {
-              const delayMinMs = clampNumber(env.VISION_SIM_IMAGE_MIN_MS, 50, 120_000, 250);
-              const delayMaxMs = clampNumber(env.VISION_SIM_IMAGE_MAX_MS, delayMinMs, 180_000, 900);
-              const failureRate = clampNumber(env.VISION_SIM_IMAGE_FAIL_RATE, 0, 1, 0);
-              const delayMs = randomIntBetween(delayMinMs, delayMaxMs);
-              await sleep(delayMs);
-              if (Math.random() < failureRate) {
-                throw new Error(`Simulated Gemini image failure (rate=${failureRate.toFixed(2)})`);
-              }
-              ensureGeneratedDir(userId);
-              const hash = crypto
-                .createHash('sha256')
-                .update(`${model}\n${aspectRatio || ''}\n${prompt}`)
-                .digest('hex')
-                .slice(0, 16);
-              const filename = `${Date.now()}-${hash}-sim.png`;
-              fs.writeFileSync(path.join(userGeneratedAssetsDir(userId), filename), SIMULATED_PNG_BYTES);
-              return sendJson(res, 200, {
-                imageUrl: buildGeneratedAssetUrl(userId, filename),
-                debug: {
-                  transport: 'mock-simulated',
-                  provider,
-                  model,
-                  promptPreview,
-                  promptUsedPreview: String(prompt || '').slice(0, 240),
-                  simulated: {
-                    delayMs,
-                    failureRate,
-                    asyncRequested: asyncRequested && !bypassPipeline,
-                  },
-                },
-              });
-            }
 
 		        try {
 		          if (provider === 'gemini') {
@@ -3101,20 +3168,101 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              throw new Error(`Missing required reference image(s): ${list || 'unknown'}`);
 	            }
 
-                if (!geminiApiKey) throw new Error('Missing GEMINI_API_KEY');
-                const out = await callGeminiImage({
-                  apiKey: geminiApiKey,
-                  baseUrl: geminiBaseUrl,
-                  model: usedModel,
-                  temperature,
-                  prompt: promptUsed,
-                  aspectRatio,
-                  references: loadedRefs,
-                  env,
-                });
-                const gateway = 'gemini-direct';
-                const baseUrlUsed = geminiBaseUrl;
-                  const usage = mergeTokenUsage(out?.usage, composeUsage);
+                type ImageTransport = { id: 'gemini-direct' | 'compass-gateway'; apiKey: string; baseUrl: string };
+                const compassOnly = asBool(
+                  debugMock?.compassOnly,
+                  asBool(env.VISION_IMAGE_COMPASS_ONLY, true),
+                );
+                const dualChannelEnabled =
+                  !compassOnly &&
+                  asBool(
+                    debugMock?.enableDualChannel,
+                    asBool(env.VISION_IMAGE_DUAL_CHANNEL, false),
+                  );
+                const geminiDirectApiKey = String(env.GEMINI_IMAGE_GEMINI_API_KEY || env.GEMINI_VIDEO_API_KEY || '').trim();
+                const geminiDirectBaseUrl = String(env.GEMINI_IMAGE_GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta')
+                  .trim()
+                  .replace(/\/$/, '');
+                const compassApiKey = String(env.GEMINI_IMAGE_COMPASS_API_KEY || env.COMPASS_API_KEY || '').trim();
+                const compassBaseUrl = String(env.GEMINI_IMAGE_COMPASS_BASE_URL || env.COMPASS_GATEWAY_URL || '')
+                  .trim()
+                  .replace(/\/$/, '');
+                const forceFailTransports = new Set(
+                  parseList(debugMock?.forceFailTransports || env.VISION_SIM_IMAGE_FAIL_TRANSPORTS)
+                    .map((x) => x.toLowerCase()),
+                );
+                const forceAllTransportsFail = asBool(debugMock?.forceAllTransportsFail, false);
+
+                const singleTransport: ImageTransport = {
+                  id: 'compass-gateway',
+                  apiKey: compassApiKey,
+                  baseUrl: compassBaseUrl,
+                };
+                const transportCandidates: ImageTransport[] = dualChannelEnabled
+                  ? [
+                      { id: 'gemini-direct', apiKey: geminiDirectApiKey, baseUrl: geminiDirectBaseUrl },
+                      { id: 'compass-gateway', apiKey: compassApiKey, baseUrl: compassBaseUrl },
+                    ]
+                  : [singleTransport];
+                const eligibleTransports = (simulateGemini
+                  ? transportCandidates
+                  : transportCandidates.filter((t) => Boolean(t.apiKey) && Boolean(t.baseUrl))) as ImageTransport[];
+                if (!eligibleTransports.length) {
+                  throw new Error(
+                    dualChannelEnabled
+                      ? 'Image dual-channel enabled but no usable transport credentials configured'
+                      : 'Missing image transport credentials',
+                  );
+                }
+
+                const attemptedTransports: string[] = [];
+                const transportErrors: Array<{ id: string; error: string }> = [];
+                let chosenTransport: ImageTransport | null = null;
+                let out: { mimeType: string; bytes: Buffer; usage?: TokenUsage; raw?: any } | null = null;
+                for (const transport of eligibleTransports) {
+                  attemptedTransports.push(transport.id);
+                  try {
+                    if (forceAllTransportsFail || forceFailTransports.has(String(transport.id || '').toLowerCase())) {
+                      throw new Error(`Forced failure for transport ${transport.id}`);
+                    }
+                    if (simulateGemini) {
+                      const delayMinMs = clampNumber(env.VISION_SIM_IMAGE_MIN_MS, 50, 120_000, 250);
+                      const delayMaxMs = clampNumber(env.VISION_SIM_IMAGE_MAX_MS, delayMinMs, 180_000, 900);
+                      const failureRate = clampNumber(env.VISION_SIM_IMAGE_FAIL_RATE, 0, 1, 0);
+                      const delayMs = randomIntBetween(delayMinMs, delayMaxMs);
+                      await sleep(delayMs);
+                      if (Math.random() < failureRate) {
+                        throw new Error(`Simulated image failure on ${transport.id} (rate=${failureRate.toFixed(2)})`);
+                      }
+                      out = { mimeType: 'image/png', bytes: SIMULATED_PNG_BYTES };
+                    } else {
+                      out = await callGeminiImage({
+                        apiKey: transport.apiKey,
+                        baseUrl: transport.baseUrl,
+                        model: usedModel,
+                        temperature,
+                        prompt: promptUsed,
+                        aspectRatio,
+                        references: loadedRefs,
+                        env,
+                      });
+                    }
+                    chosenTransport = transport;
+                    break;
+                  } catch (e: any) {
+                    transportErrors.push({ id: transport.id, error: formatFetchError(e) });
+                  }
+                }
+                if (!out || !chosenTransport) {
+                  const detail = transportErrors.map((x) => `${x.id}: ${x.error}`).join(' | ');
+                  const err: any = new Error(`Image generation failed across transports${detail ? ` (${detail})` : ''}`);
+                  err.transportErrors = transportErrors;
+                  err.attemptedTransports = attemptedTransports;
+                  throw err;
+                }
+                const gateway = chosenTransport.id;
+                const baseUrlUsed = chosenTransport.baseUrl;
+                const usage = mergeTokenUsage(out?.usage, composeUsage);
 
             const ext =
               out.mimeType === 'image/png'
@@ -3139,13 +3287,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 				                model: usedModel,
 				                    baseUrl: baseUrlUsed || geminiBaseUrl,
                         gateway,
-                        attemptedTransports: ['gemini-direct'],
-                        usage,
+	                        attemptedTransports,
+                        transportErrors,
+	                        usage,
 				                mimeType: out.mimeType,
 				                bytes: out.bytes.length,
 				                promptPreview,
 				                promptUsedPreview: String(promptUsed || '').slice(0, 240),
-				                promptUsed: String(promptUsed || '').slice(0, 4000),
+				                promptUsed: String(promptUsed || ''),
 				                composed,
 				                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
 				                requireAllReferences,
@@ -3154,18 +3303,19 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 			            });
 				          }
 				        } catch (e: any) {
-	          return sendJson(res, 200, {
-	            imageUrl:
-	              `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop&sig=` +
-	              `${Math.floor(Math.random() * 100000)}`,
-	            debug: {
-	              transport: 'mock',
-	              provider,
-	              model,
-	              promptPreview,
-	              error: formatFetchError(e),
-	            },
-	          });
+              return sendJson(res, 502, {
+                ok: false,
+                error: formatFetchError(e),
+                debug: {
+                  transport: 'http',
+                  provider,
+                  model,
+                  promptPreview,
+                  promptUsedPreview: String(promptUsed || '').slice(0, 240),
+                  attemptedTransports: Array.isArray(e?.attemptedTransports) ? e.attemptedTransports : undefined,
+                  transportErrors: Array.isArray(e?.transportErrors) ? e.transportErrors : undefined,
+                },
+              });
 	        }
 
         const url =
@@ -3205,18 +3355,26 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                   }
                   return data;
                 },
-                mapResult: (out: any) => ({
-                  imageUrl: String(out?.imageUrl || ''),
-                  debug:
-                    out?.debug && typeof out.debug === 'object'
-                      ? {
-                          transport: out.debug.transport,
-                          provider: out.debug.provider,
-                          model: out.debug.model,
-                          promptUsedPreview: String(out.debug.promptUsedPreview || '').slice(0, 240),
-                        }
-                      : undefined,
-                }),
+	                mapResult: (out: any) => ({
+	                  imageUrl: String(out?.imageUrl || ''),
+	                  debug:
+	                    out?.debug && typeof out.debug === 'object'
+	                      ? {
+	                          transport: out.debug.transport,
+	                          provider: out.debug.provider,
+	                          model: out.debug.model,
+                            gateway: out.debug.gateway,
+                            attemptedTransports: Array.isArray(out.debug.attemptedTransports)
+                              ? out.debug.attemptedTransports
+                              : undefined,
+                            transportErrors: Array.isArray(out.debug.transportErrors)
+                              ? out.debug.transportErrors.slice(0, 6)
+                              : undefined,
+	                          promptUsedPreview: String(out.debug.promptUsedPreview || '').slice(0, 240),
+	                          promptUsed: String(out.debug.promptUsed || ''),
+	                        }
+	                      : undefined,
+	                }),
               });
               if (!submitted) return;
               return sendJson(res, 202, {
@@ -4534,6 +4692,8 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                         name: schemaString(),
                         description: schemaString(),
                         locationId: schemaString(),
+                        variantId: schemaString(),
+                        versionId: schemaString(),
                         sequenceId: schemaString(),
                         shotId: schemaString(),
                         elementType: schemaString(),
@@ -4826,6 +4986,14 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             return { type, payload: p };
           }
 
+          if (type === 'DELETE_LOCATION_VARIANT' && payloadRaw && typeof payloadRaw === 'object') {
+            const p: any = payloadRaw;
+            const locationId = String(p.locationId || p.parentId || '').trim();
+            const variantId = String(p.variantId || p.versionId || p.id || '').trim();
+            if (locationId && variantId) return { type, payload: { locationId, variantId } };
+            return { type, payload: p };
+          }
+
           if (type === 'UPDATE_STORY' && payloadRaw && typeof payloadRaw === 'object') {
             const p: any = payloadRaw;
             const patch: any = p.patch && typeof p.patch === 'object' ? { ...p.patch } : {};
@@ -5084,6 +5252,21 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
               actions.push({ type: 'CREATE_SEQUENCE', payload: {} });
               notes.push('create sequence');
             }
+            if (
+              selection?.type === 'location' &&
+              ['delete location variant', 'remove location variant', 'delete environment variant', 'remove environment variant', '删除环境变体', '删除环境variant', '删除场景变体', '删除variant'].some((k) =>
+                lower.includes(k),
+              )
+            ) {
+              const locationId = String(selection?.id || '');
+              const variantId =
+                String(raw.match(/\b(?:variant|version)(?:\s*id)?\s*[:：=]?\s*([a-z0-9-]+)/i)?.[1] || '').trim() ||
+                String(raw.match(/\b(pv-[a-z0-9-]+)/i)?.[1] || '').trim();
+              if (locationId && variantId) {
+                actions.push({ type: 'DELETE_LOCATION_VARIANT', payload: { locationId, variantId } });
+                notes.push('delete location variant');
+              }
+            }
 	            if (['new shot', '新增镜头', '新增分镜', '新增beat', 'add shot', 'add beat'].some((k) => lower.includes(k))) {
 	              if (selection?.type === 'shot') {
 	                const shotId = String(selection?.id || '');
@@ -5265,6 +5448,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
             'UPDATE_STORY',
             'CREATE_LOCATION',
             'DELETE_LOCATION',
+            'DELETE_LOCATION_VARIANT',
             'UPDATE_LOCATION',
             'CREATE_CHARACTER',
             'DELETE_CHARACTER',

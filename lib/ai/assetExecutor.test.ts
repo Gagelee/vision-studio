@@ -184,6 +184,159 @@ describe('assetExecutor shot state sync', () => {
     expect(after).toHaveLength(0);
   });
 
+  it('dedupes duplicate success reconciliation for identical shot result url', () => {
+    const shotA = makeShot('shot-a', 1);
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [],
+      characters: [],
+      sequences: [
+        {
+          id: 'seq-1',
+          title: 'S1',
+          context: '',
+          scenes: [{ id: 'scene-1', title: 'Scene 1', shots: [shotA] }],
+          shots: [shotA],
+        },
+      ],
+    };
+
+    const job: AssetJob = { kind: 'shot', sequenceId: 'seq-1', shot: { id: 'shot-a' } as any };
+    const imageUrl = '/__generated__/same-shot-result.png';
+
+    const first = applyAssetResult(story, job, imageUrl) as any;
+    const second = applyAssetResult(first, job, imageUrl) as any;
+    const shot = second.sequences[0].shots.find((s: any) => s.id === 'shot-a');
+    const versions = Array.isArray(shot?.versions) ? shot.versions : [];
+    const sameUrlCount = versions.filter((v: any) => String(v?.imageUrl || '') === imageUrl).length;
+
+    expect(sameUrlCount).toBe(1);
+  });
+
+  it('dedupes duplicate success reconciliation for identical location preview url', () => {
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [
+        {
+          id: 'loc-1',
+          name: 'Location 1',
+          description: '',
+          visualStyle: '',
+          previewUrl: '',
+          previewVersions: [],
+          activePreviewVersionId: '',
+        },
+      ],
+      characters: [],
+      sequences: [],
+    };
+
+    const job: AssetJob = { kind: 'location', locationId: 'loc-1', prompt: 'loc prompt' };
+    const imageUrl = '/__generated__/same-location-result.png';
+
+    const first = applyAssetResult(story, job, imageUrl) as any;
+    const second = applyAssetResult(first, job, imageUrl) as any;
+    const loc = second.locations.find((l: any) => l.id === 'loc-1');
+    const versions = Array.isArray(loc?.previewVersions) ? loc.previewVersions : [];
+    const sameUrlCount = versions.filter((v: any) => String(v?.imageUrl || '') === imageUrl).length;
+
+    expect(sameUrlCount).toBe(1);
+  });
+
+  it('dedupes duplicate success reconciliation for identical master KV url', () => {
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      keyVisualUrl: '',
+      keyVisualVersions: [],
+      activeKeyVisualVersionId: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [],
+      characters: [],
+      sequences: [],
+    };
+    const job: AssetJob = { kind: 'masterkv', prompt: 'kv' };
+    const imageUrl = '/__generated__/same-kv-result.png';
+    const first = applyAssetResult(story, job, imageUrl) as any;
+    const second = applyAssetResult(first, job, imageUrl) as any;
+    const versions = Array.isArray(second?.keyVisualVersions) ? second.keyVisualVersions : [];
+    const sameUrlCount = versions.filter((v: any) => String(v?.imageUrl || '') === imageUrl).length;
+    expect(sameUrlCount).toBe(1);
+  });
+
+  it('dedupes duplicate success reconciliation for identical character avatar url', () => {
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [],
+      characters: [{ id: 'char-1', name: 'C1', description: '', avatarUrl: '', avatarVersions: [], activeAvatarVersionId: '', looks: [] }],
+      sequences: [],
+    };
+    const job: AssetJob = { kind: 'character', characterId: 'char-1', prompt: 'avatar' };
+    const imageUrl = '/__generated__/same-avatar-result.png';
+    const first = applyAssetResult(story, job, imageUrl) as any;
+    const second = applyAssetResult(first, job, imageUrl) as any;
+    const ch = second.characters.find((c: any) => c.id === 'char-1');
+    const versions = Array.isArray(ch?.avatarVersions) ? ch.avatarVersions : [];
+    const sameUrlCount = versions.filter((v: any) => String(v?.imageUrl || '') === imageUrl).length;
+    expect(sameUrlCount).toBe(1);
+  });
+
+  it('dedupes duplicate success reconciliation for identical look preview url', () => {
+    const story: any = {
+      id: 'proj-1',
+      title: 'T',
+      logline: 'L',
+      intent: 'I',
+      styleGuide: '',
+      aspectRatio: '16:9',
+      status: 'ready',
+      locations: [],
+      characters: [
+        {
+          id: 'char-1',
+          name: 'C1',
+          description: '',
+          avatarUrl: '/__generated__/avatar.png',
+          avatarVersions: [{ id: 'av-1', imageUrl: '/__generated__/avatar.png', createdAt: 1, type: 'base' }],
+          activeAvatarVersionId: 'av-1',
+          looks: [{ id: 'look-1', name: 'L1', description: '', previewUrl: '', previewVersions: [], activePreviewVersionId: '' }],
+        },
+      ],
+      sequences: [],
+    };
+    const job: AssetJob = { kind: 'look', characterId: 'char-1', lookId: 'look-1', prompt: 'look', avatarVersionId: 'av-1' };
+    const imageUrl = '/__generated__/same-look-result.png';
+    const first = applyAssetResult(story, job, imageUrl) as any;
+    const second = applyAssetResult(first, job, imageUrl) as any;
+    const ch = second.characters.find((c: any) => c.id === 'char-1');
+    const look = (ch?.looks || []).find((l: any) => l.id === 'look-1');
+    const versions = Array.isArray(look?.previewVersions) ? look.previewVersions : [];
+    const sameUrlCount = versions.filter((v: any) => String(v?.imageUrl || '') === imageUrl).length;
+    expect(sameUrlCount).toBe(1);
+  });
+
   it('rebuilds pending binding from ledger even when entity state taskId is missing', () => {
     const story: any = {
       id: 'proj-1',

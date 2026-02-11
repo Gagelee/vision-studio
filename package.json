@@ -6,13 +6,15 @@
   "scripts": {
     "dev": "vite",
     "dev:homework": "bash scripts/dev-homework-gemini.sh",
+    "dev:homework:compass": "bash scripts/dev-homework-compass.sh",
     "build": "vite build",
     "test": "vitest run",
     "preview": "vite preview",
     "check:api": "node scripts/check-api.mjs --base http://127.0.0.1:3000",
     "check:api:py": "python3 scripts/check_api.py --base http://127.0.0.1:3000",
     "check:director:dummy": "node scripts/validate-director-actions.mjs --base http://127.0.0.1:3000",
-    "debug:iteration": "node scripts/debug-iteration.mjs --base http://127.0.0.1:3000"
+    "debug:iteration": "node scripts/debug-iteration.mjs --base http://127.0.0.1:3000",
+    "debug:image:fallback": "node scripts/debug-image-fallback-flow.mjs --base http://127.0.0.1:3000"
   },
   "dependencies": {
     "lucide-react": "^0.561.0",

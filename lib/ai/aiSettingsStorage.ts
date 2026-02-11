@@ -104,24 +104,24 @@ export const loadAiSettings = (): AiSettings => {
       return s;
     };
 
-    const forceSimulatedGeminiModel = (s: ModelRuntimeSettings, fallbackModel = 'mock-sim'): ModelRuntimeSettings => {
+    const replaceSimulatedGeminiModel = (s: ModelRuntimeSettings, fallbackModel: string): ModelRuntimeSettings => {
       if (s.provider !== 'gemini') return s;
-      if (isSimulatedGeminiModel(String(s.model || ''))) return s;
+      if (!isSimulatedGeminiModel(String(s.model || ''))) return s;
       return { ...s, model: fallbackModel };
     };
 
     return {
       ...loaded,
-      scaffoldPlanner: forceSimulatedGeminiModel(
+      scaffoldPlanner: replaceSimulatedGeminiModel(
         bumpScaffoldTokens(preferFlash(normalize(loaded.scaffoldPlanner))),
-        'mock-sim-scaffold-planner',
+        'gemini-3-flash-preview',
       ),
-      scaffoldWorker: forceSimulatedGeminiModel(
+      scaffoldWorker: replaceSimulatedGeminiModel(
         bumpScaffoldTokens(preferFlash(normalize(loaded.scaffoldWorker))),
-        'mock-sim-scaffold-worker',
+        'gemini-3-flash-preview',
       ),
-      direct: preferFlash(normalize(loaded.direct)),
-      image: forceSimulatedGeminiModel(normalize(loaded.image), 'mock-sim-image'),
+      direct: replaceSimulatedGeminiModel(preferFlash(normalize(loaded.direct)), 'gemini-3-flash-preview'),
+      image: replaceSimulatedGeminiModel(normalize(loaded.image), 'nano-banana-pro'),
     };
   } catch {
     return getDefaultAiSettings();

@@ -314,16 +314,27 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           aspectRatio: story.aspectRatio,
         },
       };
-      const nextVersions = replaceExistingForReferenceRefresh ? [nextEntry] : [...cleanedBase, nextEntry];
+      const normalizeImageUrl = (u: any) => String(u || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
+      const existingHit = cleanedBase.find((v: any) => normalizeImageUrl(v?.imageUrl) === normalizeImageUrl(out.imageUrl));
+      const nextVersions = replaceExistingForReferenceRefresh
+        ? [nextEntry]
+        : existingHit
+          ? cleanedBase.map((v: any) =>
+              String(v?.id || '') === String(existingHit.id || '')
+                ? { ...v, createdAt, metadata: { ...((v as any)?.metadata || {}), ...nextEntry.metadata } }
+                : v,
+            )
+          : [...cleanedBase, nextEntry];
+      const nextActiveId = existingHit ? String(existingHit.id || '') : id;
 
       onUpdateStory((prev) => ({
         ...prev,
         keyVisualUrl: out.imageUrl,
         keyVisualVersions: nextVersions as any,
-        activeKeyVisualVersionId: id as any,
+        activeKeyVisualVersionId: nextActiveId as any,
         proposedStyleGuide: proposedStyleGuide || '',
         proposedStyleGuideUpdatedAt: Date.now(),
-        proposedStyleGuideSourceKvVersionId: proposedStyleGuide ? id : '',
+        proposedStyleGuideSourceKvVersionId: proposedStyleGuide ? nextActiveId : '',
         masterKvState: {
           ...(prev as any).masterKvState,
           status: 'done',

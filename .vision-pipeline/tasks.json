@@ -1,6 +1,1980 @@
 {
-  "updatedAt": 1770745871190,
+  "updatedAt": 1770806453210,
   "tasks": [
+    {
+      "id": "pipe-1770806435623-7337f2",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770806435623,
+      "attempts": 2,
+      "startedAt": 1770806435625,
+      "waitMs": 2,
+      "endedAt": 1770806452957,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: TypeError: ECONNRESET: fetch failed | veo-3.1-generate-preview: TypeError: ECONNRESET: fetch failed",
+      "durationMs": 17332
+    },
+    {
+      "id": "pipe-1770805889897-354854",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770805889897,
+      "attempts": 1,
+      "startedAt": 1770805889900,
+      "waitMs": 3,
+      "endedAt": 1770805890997,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n",
+      "durationMs": 1097
+    },
+    {
+      "id": "pipe-1770805619284-6a0b24",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770805619284,
+      "attempts": 1,
+      "startedAt": 1770805619286,
+      "waitMs": 2,
+      "endedAt": 1770805621473,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n",
+      "durationMs": 2187
+    },
+    {
+      "id": "pipe-1770805176780-48edb4",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770805176780,
+      "attempts": 1,
+      "startedAt": 1770805176781,
+      "waitMs": 1,
+      "endedAt": 1770805180330,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n",
+      "durationMs": 3549
+    },
+    {
+      "id": "pipe-1770804586995-f56e75",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770804586995,
+      "attempts": 1,
+      "startedAt": 1770804586995,
+      "waitMs": 0,
+      "endedAt": 1770804588252,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n",
+      "durationMs": 1258
+    },
+    {
+      "id": "pipe-1770804580226-e976b4",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770804580226,
+      "attempts": 1,
+      "startedAt": 1770804583446,
+      "waitMs": 3220,
+      "endedAt": 1770804586972,
+      "statusCode": 200,
+      "durationMs": 3526
+    },
+    {
+      "id": "pipe-1770804580212-9922fc",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770804580212,
+      "attempts": 1,
+      "startedAt": 1770804580213,
+      "waitMs": 1,
+      "endedAt": 1770804583446,
+      "statusCode": 200,
+      "durationMs": 3233
+    },
+    {
+      "id": "pipe-1770804580210-25bbda",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770804580210,
+      "attempts": 1,
+      "startedAt": 1770804580211,
+      "waitMs": 1,
+      "endedAt": 1770804583569,
+      "statusCode": 200,
+      "durationMs": 3358
+    },
+    {
+      "id": "pipe-1770804556012-b7749b",
+      "route": "/api/asset/image/store",
+      "kind": "asset.image.store",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770804556012,
+      "attempts": 1,
+      "startedAt": 1770804556013,
+      "waitMs": 1,
+      "endedAt": 1770804556018,
+      "statusCode": 200,
+      "durationMs": 5
+    },
+    {
+      "id": "pipe-1770804556007-9b97ab",
+      "route": "/api/asset/image/store",
+      "kind": "asset.image.store",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770804556007,
+      "attempts": 1,
+      "startedAt": 1770804556007,
+      "waitMs": 0,
+      "endedAt": 1770804556012,
+      "statusCode": 200,
+      "durationMs": 5
+    },
+    {
+      "id": "pipe-1770804555993-ee8587",
+      "route": "/api/asset/image/store",
+      "kind": "asset.image.store",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770804555993,
+      "attempts": 1,
+      "startedAt": 1770804555995,
+      "waitMs": 2,
+      "endedAt": 1770804556006,
+      "statusCode": 200,
+      "durationMs": 11
+    },
+    {
+      "id": "pipe-1770804555908-b723b5",
+      "route": "/api/asset/image/store",
+      "kind": "asset.image.store",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770804555908,
+      "attempts": 1,
+      "startedAt": 1770804555910,
+      "waitMs": 2,
+      "endedAt": 1770804555919,
+      "statusCode": 200,
+      "durationMs": 9
+    },
+    {
+      "id": "pipe-1770804348160-0b6fe9",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770804348160,
+      "attempts": 1,
+      "startedAt": 1770804348161,
+      "waitMs": 1,
+      "endedAt": 1770804349339,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n",
+      "durationMs": 1178
+    },
+    {
+      "id": "pipe-1770804333847-0fea6f",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770804333847,
+      "attempts": 1,
+      "startedAt": 1770804333849,
+      "waitMs": 2,
+      "endedAt": 1770804335191,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n",
+      "durationMs": 1342
+    },
+    {
+      "id": "pipe-1770803602163-7fc2ed",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770803602163,
+      "attempts": 1,
+      "startedAt": 1770803602164,
+      "waitMs": 1,
+      "endedAt": 1770803603435,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n    \"status\": \"INVALID_ARGUMENT\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n        \"reason\": \"API_KEY_INVALID\",\n        \"domain\": \"googleapis.com\",\n        \"metadata\": {\n          \"service\": \"generativelanguage.googleapis.com\"\n        }\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.LocalizedMessage\",\n        \"locale\": \"en-US\",\n        \"message\": \"API key not valid. Please pass a valid API key.\"\n      }\n    ]\n  }\n}\n",
+      "durationMs": 1271
+    },
+    {
+      "id": "pipe-1770803593772-d8908f",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770803593772,
+      "attempts": 1,
+      "startedAt": 1770803599027,
+      "waitMs": 5255,
+      "endedAt": 1770803602148,
+      "statusCode": 200,
+      "durationMs": 3121
+    },
+    {
+      "id": "pipe-1770803593771-0c0ebf",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770803593771,
+      "attempts": 1,
+      "startedAt": 1770803593771,
+      "waitMs": 0,
+      "endedAt": 1770803599119,
+      "statusCode": 200,
+      "durationMs": 5348
+    },
+    {
+      "id": "pipe-1770803593751-70c049",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770803593751,
+      "attempts": 1,
+      "startedAt": 1770803593758,
+      "waitMs": 7,
+      "endedAt": 1770803599026,
+      "statusCode": 200,
+      "durationMs": 5269
+    },
+    {
+      "id": "pipe-1770802987011-e212e6",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770802987011,
+      "attempts": 1,
+      "startedAt": 1770802987011,
+      "waitMs": 0,
+      "endedAt": 1770802988117,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n",
+      "durationMs": 1106
+    },
+    {
+      "id": "pipe-1770802980945-e6ac65",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770802980945,
+      "attempts": 1,
+      "startedAt": 1770802984129,
+      "waitMs": 3184,
+      "endedAt": 1770802987004,
+      "statusCode": 200,
+      "durationMs": 2875
+    },
+    {
+      "id": "pipe-1770802980944-2ce19c",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770802980944,
+      "attempts": 1,
+      "startedAt": 1770802980944,
+      "waitMs": 0,
+      "endedAt": 1770802984129,
+      "statusCode": 200,
+      "durationMs": 3185
+    },
+    {
+      "id": "pipe-1770802980941-692f39",
+      "route": "/api/asset/image/describe",
+      "kind": "asset.image.describe",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770802980941,
+      "attempts": 1,
+      "startedAt": 1770802980942,
+      "waitMs": 1,
+      "endedAt": 1770802984219,
+      "statusCode": 200,
+      "durationMs": 3277
+    },
+    {
+      "id": "pipe-1770802560620-54acb1",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770802560620,
+      "attempts": 1,
+      "startedAt": 1770802560625,
+      "waitMs": 5,
+      "endedAt": 1770802561836,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n",
+      "durationMs": 1211
+    },
+    {
+      "id": "pipe-1770801093799-db9c14",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770801093799,
+      "attempts": 1,
+      "startedAt": 1770801093799,
+      "waitMs": 0,
+      "endedAt": 1770801094903,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n",
+      "durationMs": 1104
+    },
+    {
+      "id": "pipe-1770801010554-1ab07c",
+      "route": "/api/asset/image/store",
+      "kind": "asset.image.store",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770801010554,
+      "attempts": 1,
+      "startedAt": 1770801010554,
+      "waitMs": 0,
+      "endedAt": 1770801010560,
+      "statusCode": 200,
+      "durationMs": 6
+    },
+    {
+      "id": "pipe-1770801010550-cb2558",
+      "route": "/api/asset/image/store",
+      "kind": "asset.image.store",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770801010550,
+      "attempts": 1,
+      "startedAt": 1770801010550,
+      "waitMs": 0,
+      "endedAt": 1770801010554,
+      "statusCode": 200,
+      "durationMs": 4
+    },
+    {
+      "id": "pipe-1770801010535-a56a27",
+      "route": "/api/asset/image/store",
+      "kind": "asset.image.store",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770801010535,
+      "attempts": 1,
+      "startedAt": 1770801010536,
+      "waitMs": 1,
+      "endedAt": 1770801010549,
+      "statusCode": 200,
+      "durationMs": 13
+    },
+    {
+      "id": "pipe-1770801010522-2906f0",
+      "route": "/api/asset/image/store",
+      "kind": "asset.image.store",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770801010522,
+      "attempts": 1,
+      "startedAt": 1770801010525,
+      "waitMs": 3,
+      "endedAt": 1770801010535,
+      "statusCode": 200,
+      "durationMs": 10
+    },
+    {
+      "id": "pipe-1770800837911-021b85",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770800837911,
+      "attempts": 1,
+      "startedAt": 1770800837912,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770800987601-8104a4b0436334c7.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id",
+          "promptUsed": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable identity and style continuity.\n\nANALYZE FIRST\nLock key subjects from references and scene text before rendering:\n- Preserve identity anchors: face, body proportions, wardrobe, accessories, material/color cues.\n- Preserve environment anchors: location structure, mood, time-of-day, weather logic.\n- Do not add/remove major subjects unless the scene explicitly requests it.\n\nCONTINUITY RULES (STRICT)\n1) Identity consistency across all panels (no face/outfit drift).\n2) Environment continuity across all panels (same location/time/weather).\n3) Lighting direction and color grade continuity (minor cinematic variation allowed).\n4) Composition progression required: each panel should be distinct and narratively connected.\n5) Preserve left-right spatial continuity and interaction logic.\n6) No text/subtitles/watermarks/logos/UI/panel labels.\n\nCAMERA / FILM LOOK\n- Photoreal cinematic stills, filmic contrast, controlled highlights, natural texture.\n- Use plausible lens language across shot scales (wide / medium / close).\n- Depth-of-field and motion implication should be realistic, not stylized gimmicks.\n\nPANEL MICRO-BEATS\n1. Extreme close-up on Detective Chen's weary face, rain-slicked and illuminated by a flickering teal neon sign\n2. He attempts to light a cigarette in the 16:9 frame, but the heavy rain streaks extinguish it instantly\nFollow these beats when present; otherwise infer a coherent visual progression from the scene.\n\nPROJECT STYLE LOCK\n- Keep references as the primary lock. Supplemental visual lock:\n- Visuals: Visuals: Live-action cinematic, high-contrast teal and orange neon lighting, heavy rain...; Camera: Shallow depth of field, anamorphic lens flares, and low-angle tracking; Style translation hints: cinematic framing with clear foreground/mid/background separat...; filmic contrast and disciplined highlight rolloff\n- Environment: Low-key lighting with high-contrast teal and orange highlights. Heavy rain streaks and a thick, foggy atmosphere. 16:9 aspect ratio with anamorphic lens flares from distant, practical neon sources.\n- Camera: Extreme close-up, shallow depth of field; Flickering teal neon, high contrast\n- Composition: cinematic framing with clear foreground/mid/background separation\n- Finish: filmic contrast and disciplined highlight rolloff; story-first staging\n- Avoid accidental style drift into generic CGI look unless explicitly requested.\n\nSCENE INPUT\n- Scene: Extreme close-up on Detective Chen's weary face, rain-slicked and illuminated by a flickering teal neon sign. He attempts to light a cigarette in the 16:9 frame, but the heavy rain streaks extinguish it instantly.\n- Time of day: Night\n- Setting: The Narrow Alleyway\n- Environment style: Low-key lighting with high-contrast teal and orange highlights. Heavy rain streaks and a thick, foggy atmosphere. 16:9 aspect ratio with anamorphic lens flares from distant, practical neon sources.\n- Camera direction: Extreme close-up, shallow depth of field\n- Lighting direction: Flickering teal neon, high contrast\n- Script beat: CHEN: \"Always the same weather in this hellhole.\"\n\nOUTPUT\nReturn only the final 2x2 storyboard/contact-sheet image."
+        }
+      },
+      "endedAt": 1770800987605,
+      "statusCode": 200,
+      "durationMs": 149693
+    },
+    {
+      "id": "pipe-1770800437080-b06b04",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770800437080,
+      "attempts": 1,
+      "startedAt": 1770800437082,
+      "waitMs": 2,
+      "result": {
+        "ok": true,
+        "videoUrl": "/__generated__/local-c8ead588bd6aa949/1770800490353-f7e95d7827b7760c.mp4",
+        "operationName": "models/veo-3.1-fast-generate-preview/operations/98eh691z4mi0"
+      },
+      "endedAt": 1770800490360,
+      "statusCode": 200,
+      "durationMs": 53278
+    },
+    {
+      "id": "pipe-1770799848886-b91d49",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799848886,
+      "attempts": 1,
+      "startedAt": 1770799849356,
+      "waitMs": 470,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799849782-b1778ef93ec7fc72.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-high-priority: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799849784,
+      "statusCode": 200,
+      "durationMs": 428
+    },
+    {
+      "id": "pipe-1770799848883-fd7cb3",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799848883,
+      "attempts": 1,
+      "startedAt": 1770799849784,
+      "waitMs": 901,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799850411-182a708496eb27f0.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-4: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799850421,
+      "statusCode": 200,
+      "durationMs": 637
+    },
+    {
+      "id": "pipe-1770799848881-a18de5",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799848881,
+      "attempts": 1,
+      "startedAt": 1770799849701,
+      "waitMs": 820,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799850045-23a7097102e6c16e.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-3: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799850057,
+      "statusCode": 200,
+      "durationMs": 356
+    },
+    {
+      "id": "pipe-1770799848878-06de59",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799848878,
+      "attempts": 1,
+      "startedAt": 1770799848879,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799849697-36787da0c29116cc.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-2: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799849701,
+      "statusCode": 200,
+      "durationMs": 822
+    },
+    {
+      "id": "pipe-1770799848871-448168",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799848871,
+      "attempts": 1,
+      "startedAt": 1770799848876,
+      "waitMs": 5,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799849352-1198df40f1704c71.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-1: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799849356,
+      "statusCode": 200,
+      "durationMs": 480
+    },
+    {
+      "id": "pipe-1770799847790-b6d6be",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799847790,
+      "attempts": 1,
+      "startedAt": 1770799847791,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799848589-d9c1c16b59263a10.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration pipeline-status-json: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799848595,
+      "statusCode": 200,
+      "durationMs": 804
+    },
+    {
+      "id": "pipe-1770799703922-05990a",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799703922,
+      "attempts": 1,
+      "startedAt": 1770799704498,
+      "waitMs": 576,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799705093-b1778ef93ec7fc72.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-high-priority: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799705096,
+      "statusCode": 200,
+      "durationMs": 598
+    },
+    {
+      "id": "pipe-1770799703916-9b4b13",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799703916,
+      "attempts": 1,
+      "startedAt": 1770799705078,
+      "waitMs": 1162,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799705796-182a708496eb27f0.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-4: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799705806,
+      "statusCode": 200,
+      "durationMs": 728
+    },
+    {
+      "id": "pipe-1770799703913-98a7d2",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799703913,
+      "attempts": 1,
+      "startedAt": 1770799704602,
+      "waitMs": 689,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799705074-23a7097102e6c16e.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-3: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799705078,
+      "statusCode": 200,
+      "durationMs": 476
+    },
+    {
+      "id": "pipe-1770799703908-368d97",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799703908,
+      "attempts": 1,
+      "startedAt": 1770799703909,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799704594-36787da0c29116cc.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-2: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799704601,
+      "statusCode": 200,
+      "durationMs": 692
+    },
+    {
+      "id": "pipe-1770799703903-4c467e",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799703903,
+      "attempts": 1,
+      "startedAt": 1770799703903,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799704494-1198df40f1704c71.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-1: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799704498,
+      "statusCode": 200,
+      "durationMs": 595
+    },
+    {
+      "id": "pipe-1770799703165-0c55e3",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770799703165,
+      "attempts": 1,
+      "startedAt": 1770799703167,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770799703830-d9c1c16b59263a10.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration pipeline-status-json: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770799703840,
+      "statusCode": 200,
+      "durationMs": 674
+    },
+    {
+      "id": "pipe-1770798927653-ec2052",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798927653,
+      "attempts": 1,
+      "startedAt": 1770798927654,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770799174035-9d3b31921809652c.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 3x3 grid (9 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770799174040,
+      "statusCode": 200,
+      "durationMs": 246386
+    },
+    {
+      "id": "pipe-1770798787890-0b5560",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798787890,
+      "attempts": 1,
+      "startedAt": 1770798787891,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798935964-948f1fcccbac3074.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798935966,
+      "statusCode": 200,
+      "durationMs": 148075
+    },
+    {
+      "id": "pipe-1770798787860-da2bf4",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798787860,
+      "attempts": 1,
+      "startedAt": 1770798787862,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798926999-4cb83abd64ab1f7c.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798927003,
+      "statusCode": 200,
+      "durationMs": 139141
+    },
+    {
+      "id": "pipe-1770798586263-05d893",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798586263,
+      "attempts": 1,
+      "startedAt": 1770798586268,
+      "waitMs": 5,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798708255-a1661fc355bcc895.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798708258,
+      "statusCode": 200,
+      "durationMs": 121990
+    },
+    {
+      "id": "pipe-1770798481912-3bb02d",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798481912,
+      "attempts": 1,
+      "startedAt": 1770798481913,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798585641-f7ffddb0d1fe0f3a.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 3x3 grid (9 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798585652,
+      "statusCode": 200,
+      "durationMs": 103739
+    },
+    {
+      "id": "pipe-1770798481902-4aa4d1",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798481902,
+      "attempts": 1,
+      "startedAt": 1770798481907,
+      "waitMs": 5,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798623901-ce5900d579d0e751.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798623905,
+      "statusCode": 200,
+      "durationMs": 141998
+    },
+    {
+      "id": "pipe-1770798331882-1ff0e4",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798331882,
+      "attempts": 1,
+      "startedAt": 1770798331882,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798448494-cb7a9afc7455df8b.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798448499,
+      "statusCode": 200,
+      "durationMs": 116617
+    },
+    {
+      "id": "pipe-1770798331868-3f8b5f",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798331868,
+      "attempts": 1,
+      "startedAt": 1770798331879,
+      "waitMs": 11,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798450137-6d3da8a36fb6b5fb.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798450142,
+      "statusCode": 200,
+      "durationMs": 118263
+    },
+    {
+      "id": "pipe-1770798211287-eb08ff",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798211287,
+      "attempts": 1,
+      "startedAt": 1770798211288,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798328078-8d9c1f661f555830.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 3x3 grid (9 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798328084,
+      "statusCode": 200,
+      "durationMs": 116796
+    },
+    {
+      "id": "pipe-1770798211255-a2e07c",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798211255,
+      "attempts": 1,
+      "startedAt": 1770798211257,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798330312-0996399e706b1eda.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "You are a professional cinematographer and storyboard artist.\n\nTASK\nCreate ONE photorealistic cinematic contact sheet as a strict 2x2 grid (4 panels), 16:9.\nAll panels must depict the SAME key subjects in the SAME environment with stable id"
+        }
+      },
+      "endedAt": 1770798330314,
+      "statusCode": 200,
+      "durationMs": 119057
+    },
+    {
+      "id": "pipe-1770798155621-af3dd6",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798155621,
+      "attempts": 1,
+      "startedAt": 1770798155622,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798196974-8ce98d5677db30ed.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character LOOK reference sheet (wardrobe/state), clean identity lock. No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for look sheet (apply ONLY rendering medium/palette/texture; keep neu"
+        }
+      },
+      "endedAt": 1770798196979,
+      "statusCode": 200,
+      "durationMs": 41357
+    },
+    {
+      "id": "pipe-1770798154317-635dbb",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798154317,
+      "attempts": 1,
+      "startedAt": 1770798154317,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798187143-76121ce8aa765e36.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character LOOK reference sheet (wardrobe/state), clean identity lock. No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for look sheet (apply ONLY rendering medium/palette/texture; keep neu"
+        }
+      },
+      "endedAt": 1770798187164,
+      "statusCode": 200,
+      "durationMs": 32847
+    },
+    {
+      "id": "pipe-1770798120808-f9d597",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798120808,
+      "attempts": 1,
+      "startedAt": 1770798120808,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798155111-279439e6294634d9.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character LOOK reference sheet (wardrobe/state), clean identity lock. No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for look sheet (apply ONLY rendering medium/palette/texture; keep neu"
+        }
+      },
+      "endedAt": 1770798155121,
+      "statusCode": 200,
+      "durationMs": 34313
+    },
+    {
+      "id": "pipe-1770798120780-416a7b",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770798120781,
+      "attempts": 1,
+      "startedAt": 1770798120788,
+      "waitMs": 7,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798153244-c27c23f2ba7485ea.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character LOOK reference sheet (wardrobe/state), clean identity lock. No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for look sheet (apply ONLY rendering medium/palette/texture; keep neu"
+        }
+      },
+      "endedAt": 1770798153249,
+      "statusCode": 200,
+      "durationMs": 32461
+    },
+    {
+      "id": "pipe-1770797972261-661a61",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770797972261,
+      "attempts": 1,
+      "startedAt": 1770797972263,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770798002634-2607cd4b0c579b40.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character reference sheet (clean, standard, consistent). No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for reference sheet (use only rendering medium/palette/texture; keep neutral studi"
+        }
+      },
+      "endedAt": 1770798002647,
+      "statusCode": 200,
+      "durationMs": 30384
+    },
+    {
+      "id": "pipe-1770797887335-8b596a",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770797887335,
+      "attempts": 1,
+      "startedAt": 1770797887335,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770797928665-91dfe6ad229d900f.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character reference sheet (clean, standard, consistent). No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for reference sheet (use only rendering medium/palette/texture; keep neutral studi"
+        }
+      },
+      "endedAt": 1770797928667,
+      "statusCode": 200,
+      "durationMs": 41332
+    },
+    {
+      "id": "pipe-1770797887334-3ab893",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770797887334,
+      "attempts": 1,
+      "startedAt": 1770797887334,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770797916747-c90d437dd05faf30.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character reference sheet (clean, standard, consistent). No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for reference sheet (use only rendering medium/palette/texture; keep neutral studi"
+        }
+      },
+      "endedAt": 1770797916750,
+      "statusCode": 200,
+      "durationMs": 29416
+    },
+    {
+      "id": "pipe-1770797847595-939973",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770797847595,
+      "attempts": 1,
+      "startedAt": 1770797847597,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770797873947-9e8d2b607bc8f451.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Environment keyframe still for production continuity. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nStyleGuide ("
+        }
+      },
+      "endedAt": 1770797873952,
+      "statusCode": 200,
+      "durationMs": 26355
+    },
+    {
+      "id": "pipe-1770797740683-8f745b",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770797740684,
+      "attempts": 1,
+      "startedAt": 1770797740684,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770797793759-462ee8adce39fc2a.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Environment keyframe still for production continuity. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nStyleGuide ("
+        }
+      },
+      "endedAt": 1770797793765,
+      "statusCode": 200,
+      "durationMs": 53081
+    },
+    {
+      "id": "pipe-1770797740679-dbb5e0",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770797740679,
+      "attempts": 1,
+      "startedAt": 1770797740681,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770797795963-d584e24330d927af.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Environment keyframe still for production continuity. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nStyleGuide ("
+        }
+      },
+      "endedAt": 1770797795967,
+      "statusCode": 200,
+      "durationMs": 55286
+    },
+    {
+      "id": "pipe-1770797710535-9e6277",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770797710535,
+      "attempts": 1,
+      "startedAt": 1770797710537,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770797734068-e4064aa23b763a1e.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "compass-gateway"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Master Key Visual (KV) for a film project. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nHigh-level goal: a sing"
+        }
+      },
+      "endedAt": 1770797734071,
+      "statusCode": 200,
+      "durationMs": 23534
+    },
+    {
+      "id": "pipe-1770797515816-11369f",
+      "route": "/api/agent/scaffold/stream",
+      "kind": "agent.scaffold",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770797515816,
+      "attempts": 1,
+      "startedAt": 1770797515818,
+      "waitMs": 2,
+      "endedAt": 1770797694829,
+      "statusCode": 200,
+      "durationMs": 179011
+    },
+    {
+      "id": "pipe-1770797026933-b2489b",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "failed",
+      "enqueuedAt": 1770797026934,
+      "attempts": 2,
+      "startedAt": 1770797026936,
+      "waitMs": 2,
+      "endedAt": 1770797027291,
+      "statusCode": 500,
+      "error": "TypeError: ECONNREFUSED: fetch failed",
+      "durationMs": 355
+    },
+    {
+      "id": "pipe-1770796876035-c5e098",
+      "route": "/api/agent/scaffold/stream",
+      "kind": "agent.scaffold",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770796876035,
+      "attempts": 1,
+      "startedAt": 1770796876038,
+      "waitMs": 3,
+      "endedAt": 1770797025606,
+      "statusCode": 200,
+      "durationMs": 149568
+    },
+    {
+      "id": "pipe-1770796696222-39ec4a",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "failed",
+      "enqueuedAt": 1770796696222,
+      "attempts": 2,
+      "startedAt": 1770796696222,
+      "waitMs": 0,
+      "endedAt": 1770796696622,
+      "statusCode": 500,
+      "error": "TypeError: ECONNREFUSED: fetch failed",
+      "durationMs": 400
+    },
+    {
+      "id": "pipe-1770796694950-85d373",
+      "route": "/api/agent/scaffold/stream",
+      "kind": "agent.scaffold",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770796694950,
+      "attempts": 1,
+      "startedAt": 1770796694951,
+      "waitMs": 1,
+      "endedAt": 1770796696201,
+      "statusCode": 200,
+      "durationMs": 1250
+    },
+    {
+      "id": "pipe-1770795333153-7e3a17",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770795333153,
+      "attempts": 1,
+      "startedAt": 1770795333153,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/local-197dca751802d5d0/1770795423500-00ec328c55a1215d.jpg",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character reference sheet (clean, standard, consistent). No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for reference sheet (use only rendering medium/palette/texture; keep neutral studi"
+        }
+      },
+      "endedAt": 1770795423506,
+      "statusCode": 200,
+      "durationMs": 90353
+    },
+    {
+      "id": "pipe-1770795301601-b231b5",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "failed",
+      "enqueuedAt": 1770795301601,
+      "attempts": 2,
+      "startedAt": 1770795301603,
+      "waitMs": 2,
+      "endedAt": 1770795565568,
+      "statusCode": 502,
+      "error": "Error: Error: Image generation failed across transports (gemini-direct: Error: Gemini Image HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n)",
+      "durationMs": 263965
+    },
+    {
+      "id": "pipe-1770795301584-039c35",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770795301584,
+      "attempts": 1,
+      "startedAt": 1770795301586,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-197dca751802d5d0/1770795328122-cee712ea94d2b77b.jpg",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Character reference sheet (clean, standard, consistent). No text. No watermark. No logos. Clean studio reference. Sharp focus. High-quality.\nStyle adaptation for reference sheet (use only rendering medium/palette/texture; keep neutral studi"
+        }
+      },
+      "endedAt": 1770795328127,
+      "statusCode": 200,
+      "durationMs": 26541
+    },
+    {
+      "id": "pipe-1770795274990-7a0d7c",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770795274990,
+      "attempts": 1,
+      "startedAt": 1770795274992,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-197dca751802d5d0/1770795301238-bda55bfbfc4f2d16.jpg",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Environment keyframe still for production continuity. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nStyleGuide ("
+        }
+      },
+      "endedAt": 1770795301240,
+      "statusCode": 200,
+      "durationMs": 26248
+    },
+    {
+      "id": "pipe-1770795225394-848b2a",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770795225394,
+      "attempts": 1,
+      "startedAt": 1770795225395,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/local-197dca751802d5d0/1770795274692-06c483179aade6bd.jpg",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Environment keyframe still for production continuity. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nStyleGuide ("
+        }
+      },
+      "endedAt": 1770795274709,
+      "statusCode": 200,
+      "durationMs": 49314
+    },
+    {
+      "id": "pipe-1770795225390-977a3d",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770795225390,
+      "attempts": 1,
+      "startedAt": 1770795225391,
+      "waitMs": 1,
+      "result": {
+        "imageUrl": "/__generated__/local-197dca751802d5d0/1770795275920-88fc1185eed6d507.jpg",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Environment keyframe still for production continuity. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nStyleGuide ("
+        }
+      },
+      "endedAt": 1770795275927,
+      "statusCode": 200,
+      "durationMs": 50536
+    },
+    {
+      "id": "pipe-1770795200420-2d6e67",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770795200420,
+      "attempts": 1,
+      "startedAt": 1770795200422,
+      "waitMs": 2,
+      "result": {
+        "imageUrl": "/__generated__/local-197dca751802d5d0/1770795225084-adee82681c6c7919.jpg",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "gemini-3-pro-image-preview",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Master Key Visual (KV) for a film project. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nHigh-level goal: a sing"
+        }
+      },
+      "endedAt": 1770795225093,
+      "statusCode": 200,
+      "durationMs": 24671
+    },
+    {
+      "id": "pipe-1770794995513-9b6770",
+      "route": "/api/agent/scaffold/stream",
+      "kind": "agent.scaffold",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770794995513,
+      "attempts": 1,
+      "startedAt": 1770794995516,
+      "waitMs": 3,
+      "endedAt": 1770795182759,
+      "statusCode": 200,
+      "durationMs": 187243
+    },
+    {
+      "id": "pipe-1770794383675-69891b",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-197dca751802d5d0",
+      "status": "failed",
+      "enqueuedAt": 1770794383675,
+      "attempts": 1,
+      "startedAt": 1770794383675,
+      "waitMs": 0,
+      "endedAt": 1770794384297,
+      "statusCode": 502,
+      "error": "Error: Error: Image generation failed across transports (gemini-direct: Error: Gemini Image HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n)",
+      "durationMs": 622
+    },
+    {
+      "id": "pipe-1770794195472-93c26e",
+      "route": "/api/agent/scaffold/stream",
+      "kind": "agent.scaffold",
+      "userId": "local-197dca751802d5d0",
+      "status": "success",
+      "enqueuedAt": 1770794195472,
+      "attempts": 1,
+      "startedAt": 1770794195473,
+      "waitMs": 1,
+      "endedAt": 1770794358416,
+      "statusCode": 200,
+      "durationMs": 162943
+    },
+    {
+      "id": "pipe-1770794044781-30ee61",
+      "route": "/api/agent/scaffold/stream",
+      "kind": "agent.scaffold",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770794044781,
+      "attempts": 1,
+      "startedAt": 1770794044786,
+      "waitMs": 5,
+      "endedAt": 1770794045500,
+      "statusCode": 200,
+      "durationMs": 714
+    },
+    {
+      "id": "pipe-1770793928022-15103d",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770793928022,
+      "attempts": 1,
+      "startedAt": 1770793928022,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/local-c8ead588bd6aa949/1770793928540-0efe1c4ecde97048.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Master Key Visual (KV) for a film project. No text. No watermark. No logos. High-quality single key visual. Follow the declared rendering medium/style strictly. Do not drift to generic photoreal/CGI unless requested.\nHigh-level goal: a sing"
+        }
+      },
+      "endedAt": 1770793928544,
+      "statusCode": 200,
+      "durationMs": 522
+    },
+    {
+      "id": "pipe-1770793926789-c1a3e7",
+      "route": "/api/agent/scaffold/stream",
+      "kind": "agent.scaffold",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "success",
+      "enqueuedAt": 1770793926789,
+      "attempts": 1,
+      "startedAt": 1770793926792,
+      "waitMs": 3,
+      "endedAt": 1770793928007,
+      "statusCode": 200,
+      "durationMs": 1217
+    },
+    {
+      "id": "pipe-1770793720955-14efd6",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-image-fallback",
+      "status": "success",
+      "enqueuedAt": 1770793720955,
+      "attempts": 1,
+      "startedAt": 1770793720955,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/debug-image-fallback/1770793721771-be7ce57f75d3c7ec.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "debug image fallback single-channel-success"
+        }
+      },
+      "endedAt": 1770793721774,
+      "statusCode": 200,
+      "durationMs": 819
+    },
+    {
+      "id": "pipe-1770793720950-44b52d",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-image-fallback",
+      "status": "failed",
+      "enqueuedAt": 1770793720950,
+      "attempts": 1,
+      "startedAt": 1770793720950,
+      "waitMs": 0,
+      "endedAt": 1770793720952,
+      "statusCode": 502,
+      "error": "Error: Error: Image generation failed across transports (gemini-direct: Error: Forced failure for transport gemini-direct | compass-gateway: Error: Forced failure for transport compass-gateway)",
+      "durationMs": 2
+    },
+    {
+      "id": "pipe-1770793720746-9cffd4",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770793720746,
+      "attempts": 1,
+      "startedAt": 1770793721080,
+      "waitMs": 334,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770793721452-b1778ef93ec7fc72.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-high-priority: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770793721463,
+      "statusCode": 200,
+      "durationMs": 383
+    },
+    {
+      "id": "pipe-1770793720744-98ba3e",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770793720744,
+      "attempts": 1,
+      "startedAt": 1770793721463,
+      "waitMs": 719,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770793722256-182a708496eb27f0.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-4: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770793722257,
+      "statusCode": 200,
+      "durationMs": 794
+    },
+    {
+      "id": "pipe-1770793720742-e89f4d",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770793720742,
+      "attempts": 1,
+      "startedAt": 1770793721121,
+      "waitMs": 379,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770793721542-23a7097102e6c16e.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-3: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770793721556,
+      "statusCode": 200,
+      "durationMs": 435
+    },
+    {
+      "id": "pipe-1770793720740-6c108e",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770793720740,
+      "attempts": 1,
+      "startedAt": 1770793720740,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770793721079-36787da0c29116cc.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-2: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770793721080,
+      "statusCode": 200,
+      "durationMs": 340
+    },
+    {
+      "id": "pipe-1770793720737-26379d",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770793720737,
+      "attempts": 1,
+      "startedAt": 1770793720737,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770793721119-1198df40f1704c71.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration burst-normal-1: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770793721121,
+      "statusCode": 200,
+      "durationMs": 384
+    },
+    {
+      "id": "pipe-1770793720014-b8a52a",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-image-fallback",
+      "status": "success",
+      "enqueuedAt": 1770793720014,
+      "attempts": 1,
+      "startedAt": 1770793720014,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/debug-image-fallback/1770793720792-8b507f2c576abbbb.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "compass-gateway",
+          "attemptedTransports": [
+            "gemini-direct",
+            "compass-gateway"
+          ],
+          "transportErrors": [
+            {
+              "id": "gemini-direct",
+              "error": "Error: Forced failure for transport gemini-direct"
+            }
+          ],
+          "promptUsedPreview": "debug image fallback primary-fail-fallback-success"
+        }
+      },
+      "endedAt": 1770793720793,
+      "statusCode": 200,
+      "durationMs": 779
+    },
+    {
+      "id": "pipe-1770793720007-de6478",
+      "route": "/api/asset/image/generate",
+      "kind": "asset.image.generate",
+      "userId": "debug-iteration",
+      "status": "success",
+      "enqueuedAt": 1770793720007,
+      "attempts": 1,
+      "startedAt": 1770793720007,
+      "waitMs": 0,
+      "result": {
+        "imageUrl": "/__generated__/debug-iteration/1770793720536-d9c1c16b59263a10.png",
+        "debug": {
+          "transport": "http",
+          "provider": "gemini",
+          "model": "mock-sim-image",
+          "gateway": "gemini-direct",
+          "attemptedTransports": [
+            "gemini-direct"
+          ],
+          "transportErrors": [],
+          "promptUsedPreview": "Debug iteration pipeline-status-json: cinematic test frame, no text"
+        }
+      },
+      "endedAt": 1770793720554,
+      "statusCode": 200,
+      "durationMs": 547
+    },
     {
       "id": "pipe-1770745837820-419598",
       "route": "/api/asset/image/generate",

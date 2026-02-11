@@ -602,6 +602,30 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
   };
   const isNewPlaceholder = isLikelyPlaceholderUrl(imageUrl);
   const dropPlaceholders = (versions: any[]) => (Array.isArray(versions) ? versions.filter((v: any) => String(v?.type || '') !== 'placeholder') : []);
+  const sameImageUrl = (a: any, b: any) => {
+    const lhs = String(a || '').trim();
+    const rhs = String(b || '').trim();
+    if (!lhs || !rhs) return false;
+    return lhs === rhs;
+  };
+  const activateExistingVersionByUrl = (versions: any[], url: string, patchMeta?: any): { versions: any[]; id: string } | null => {
+    const idx = (Array.isArray(versions) ? versions : []).findIndex((v: any) => sameImageUrl(v?.imageUrl, url));
+    if (idx < 0) return null;
+    const hit = versions[idx];
+    const hitId = String(hit?.id || '').trim();
+    if (!hitId) return null;
+    const out = versions.slice();
+    if (patchMeta && typeof patchMeta === 'object') {
+      out[idx] = {
+        ...hit,
+        metadata: {
+          ...(hit?.metadata && typeof hit.metadata === 'object' ? hit.metadata : {}),
+          ...patchMeta,
+        },
+      };
+    }
+    return { versions: out, id: hitId };
+  };
   const finalize = (next: Story) => clearAssetTaskLedgerByJob(next, job);
 
   if (job.kind === 'masterkv') {
@@ -619,6 +643,22 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
         : [];
     const baseRaw = existing.length ? existing : seededBase;
     const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
+    const existingHit = activateExistingVersionByUrl(base, imageUrl, meta);
+    if (existingHit) {
+      return finalize({
+        ...story,
+        keyVisualUrl: imageUrl,
+        keyVisualVersions: existingHit.versions as any,
+        activeKeyVisualVersionId: existingHit.id as any,
+        masterKvState: bumpState((story as any).masterKvState, {
+          status: 'done',
+          lastError: '',
+          pipelineTaskId: '',
+          pipelineStatusUrl: '',
+          pipelineUpdatedAt: now,
+        }),
+      });
+    }
     const id = `kv-${now}-${rand()}`;
     const versions = [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base', metadata: meta }];
     return finalize({
@@ -659,6 +699,13 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
                     : [];
                 const baseRaw = existing.length ? existing : seededBase;
                 const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
+                const existingHit = activateExistingVersionByUrl(base, imageUrl, meta);
+                if (existingHit) {
+                  return {
+                    previewVersions: existingHit.versions,
+                    activePreviewVersionId: existingHit.id,
+                  };
+                }
                 const id = `pv-${now}-${rand()}`;
                 return {
                   previewVersions: [...base, { id, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base', metadata: meta }],
@@ -697,11 +744,14 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
             : [];
         const baseRaw = existing.length ? existing : seededBase;
         const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
-        const newId = `av-${now}-${rand()}`;
-        const nextVersions = [
-          ...base,
-          { id: newId, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base' },
-        ];
+        const existingHit = activateExistingVersionByUrl(base, imageUrl, meta);
+        const newId = existingHit?.id || `av-${now}-${rand()}`;
+        const nextVersions = existingHit
+          ? existingHit.versions
+          : [
+              ...base,
+              { id: newId, imageUrl, createdAt: now, type: base.length ? 'variation' : 'base', ...(meta ? { metadata: meta } : {}) },
+            ];
         const nextLooks = (c.looks || []).map((lk) => {
           const versions = Array.isArray((lk as any).previewVersions) ? (lk as any).previewVersions : [];
           const match = versions.find((v: any) => String(v?.metadata?.sourceAvatarVersionId || '') === String(newId));
@@ -775,6 +825,17 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
                         : [];
                     const baseRaw = existing.length ? existing : seededBase;
                     const base = isNewPlaceholder ? baseRaw : dropPlaceholders(baseRaw);
+                    const mergedMeta = {
+                      ...(meta || {}),
+                      ...(avatarVersionId ? { sourceAvatarVersionId: avatarVersionId } : {}),
+                    };
+                    const existingHit = activateExistingVersionByUrl(base, imageUrl, mergedMeta);
+                    if (existingHit) {
+                      return {
+                        previewVersions: existingHit.versions,
+                        activePreviewVersionId: existingHit.id,
+                      };
+                    }
                     const id = `lv-${now}-${rand()}`;
                     return {
                   previewVersions: [
@@ -784,10 +845,7 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
                       imageUrl,
                       createdAt: now,
                       type: base.length ? 'variation' : 'base',
-                      metadata: {
-                        ...(meta || {}),
-                        ...(avatarVersionId ? { sourceAvatarVersionId: avatarVersionId } : {}),
-                      },
+                      metadata: mergedMeta,
                     },
                   ],
                   activePreviewVersionId: id,
@@ -844,6 +902,24 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
           }
 
           const baseList = cleaned.length ? cleaned : existing;
+          const existingHit = activateExistingVersionByUrl(baseList, imageUrl, meta);
+          if (existingHit) {
+            return {
+              ...s,
+              versions: existingHit.versions,
+              activeVersionId: existingHit.id,
+              thumbnailUrl: imageUrl,
+              aiState: 'idle',
+              aiPrompt: '',
+              assetState: bumpState((s as any).assetState, {
+                status: 'done',
+                lastError: '',
+                pipelineTaskId: '',
+                pipelineStatusUrl: '',
+                pipelineUpdatedAt: now,
+              }),
+            };
+          }
           const id = `v-${now}-${rand()}`;
           const nextVersions = [...baseList, { id, imageUrl, createdAt: now, type: baseList.length ? 'variation' : 'base', metadata: meta }];
           return {
@@ -1269,6 +1345,7 @@ export const executeAssetJobs = async (args: {
               temperature: args.settings.temperature,
             },
             aspectRatio: args.aspectRatio,
+            keyframe: { mode: 'contact_sheet' as const, panelCount, grid: panelCount === 9 ? '3x3' as const : '2x2' as const },
           }, out.debug);
           return { imageUrl: out.imageUrl, debug: out.debug, meta };
         }

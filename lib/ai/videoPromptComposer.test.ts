@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { composeStructuredVideoPrompt, resolveVideoSourceBundle } from './videoPromptComposer';
+import { buildActingDirection, composeStructuredVideoPrompt, resolveVideoSourceBundle } from './videoPromptComposer';
 
 describe('videoPromptComposer.resolveVideoSourceBundle', () => {
   it('prefers refine description over shot description for single frame', () => {
@@ -105,5 +105,41 @@ describe('videoPromptComposer.composeStructuredVideoPrompt', () => {
     expect(out.prompt.includes('Grid Beat Continuity:')).toBe(true);
     expect(out.prompt.includes('Current Frame:')).toBe(false);
     expect(out.prompt.indexOf('Action & Performance Beats:')).toBeLessThan(out.prompt.indexOf('Grid Beat Continuity:'));
+  });
+
+  it('does not emit generic frame fallback text for stack continuity', () => {
+    const out = composeStructuredVideoPrompt({
+      sourceKind: 'stack',
+      referenceFrames: [
+        { panelIndex: 0, url: '/f1.png', description: '' },
+        { panelIndex: 1, url: '/f2.png', description: '' },
+        { panelIndex: 2, url: '/f3.png', description: '' },
+      ],
+      frameDescription: 'Chen fires three shots while Lina escapes into fog.',
+      actingDirection:
+        'Beat 1: muzzle flashes cut through heavy rain. Intent: focused dramatic tension.\n' +
+        'Beat 2: Chen fires three shots. Intent: focused dramatic tension.\n' +
+        'Beat 3: The enforcer absorbs impact as Lina flees into fog. Intent: focused dramatic tension.',
+      cameraPrompt: 'Static high-contrast shot',
+    });
+    expect(out.prompt.includes('follow visual continuity from this frame.')).toBe(false);
+  });
+});
+
+describe('videoPromptComposer.buildActingDirection', () => {
+  it('formats acting direction in screenplay-like beats with dialogue cues', () => {
+    const out = buildActingDirection({
+      frameDescription: 'Rainy alley stand-off.',
+      script: 'LINA: Don\'t die, Detective!\nChen raises his pistol.',
+      shotDescription: 'Chen confronts the enforcer.',
+      sequenceContext: '',
+      dialogue: ['Don\'t die, Detective!'],
+      sourceKind: 'stack',
+      referenceFrames: [{ panelIndex: 0, url: '/f1.png', description: 'Chen raises pistol under neon rain.' }],
+    });
+    expect(out.includes('Action:')).toBe(true);
+    expect(out.includes('Performance:')).toBe(true);
+    expect(out.includes('Dialogue:')).toBe(true);
+    expect(out.includes('LINA: "Don\'t die, Detective!"')).toBe(true);
   });
 });
