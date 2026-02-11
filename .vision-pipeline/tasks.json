@@ -1,6 +1,21 @@
 {
-  "updatedAt": 1770807348079,
+  "updatedAt": 1770807952661,
   "tasks": [
+    {
+      "id": "pipe-1770807951115-f05da6",
+      "route": "/api/asset/video/generate",
+      "kind": "asset.video.generate",
+      "userId": "local-c8ead588bd6aa949",
+      "status": "failed",
+      "enqueuedAt": 1770807951115,
+      "attempts": 1,
+      "startedAt": 1770807951118,
+      "waitMs": 3,
+      "endedAt": 1770807952409,
+      "statusCode": 500,
+      "error": "Error: Error: Gemini Video: all model candidates failed. veo-3.1-fast-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n | veo-3.1-generate-preview: Error: Gemini Video HTTP 400: {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"User location is not supported for the API use.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n",
+      "durationMs": 1291
+    },
     {
       "id": "pipe-1770807346608-59f0b9",
       "route": "/api/asset/video/generate",
