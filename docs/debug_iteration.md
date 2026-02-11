@@ -63,6 +63,8 @@ node scripts/debug-iteration.mjs \
 2. Every submitted async task reaches terminal state within timeout.
 3. Successful tasks contain `result.imageUrl`.
 4. Burst queue scenario fully reconciles without orphaned tasks.
+5. Blocked jobs use specific reasons (avoid generic `cancelled` when possible).
+6. For `CREATE_SHOT`-triggered pipelines, prerequisite jobs are added only for missing dependencies.
 
 ## Failure triage order
 
@@ -77,6 +79,10 @@ node scripts/debug-iteration.mjs \
 
 4. Check persisted task state
 - `.vision-pipeline/tasks.json` for actual backend task terminal status.
+
+5. Check cancellation semantics
+- `scope=asset.exec` blocked events should prefer explicit reasons (`cancelled: key-marked`, `...:shot-missing`, etc.).
+- Generic `cancelled` should be treated as incomplete observability and investigated.
 
 ## Scope and limits
 

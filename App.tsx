@@ -15,6 +15,7 @@ import { ShotEditor } from './components/Stage/ShotEditor';
 import { StageView } from './components/Stage/StageView';
 import { AiSettingsModal } from './components/Settings/AiSettingsModal';
 import { StartProductionModal } from './components/Production/StartProductionModal';
+import { CinematicCompletionToast } from './components/ui/CinematicGenerateButton';
 import { DebugPanel } from './components/Debug/DebugPanel';
 import { ImageLightbox } from './components/Overlay/ImageLightbox';
 import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
@@ -24,7 +25,7 @@ import { runDirectorCommand, runDirectorCommandStream, type DirectorCommandRespo
 import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
-import { getCharacterActiveAvatarUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
+import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
 import {
   applyAssetBlocked,
   applyAssetError,
@@ -1455,6 +1456,7 @@ export default function App() {
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
   const [masterPlayerShots, setMasterPlayerShots] = useState<Shot[] | null>(null);
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'info' }>>([]);
+  const [videoCompletionToasts, setVideoCompletionToasts] = useState<Array<{ id: string; message: string }>>([]);
   const [isGlobalTaskManagerOpen, setIsGlobalTaskManagerOpen] = useState(false);
   const [globalPipelineTasks, setGlobalPipelineTasks] = useState<GlobalPipelineTask[]>([]);
   const [globalTaskManagerLoading, setGlobalTaskManagerLoading] = useState(false);
@@ -1799,6 +1801,23 @@ export default function App() {
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   };
+  const addVideoCompletionToast = (message: string) => {
+    const id = `video-done-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    setVideoCompletionToasts((prev) => [...prev, { id, message }].slice(-3));
+    window.setTimeout(() => {
+      setVideoCompletionToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5600);
+  };
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as any;
+    w.__visionDebugVideoDoneToast = (message?: string) => {
+      addVideoCompletionToast(String(message || 'Video ready · Shot #1 · Debug Location'));
+    };
+    return () => {
+      if (w.__visionDebugVideoDoneToast) delete w.__visionDebugVideoDoneToast;
+    };
+  }, []);
 
   const updateStoryById = (projectId: string, updater: (prev: Story) => Story) => {
     setWorkspace((prev) => {
@@ -2484,6 +2503,34 @@ export default function App() {
       return;
     }
 
+    // Enter running state immediately so UI can animate during prompt/hydration preflight.
+    updateActiveStory((prev) => ({
+      ...prev,
+      sequences: prev.sequences.map((s) =>
+        s.id !== args.sequenceId
+          ? s
+          : {
+              ...s,
+              shots: s.shots.map((x) =>
+                x.id !== args.shotId
+                  ? x
+                  : {
+                      ...x,
+                      production: {
+                        ...x.production,
+                        status: 'running',
+                        lastStartedAt: now,
+                        lastError: '',
+                        pipelineTaskId: '',
+                        pipelineStatusUrl: '',
+                        pipelineUpdatedAt: now,
+                      },
+                    },
+              ),
+            },
+      ),
+    }));
+
     let effectiveActiveVersion: any = activeVersion;
     try {
       const hydration = await hydrateStackPanelDescriptions({
@@ -2520,6 +2567,31 @@ export default function App() {
     const imageUrl = String(sourceBundle.sourceImageUrl || '').trim();
     if (!imageUrl) {
       addToast('Start Production blocked: generate/select a keyframe first.', 'info');
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : {
+                        ...x,
+                        production: {
+                          ...x.production,
+                          status: 'error',
+                          lastError: 'Missing keyframe source image.',
+                          pipelineTaskId: '',
+                          pipelineStatusUrl: '',
+                          pipelineUpdatedAt: Date.now(),
+                        },
+                      },
+                ),
+              },
+        ),
+      }));
       return;
     }
     const sourceSignature = buildVideoPromptSourceSignature({ sourceBundle, activeVersion: effectiveActiveVersion });
@@ -2573,6 +2645,14 @@ export default function App() {
                               videoPromptReadyAt: now,
                             },
                           },
+                        },
+                        production: {
+                          ...x.production,
+                          status: 'error',
+                          lastError: 'Video prompt not ready.',
+                          pipelineTaskId: '',
+                          pipelineStatusUrl: '',
+                          pipelineUpdatedAt: Date.now(),
                         },
                       },
                 ),
@@ -2745,7 +2825,14 @@ export default function App() {
               },
         ),
       }));
-      addToast(`Shot production complete (${durationSeconds}s, 720p)`, 'success');
+      const locationName = String(
+        storyNow.locations.find((l) => String(l.id || '') === String(shot.locationId || ''))?.name || '',
+      ).trim();
+      addVideoCompletionToast(
+        locationName
+          ? `Video ready · Shot #${shot.sequence} · ${locationName}`
+          : `Video ready · Shot #${shot.sequence}`,
+      );
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
       const aborted =
@@ -3563,23 +3650,23 @@ export default function App() {
     // TODO: structured dialogue lines (future).
   };
 
-  const isJobCancelledOrMissing = (projectId: string, job: AssetJob): boolean => {
+  const getJobCancellationReason = (projectId: string, job: AssetJob): string | null => {
     const key = assetJobKey(projectId, job);
-    if (cancelledAssetJobKeysRef.current.has(key)) return true;
+    if (cancelledAssetJobKeysRef.current.has(key)) return 'cancelled: key-marked';
     const project = workspaceRef.current.projects.find((p) => p.id === projectId);
-    if (!project) return true;
-    if (job.kind === 'masterkv') return false;
-    if (job.kind === 'location') return !(project.locations || []).some((l) => l.id === job.locationId);
-    if (job.kind === 'character') return !(project.characters || []).some((c) => c.id === job.characterId);
+    if (!project) return 'cancelled: project-missing';
+    if (job.kind === 'masterkv') return null;
+    if (job.kind === 'location') return (project.locations || []).some((l) => l.id === job.locationId) ? null : 'cancelled: location-missing';
+    if (job.kind === 'character') return (project.characters || []).some((c) => c.id === job.characterId) ? null : 'cancelled: character-missing';
     if (job.kind === 'look') {
       const ch = (project.characters || []).find((c) => c.id === job.characterId);
-      return !ch || !(ch.looks || []).some((lk) => lk.id === job.lookId);
+      return ch && (ch.looks || []).some((lk) => lk.id === job.lookId) ? null : 'cancelled: look-missing';
     }
     const seq = (project.sequences || []).find((s) => s.id === job.sequenceId);
-    if (seq && (seq.shots || []).some((s) => s.id === job.shot.id)) return false;
+    if (seq && (seq.shots || []).some((s) => s.id === job.shot.id)) return null;
     // Sequence ID may be stale after reorder/move; fall back to global shot-id lookup.
     const existsByShotId = (project.sequences || []).some((s) => (s.shots || []).some((x) => x.id === job.shot.id));
-    return !existsByShotId;
+    return existsByShotId ? null : 'cancelled: shot-missing';
   };
 
   const runAssetJobsForDirector = (args: {
@@ -3687,7 +3774,8 @@ export default function App() {
                   aspectRatio: storyRef.aspectRatio,
                   concurrency,
                   getStoryForRefs: () => storyRef,
-                  shouldCancelJob: (job) => isJobCancelledOrMissing(projectId, job),
+                  shouldCancelJob: (job) => Boolean(getJobCancellationReason(projectId, job)),
+                  getCancelReasonForJob: (job) => getJobCancellationReason(projectId, job) || undefined,
                   getSignalForJob: (job) => {
                     const key = assetJobKey(projectId, job);
                     if (cancelledAssetJobKeysRef.current.has(key)) return undefined;
@@ -3743,7 +3831,8 @@ export default function App() {
         aspectRatio: story.aspectRatio,
         concurrency,
         getStoryForRefs: () => storyRef,
-        shouldCancelJob: (job) => isJobCancelledOrMissing(projectId, job),
+        shouldCancelJob: (job) => Boolean(getJobCancellationReason(projectId, job)),
+        getCancelReasonForJob: (job) => getJobCancellationReason(projectId, job) || undefined,
         getSignalForJob: (job) => {
           const key = assetJobKey(projectId, job);
           if (cancelledAssetJobKeysRef.current.has(key)) return undefined;
@@ -4478,7 +4567,15 @@ export default function App() {
         const locId = String(shot.locationId || '').trim();
         if (locId) {
           const loc = storyAfterUpdates.locations.find((l) => l.id === locId);
-          if (loc) addJob(`location:${locId}`, { kind: 'location', locationId: locId, prompt: buildLocationPreviewPrompt(loc, styleGuide) });
+          const activeLocUrl = loc ? String(getLocationActivePreviewUrl(loc, { activeOnly: true }) || '').trim() : '';
+          const hasLocationReady =
+            !!loc &&
+            isAssetDone((loc as any)?.assetState) &&
+            !!activeLocUrl &&
+            !isLikelyPlaceholderImageUrl(activeLocUrl);
+          if (loc && !hasLocationReady) {
+            addJob(`location:${locId}`, { kind: 'location', locationId: locId, prompt: buildLocationPreviewPrompt(loc, styleGuide) });
+          }
         }
 
         const cast = (shot.elements as any)?.CASTING?.metadata?.characters;
@@ -4488,21 +4585,34 @@ export default function App() {
           if (!characterId) continue;
           const ch = storyAfterUpdates.characters.find((x) => x.id === characterId);
           if (!ch) continue;
-          addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch, styleGuide) });
+          const avatarUrl = String(getCharacterActiveAvatarUrl(ch, { activeOnly: true }) || '').trim();
+          const hasCharacterReady = isAssetDone((ch as any)?.assetState) && !!avatarUrl && !isLikelyPlaceholderImageUrl(avatarUrl);
+          if (!hasCharacterReady) {
+            addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch, styleGuide) });
+          }
 
           const lookId = String(c?.activeLookId || '').trim();
           if (!lookId) continue;
           const lk = ch.looks?.find((x) => x.id === lookId);
           if (!lk) continue;
-          addJob(`look:${characterId}:${lookId}`, {
-            kind: 'look',
-            characterId,
-            lookId,
-            prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
-            // Do not pin to a possibly stale avatar version in shot prerequisite batches.
-            // If character jobs run in the same batch, look jobs must bind to the latest active avatar.
-            avatarVersionId: undefined,
-          });
+          const lookUrl = String(getLookActivePreviewUrl(lk, { activeOnly: true }) || '').trim();
+          const avatarVersionId = String((ch as any).activeAvatarVersionId || '').trim();
+          const hasLookReady =
+            isAssetDone((lk as any)?.assetState) &&
+            !!lookUrl &&
+            !isLikelyPlaceholderImageUrl(lookUrl) &&
+            isLookBoundToAvatar(lk, avatarVersionId);
+          if (!hasLookReady) {
+            addJob(`look:${characterId}:${lookId}`, {
+              kind: 'look',
+              characterId,
+              lookId,
+              prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+              // Do not pin to a possibly stale avatar version in shot prerequisite batches.
+              // If character jobs run in the same batch, look jobs must bind to the latest active avatar.
+              avatarVersionId: undefined,
+            });
+          }
         }
       }
     };
@@ -5864,6 +5974,10 @@ export default function App() {
           onClose={() => setProductionTarget(null)}
         />
       )}
+
+      {videoCompletionToasts.map((t) => (
+        <CinematicCompletionToast key={t.id} message={t.message} />
+      ))}
 
       {/* Global Toast Notification */}
       <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-2 pointer-events-none">

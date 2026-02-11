@@ -1,0 +1,5 @@
+{
+  "name": "Cinematic Generate UI",
+  "description": "A high-performance cinematic video generation button featuring animated clapperboard interactions and state-driven visual feedback.",
+  "requestFramePermissions": []
+}
