@@ -1,5 +1,6 @@
 import type { Shot } from '../../../types';
 import { buildStylePromptTranslation } from '../styleIntent';
+import { addDebugEvent } from '../../debug/eventLog';
 
 export const selectContactSheetPanelCount = (duration: number): 4 | 9 => {
   const d = Number(duration || 0);
@@ -32,6 +33,59 @@ const uniqueList = (items: string[]) => {
   return out;
 };
 
+const STYLE_KEYWORD_RULES: Array<{ tag: string; pattern: RegExp; replacement: string }> = [
+  { tag: 'concept-art', pattern: /\bconcept\s*art\b/gi, replacement: 'live-action production still' },
+  { tag: 'cgi', pattern: /\bcgi\b/gi, replacement: 'live-action photography' },
+  { tag: '3d', pattern: /\b3d\b/gi, replacement: 'physical set photography' },
+  { tag: 'unreal', pattern: /\bunreal(?:\s*engine)?\b/gi, replacement: 'cinematic camera capture' },
+  { tag: 'octane', pattern: /\boctane\b/gi, replacement: 'filmic practical lighting' },
+  { tag: 'render', pattern: /\brender(?:ed|ing)?\b/gi, replacement: 'in-camera image capture' },
+  { tag: 'illustration', pattern: /\billustration\b/gi, replacement: 'live-action frame' },
+  { tag: 'anime', pattern: /\banime\b/gi, replacement: 'cinematic live-action' },
+];
+
+const normalizeStyleKeywordText = (raw: string): { text: string; hits: Array<{ tag: string; count: number }> } => {
+  const src = String(raw || '').trim();
+  if (!src) return { text: '', hits: [] };
+  let text = src;
+  const hits: Array<{ tag: string; count: number }> = [];
+  for (const rule of STYLE_KEYWORD_RULES) {
+    let count = 0;
+    text = text.replace(rule.pattern, () => {
+      count += 1;
+      return rule.replacement;
+    });
+    if (count > 0) hits.push({ tag: rule.tag, count });
+  }
+  return { text: text.replace(/\s+/g, ' ').trim(), hits };
+};
+
+const toLiveActionLockedText = (raw: string) => normalizeStyleKeywordText(raw).text;
+
+const auditKeywordNormalization = (args: {
+  context: 'keyframe-grid' | 'keyframe-single';
+  shotId: string;
+  fields: Array<{ field: string; raw: string; normalized: string; hits: Array<{ tag: string; count: number }> }>;
+}) => {
+  const changed = args.fields.filter((x) => x.hits.length > 0);
+  if (!changed.length) return;
+  addDebugEvent({
+    level: 'info',
+    scope: 'prompt.image',
+    message: 'Keyword normalization audit',
+    data: {
+      context: args.context,
+      shotId: args.shotId,
+      fields: changed.map((f) => ({
+        field: f.field,
+        hits: f.hits,
+        rawPreview: clampText(f.raw, 180),
+        normalizedPreview: clampText(f.normalized, 180),
+      })),
+    },
+  });
+};
+
 const splitIntoBeats = (text: string) => {
   const src = String(text || '').trim();
   if (!src) return [];
@@ -58,7 +112,7 @@ const collectPanelHints = (shot: Shot, panelCount: 4 | 9, explicitHints?: string
 };
 
 const compressVisualStyleLock = (raw: string, maxItems = 4) => {
-  const text = String(raw || '').trim();
+  const text = toLiveActionLockedText(raw);
   if (!text) return '';
   const parts = text
     .split(/\n|[.;!?。！？；]/g)
@@ -90,10 +144,11 @@ const buildStructuredStyleLock = (args: {
     clampText(
       [args.compactStyleGuide, args.styleTranslation, args.styleGuide]
         .map((x) => String(x || '').trim())
+        .map((x) => toLiveActionLockedText(x))
         .find(Boolean) || '',
       420,
     ) || '';
-  const visuals = clampText(String(args.environmentStyle || '').trim(), 260);
+  const visuals = clampText(toLiveActionLockedText(String(args.environmentStyle || '').trim()), 260);
   const cameraLine = clampText(
     uniqueList([String(args.camera || '').trim(), String(args.lighting || '').trim()]).join('; '),
     260,
@@ -121,10 +176,14 @@ export const buildShotKeyframePrompt = (args: {
   panelHints?: string[];
 }) => {
   const shot = args.shot;
-  const styleGuide = clampText(String(args.styleGuide || '').trim(), 900);
+  const styleGuideRaw = String(args.styleGuide || '').trim();
+  const styleGuideNorm = normalizeStyleKeywordText(styleGuideRaw);
+  const styleGuide = clampText(styleGuideNorm.text, 900);
   const compactStyleGuide = compressVisualStyleLock(styleGuide, 4);
   const envName = clampText(String(args.environmentName || '').trim(), 96);
-  const envStyle = clampText(String(args.environmentStyle || '').trim(), 320);
+  const envStyleRaw = String(args.environmentStyle || '').trim();
+  const envStyleNorm = normalizeStyleKeywordText(envStyleRaw);
+  const envStyle = clampText(envStyleNorm.text, 320);
   const panelCount = selectContactSheetPanelCount(Number(shot.duration || 0));
   const gridLabel = panelCount === 9 ? '3x3' : '2x2';
   const panelHints = collectPanelHints(shot, panelCount, args.panelHints);
@@ -162,10 +221,19 @@ export const buildShotKeyframePrompt = (args: {
       ? panelHints.map((b, i) => `${i + 1}. ${b}`).join('\n')
       : 'No fixed micro-beats provided. Build a coherent progression from the scene input.';
 
+  auditKeywordNormalization({
+    context: 'keyframe-grid',
+    shotId: String((shot as any)?.id || ''),
+    fields: [
+      { field: 'styleGuide', raw: styleGuideRaw, normalized: styleGuide, hits: styleGuideNorm.hits },
+      { field: 'environmentStyle', raw: envStyleRaw, normalized: envStyle, hits: envStyleNorm.hits },
+    ],
+  });
+
   return enforcePromptBudget(
     `You are a professional cinematographer and storyboard artist.\n\n` +
       `TASK\n` +
-      `Create ONE photorealistic cinematic contact sheet as a strict ${gridLabel} grid (${panelCount} panels), 16:9.\n` +
+      `Create ONE live-action cinematic contact sheet as a strict ${gridLabel} grid (${panelCount} panels), 16:9.\n` +
       `All panels must depict the SAME key subjects in the SAME environment with stable identity and style continuity.\n\n` +
       `ANALYZE FIRST\n` +
       `Lock key subjects from references and scene text before rendering:\n` +
@@ -180,16 +248,16 @@ export const buildShotKeyframePrompt = (args: {
       `5) Preserve left-right spatial continuity and interaction logic.\n` +
       `6) No text/subtitles/watermarks/logos/UI/panel labels.\n\n` +
       `CAMERA / FILM LOOK\n` +
-      `- Photoreal cinematic stills, filmic contrast, controlled highlights, natural texture.\n` +
-      `- Use plausible lens language across shot scales (wide / medium / close).\n` +
-      `- Depth-of-field and motion implication should be realistic, not stylized gimmicks.\n\n` +
+      `- Live-action cinematic stills with physically plausible optics, exposure, and motion cadence.\n` +
+      `- Real-world material response: skin micro-texture, fabric weave, practical reflections, atmospheric depth.\n` +
+      `- Production camera language across shot scales (wide / medium / close) with coherent lens behavior.\n\n` +
       `PANEL MICRO-BEATS\n` +
       `${panelGuidance}\n` +
       `Follow these beats when present; otherwise infer a coherent visual progression from the scene.\n\n` +
       `PROJECT STYLE LOCK\n` +
       `- Keep references as the primary lock. Supplemental visual lock:\n` +
       `${structuredStyleLock}\n` +
-      `- Avoid accidental style drift into generic CGI look unless explicitly requested.\n\n` +
+      `- Target output medium: premium live-action episodic frame language with natural on-set light behavior.\n\n` +
       `SCENE INPUT\n` +
       `- ${sceneInput}\n\n` +
       `OUTPUT\n` +
@@ -206,10 +274,14 @@ export const buildShotSingleFramePrompt = (args: {
   focusBeat?: string;
 }) => {
   const shot = args.shot;
-  const styleGuide = String(args.styleGuide || '').trim();
+  const styleGuideRaw = String(args.styleGuide || '').trim();
+  const styleGuideNorm = normalizeStyleKeywordText(styleGuideRaw);
+  const styleGuide = styleGuideNorm.text;
   const compactStyleGuide = compressVisualStyleLock(styleGuide, 4);
   const envName = String(args.environmentName || '').trim();
-  const envStyle = String(args.environmentStyle || '').trim();
+  const envStyleRaw = String(args.environmentStyle || '').trim();
+  const envStyleNorm = normalizeStyleKeywordText(envStyleRaw);
+  const envStyle = envStyleNorm.text;
   const castNames = Array.isArray(args.castNames) ? args.castNames.map((s) => String(s || '').trim()).filter(Boolean) : [];
   const focusBeat = String(args.focusBeat || '').trim();
 
@@ -223,6 +295,15 @@ export const buildShotSingleFramePrompt = (args: {
     maxItems: 3,
   });
   const compactStyleLock = uniqueList([compactStyleGuide, styleTranslation].filter(Boolean)).join('; ');
+
+  auditKeywordNormalization({
+    context: 'keyframe-single',
+    shotId: String((shot as any)?.id || ''),
+    fields: [
+      { field: 'styleGuide', raw: styleGuideRaw, normalized: styleGuide, hits: styleGuideNorm.hits },
+      { field: 'environmentStyle', raw: envStyleRaw, normalized: envStyle, hits: envStyleNorm.hits },
+    ],
+  });
 
   const sceneInput = [
     `Scene: ${String(shot.description || '').trim() || 'N/A'}`,
@@ -246,7 +327,7 @@ export const buildShotSingleFramePrompt = (args: {
 	  `- If a reference is a "frame" to refine: treat it as the primary source of composition.\n` +
 	  `- SCENE INPUT (text): scene description, setting, mood, and actions.\n\n` +
 	  `TASK\n` +
-	  `Create ONE photorealistic cinematic still frame in 16:9 aspect ratio.\n` +
+	  `Create ONE live-action cinematic still frame in 16:9 aspect ratio.\n` +
 	  `This is NOT a grid/contact-sheet. Output a single full-frame image only.\n` +
 	  `No text, subtitles, watermarks, logos, UI overlays, or panel borders.\n\n` +
 	  `CONTINUITY RULES (STRICT)\n` +
@@ -256,10 +337,10 @@ export const buildShotSingleFramePrompt = (args: {
 	  `- Keep environment/time-of-day consistent.\n\n` +
 	  `- If a frame reference is provided: preserve framing, camera angle, subject poses, and spatial layout. Improve clarity/detail without drifting.\n\n` +
 	  `FILM LOOK\n` +
-	  `- Photoreal cinematic still, filmic contrast, controlled highlights, natural texture.\n` +
-    `- Plausible lens choice and depth of field.\n\n` +
+	  `- Live-action episodic frame language with physically plausible optics and exposure.\n` +
+    `- Natural material behavior and production-grade lens/depth rendition.\n\n` +
     `PROJECT STYLE LOCK\n` +
-    `- Keep references as the primary lock. Supplemental visual lock: ${compactStyleLock || 'cinematic realism; controlled contrast; natural texture'}\n\n` +
+    `- Keep references as the primary lock. Supplemental visual lock: ${compactStyleLock || 'live-action cinematography; controlled contrast; natural texture'}\n\n` +
     `SCENE INPUT:\n` +
     `- ${sceneInput}\n\n` +
     `OUTPUT\n` +
