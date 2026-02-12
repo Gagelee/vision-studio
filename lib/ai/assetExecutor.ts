@@ -602,9 +602,27 @@ export const applyAssetResult = (story: Story, job: AssetJob, imageUrl: string, 
   };
   const isNewPlaceholder = isLikelyPlaceholderUrl(imageUrl);
   const dropPlaceholders = (versions: any[]) => (Array.isArray(versions) ? versions.filter((v: any) => String(v?.type || '') !== 'placeholder') : []);
+  const normalizeComparableImageUrl = (raw: any) => {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    const stripTail = (v: string) => v.split('?')[0].split('#')[0];
+    const generatedPrefix = '/__generated__/';
+    try {
+      const u = new URL(s);
+      const path = stripTail(String(u.pathname || '').trim());
+      const generatedIdx = path.indexOf(generatedPrefix);
+      if (generatedIdx >= 0) return path.slice(generatedIdx);
+      return `${u.origin}${path}`;
+    } catch {
+      const path = stripTail(s);
+      const generatedIdx = path.indexOf(generatedPrefix);
+      if (generatedIdx >= 0) return path.slice(generatedIdx);
+      return path;
+    }
+  };
   const sameImageUrl = (a: any, b: any) => {
-    const lhs = String(a || '').trim();
-    const rhs = String(b || '').trim();
+    const lhs = normalizeComparableImageUrl(a);
+    const rhs = normalizeComparableImageUrl(b);
     if (!lhs || !rhs) return false;
     return lhs === rhs;
   };
@@ -1330,6 +1348,39 @@ export const executeAssetJobs = async (args: {
               emphasizeNarrativeComposition: true,
             },
           };
+          const referenceAudit = {
+            kind: 'shot',
+            sequenceId: String(job.sequenceId || ''),
+            shotId: String(shot.id || ''),
+            locationId: String(shot.locationId || ''),
+            locationName: String(loc?.name || ''),
+            cast: castArr.slice(0, 4).map((c: any) => {
+              const charId = String(c?.id || '').trim();
+              const activeLookId = String(c?.activeLookId || '').trim();
+              const master = (story?.characters || []).find((x) => String(x.id || '') === charId);
+              const look = master?.looks?.find((lk) => String(lk.id || '') === activeLookId);
+              const avatarUrl = master ? getCharacterActiveAvatarUrl(master, { activeOnly: true }) : '';
+              const avatarVersionId = String((master as any)?.activeAvatarVersionId || '').trim();
+              const lookUrl = look ? getLookActivePreviewUrl(look, { activeOnly: true }) : '';
+              const lookVersions = Array.isArray((look as any)?.previewVersions) ? (look as any).previewVersions : [];
+              const lookActiveId = String((look as any)?.activePreviewVersionId || '').trim();
+              const lookActiveVersion = lookVersions.find((v: any) => String(v?.id || '') === lookActiveId);
+              const lookBoundAvatarVersionId = String(lookActiveVersion?.metadata?.sourceAvatarVersionId || '').trim();
+              return {
+                characterId: charId,
+                characterName: String(master?.name || ''),
+                activeLookId,
+                activeLookName: String(look?.name || ''),
+                activeAvatarVersionId: avatarVersionId,
+                resolvedAvatarUrl: avatarUrl,
+                resolvedLookUrl: lookUrl,
+                lookBoundAvatarVersionId,
+                lookBoundToActiveAvatar: Boolean(lookBoundAvatarVersionId && avatarVersionId && lookBoundAvatarVersionId === avatarVersionId),
+              };
+            }),
+            requestedReferences: references.map((r) => ({ url: String(r.url || ''), label: String(r.label || '') })),
+            requireAllReferences: references.length > 0,
+          };
           const out = await generateImageFromPrompt(
             withTaskBinding({
             prompt: buildShotPromptWithContext(story, shot),
@@ -1337,6 +1388,7 @@ export const executeAssetJobs = async (args: {
             aspectRatio: args.aspectRatio,
             references,
             signal,
+            audit: referenceAudit,
             promptSpec,
             composePrompt: true,
             composeSettings: { model: String((args as any)?.promptComposerModel || '') || 'gemini-3-pro-preview', temperature: 0.2, maxOutputTokens: 512 },

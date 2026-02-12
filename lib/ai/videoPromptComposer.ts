@@ -116,6 +116,44 @@ const inferEmotionCue = (beat: string): string => {
   return 'focused dramatic tension';
 };
 
+const emotionToPlayableBehavior = (emotion: string): string => {
+  const e = String(emotion || '').toLowerCase();
+  if (e.includes('anger')) return '表情收紧下颌与眉心，声线压低，肩背张力上提但不爆发。';
+  if (e.includes('sad')) return '眼睑微垂、呼吸变浅并带停顿，嘴角与下巴维持克制的下压。';
+  if (e.includes('fear')) return '身体重心后收，呼吸短促，反应出现半拍迟疑后再执行动作。';
+  if (e.includes('tender')) return '眼神柔和、肩颈放松，语气与动作落点更轻且有停顿。';
+  if (e.includes('conflict')) return '动作有短暂停顿与回看，手势出现半起半收，体现犹疑。';
+  return '呼吸与眼神保持高压克制，动作幅度小但肌肉张力持续在线。';
+};
+
+const pacingToPlayableBehavior = (pacing: string): string => {
+  const p = String(pacing || '').toLowerCase();
+  if (p.includes('opening')) return '节奏先静后动，以一个清晰的小动作作为起点再进入主动作。';
+  if (p.includes('release') || p.includes('resolve')) return '主动作结束后保留可读反应尾拍，再缓慢回到稳定姿态。';
+  return '按因果递进推进节奏，每个动作都触发下一个动作。';
+};
+
+const inferEyeLineTarget = (beat: string): string => {
+  const raw = String(beat || '').trim();
+  const en = raw.match(/\b(?:at|toward|towards|to|into)\s+([A-Za-z][^,.;:]{2,40})/i)?.[1];
+  if (en) return clamp(en, 36);
+  const zh = raw.match(/(?:看向|望向|盯着|朝着)([^，。；：,.!?]{2,18})/)?.[1];
+  if (zh) return clamp(zh, 18);
+  return '对手手部再回到对方面部';
+};
+
+const motionToThirdPersonBehavior = (motion: string, amp: 'micro' | 'medium' | 'large', beat: string): string => {
+  const m = String(motion || '').toLowerCase();
+  const eyeTarget = inferEyeLineTarget(beat);
+  if (amp === 'large' || m.includes('full-body')) {
+    return `视线先锁定${eyeTarget}，再抬至主目标；由髋腿驱动完成全身位移，动作末端保留明确跟随与回弹。`;
+  }
+  if (amp === 'medium' || m.includes('torso') || m.includes('step')) {
+    return `视线先落在${eyeTarget}，再完成回看确认；以躯干转向和脚步落点带动作推进，上肢动作方向清晰。`;
+  }
+  return `视线在${eyeTarget}之间完成一次可读切换；用呼吸节拍、指尖收紧与微表情变化传递动作前奏。`;
+};
+
 export const buildActingDirection = (args: {
   frameDescription: string;
   script: string;
@@ -138,13 +176,13 @@ export const buildActingDirection = (args: {
   const lines: string[] = [];
   if (!beats.length) {
     lines.push(
-      'Beat 1:\nAction: establish intent through controlled stillness and focused eye-line.\nPerformance: restrained breathing pattern, latent tension, minimal gesture.',
+      'Beat 1:\nAction: establish intent through controlled stillness and focused eye-line.\nPerformance: 视线先落在目标手部再回到目标面部；演员保持近静止状态，以一次小吸气和手指收紧给出动作起点。',
     );
     lines.push(
-      'Beat 2:\nAction: clear trigger followed by decisive body-weight transfer.\nPerformance: committed gesture path and readable emotional escalation.',
+      'Beat 2:\nAction: clear trigger followed by decisive body-weight transfer.\nPerformance: 演员在触发点后立即转移重心，肩髋同向转动，动作力度与速度明显上升。',
     );
     lines.push(
-      'Beat 3:\nAction: reaction tail and controlled settle.\nPerformance: residual tension remains visible in posture and gaze.',
+      'Beat 3:\nAction: reaction tail and controlled settle.\nPerformance: 主动作后保留一拍停顿和呼吸尾音，目光不离目标，再缓慢回稳但维持余压。',
     );
     if (dialogueTurns.length) lines.push(`Dialogue Beat: ${dialogueTurns[0]}`);
   } else {
@@ -154,8 +192,16 @@ export const buildActingDirection = (args: {
       const motionCue = motionCueForAmplitude(amp);
       const pacingCue = pacingCueForIndex(idx, beats.length);
       const dialogueCue = String(dialogueTurns[idx] || dialogueTurns[0] || '').trim();
+      const performanceLine = [
+        motionToThirdPersonBehavior(motionCue, amp, beat),
+        emotionToPlayableBehavior(emotion),
+        pacingToPlayableBehavior(pacingCue),
+      ]
+        .map((s) => String(s || '').trim())
+        .filter(Boolean)
+        .join(' ');
       lines.push(
-        `Beat ${idx + 1}:\nAction: ${clamp(sanitizeBeatText(beat), 180)}\nPerformance: intent=${emotion}; motion=${motionCue}; pacing=${pacingCue}${dialogueCue ? `\nDialogue: ${dialogueCue}` : '\nDialogue: (silent beat)'}`,
+        `Beat ${idx + 1}:\nAction: ${clamp(sanitizeBeatText(beat), 180)}\nPerformance: ${performanceLine}${dialogueCue ? `\nDialogue: ${dialogueCue}` : '\nDialogue: (silent beat)'}`,
       );
     });
   }

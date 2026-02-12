@@ -39,6 +39,7 @@ export const generateImageFromPrompt = async (req: {
   settings: ModelRuntimeSettings;
   aspectRatio?: string;
   references?: ImageReference[];
+  audit?: any;
   promptSpec?: any;
   composePrompt?: boolean;
   composeSettings?: {
@@ -66,6 +67,7 @@ export const generateImageFromPrompt = async (req: {
         promptPreview: String(req.prompt || '').slice(0, 120),
         references: Array.isArray(req.references) ? req.references.map((r) => ({ url: r.url, label: r.label })) : [],
         requireAllReferences: Boolean(req.requireAllReferences),
+        audit: req.audit && typeof req.audit === 'object' ? req.audit : undefined,
       },
     });
     const controller = new AbortController();
@@ -90,6 +92,7 @@ export const generateImageFromPrompt = async (req: {
         composeSettings: req.composeSettings,
         aspectRatio: req.aspectRatio,
         references: Array.isArray(req.references) ? req.references : [],
+        audit: req.audit && typeof req.audit === 'object' ? req.audit : undefined,
         requireAllReferences: Boolean(req.requireAllReferences),
         pipelinePriority: req.pipelinePriority === 'high' ? 'high' : 'normal',
         settings: {

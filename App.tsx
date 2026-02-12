@@ -18,7 +18,7 @@ import { StartProductionModal } from './components/Production/StartProductionMod
 import { CinematicCompletionToast } from './components/ui/CinematicGenerateButton';
 import { DebugPanel } from './components/Debug/DebugPanel';
 import { ImageLightbox } from './components/Overlay/ImageLightbox';
-import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
+import { createDemoProject, loadWorkspace, saveWorkspace, type WorkspaceSaveWarningLevel } from './lib/workspaceStorage';
 import { normalizeStorySceneModel } from './lib/story/sceneModel';
 import { loadAiSettings, saveAiSettings } from './lib/ai/aiSettingsStorage';
 import { runDirectorCommand, runDirectorCommandStream, type DirectorCommandResponse, type DirectorStreamEvent } from './lib/ai/agent/direct';
@@ -99,12 +99,47 @@ type GlobalPipelineTask = {
   error?: string;
 };
 
-type GlobalTaskCategory = 'asset-generation' | 'production' | 'utility' | 'agent' | 'other';
+type GlobalTaskCategory = 'asset-generation' | 'production' | 'casting' | 'utility' | 'agent' | 'other';
+type ToastType = 'success' | 'info' | 'warning' | 'error';
+type WorkspacePersistenceBanner = {
+  kind: 'save-error' | 'quota-warning';
+  message: string;
+  level?: WorkspaceSaveWarningLevel;
+};
 
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
 const STALE_GENERATION_MAX_AGE_MS = 8 * 60_000;
 const STALE_PRODUCTION_MAX_AGE_MS = 20 * 60_000;
 const GENERATED_PREFIX = '/__generated__/';
+const normalizeComparableAssetUrl = (raw: unknown) => {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const stripTail = (v: string) => v.split('?')[0].split('#')[0];
+  try {
+    const u = new URL(s);
+    const path = stripTail(String(u.pathname || '').trim());
+    const generatedIdx = path.indexOf(GENERATED_PREFIX);
+    if (generatedIdx >= 0) return path.slice(generatedIdx);
+    return `${u.origin}${path}`;
+  } catch {
+    const path = stripTail(s);
+    const generatedIdx = path.indexOf(GENERATED_PREFIX);
+    if (generatedIdx >= 0) return path.slice(generatedIdx);
+    return path;
+  }
+};
+const dedupeProductionVariants = (variants: any[]) => {
+  const seen = new Set<string>();
+  const out: any[] = [];
+  const list = Array.isArray(variants) ? variants : [];
+  for (const v of list) {
+    const key = normalizeComparableAssetUrl((v as any)?.videoUrl || '') || String((v as any)?.id || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+};
 
 const collectGeneratedAssetUrlsFromStory = (story: Story): string[] => {
   const out = new Set<string>();
@@ -327,7 +362,8 @@ const mergeIncomingStoryPreferRealPreviews = (incoming: Story, existing?: Story 
     const map = new Map<string, any>();
     const all = [...(Array.isArray(nextVersions) ? nextVersions : []), ...(Array.isArray(prevVersions) ? prevVersions : [])];
     for (const v of all) {
-      const key = String(v?.id || '') || String(v?.imageUrl || '');
+      const normalizedUrl = normalizeComparableAssetUrl(v?.imageUrl);
+      const key = normalizedUrl || String(v?.id || '');
       if (!key) continue;
       const cur = map.get(key);
       map.set(key, cur ? pickBetter(cur, v) : v);
@@ -487,12 +523,21 @@ const mergeAssetGenerationState = (current: any, incoming: any) => {
 const mergeShotProductionState = (current: any, incoming: any) => {
   if (!current) return incoming;
   if (!incoming) return current;
+  const sanitize = (p: any) => {
+    if (!p || typeof p !== 'object') return p;
+    return {
+      ...p,
+      variants: dedupeProductionVariants((p as any)?.variants || []),
+    };
+  };
+  const safeCurrent = sanitize(current);
+  const safeIncoming = sanitize(incoming);
   const score = (p: any) => Math.max(Number(p?.lastCompletedAt || 0), Number(p?.lastStartedAt || 0));
-  const currentScore = score(current);
-  const incomingScore = score(incoming);
-  if (incomingScore > currentScore) return incoming;
-  if (currentScore > incomingScore) return current;
-  return preferTerminalStatus(String(current?.status || ''), String(incoming?.status || '')) ? current : incoming;
+  const currentScore = score(safeCurrent);
+  const incomingScore = score(safeIncoming);
+  if (incomingScore > currentScore) return safeIncoming;
+  if (currentScore > incomingScore) return safeCurrent;
+  return preferTerminalStatus(String(safeCurrent?.status || ''), String(safeIncoming?.status || '')) ? safeCurrent : safeIncoming;
 };
 
 type AssetTaskBinding = { taskId: string; statusUrl?: string; job: AssetJob };
@@ -663,7 +708,8 @@ const applyProductionPipelineTaskOutcome = (story: Story, binding: ProductionTas
           }
           const operationName = String(task?.result?.operationName || '').trim();
           const prevVariants = Array.isArray(shot.production?.variants) ? shot.production?.variants : [];
-          const existing = prevVariants.find((v: any) => String(v?.videoUrl || '') === videoUrl);
+          const normVideoUrl = normalizeComparableAssetUrl(videoUrl);
+          const existing = prevVariants.find((v: any) => normalizeComparableAssetUrl(v?.videoUrl) === normVideoUrl);
           const variant =
             existing ||
             ({
@@ -677,6 +723,7 @@ const applyProductionPipelineTaskOutcome = (story: Story, binding: ProductionTas
                 sourceShotVersionId: String(shot.activeVersionId || ''),
               },
             } as any);
+          const nextVariants = dedupeProductionVariants(existing ? prevVariants : [...prevVariants, variant]);
           return {
             ...shot,
             production: {
@@ -689,7 +736,7 @@ const applyProductionPipelineTaskOutcome = (story: Story, binding: ProductionTas
               pipelineUpdatedAt: now,
               operationName: operationName || shot.production?.operationName,
               videoUrl,
-              variants: existing ? prevVariants : [...prevVariants, variant],
+              variants: nextVariants,
               activeVariantId: String(variant.id || shot.production?.activeVariantId || ''),
             },
           };
@@ -858,8 +905,7 @@ const applyActionsToStory = (story: Story, actions: AgentAction[]): Story => {
           const baseRaw = existing.length ? existing : seededBase;
           const isPlaceholder = isLikelyPlaceholderImageUrl(url);
           const base = isPlaceholder ? baseRaw : baseRaw.filter((v: any) => String(v?.type || '') !== 'placeholder');
-          const normalizeImageUrl = (u: any) => String(u || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
-          const existingHit = (base || []).find((v: any) => normalizeImageUrl(v?.imageUrl) === normalizeImageUrl(url));
+          const existingHit = (base || []).find((v: any) => normalizeComparableAssetUrl(v?.imageUrl) === normalizeComparableAssetUrl(url));
           const id = existingHit ? String(existingHit.id || '') : `kv-${now}-${rand()}`;
           const versions = existingHit
             ? base
@@ -1455,7 +1501,8 @@ export default function App() {
   const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
   const [masterPlayerShots, setMasterPlayerShots] = useState<Shot[] | null>(null);
-  const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'info' }>>([]);
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: ToastType }>>([]);
+  const [workspacePersistenceBanner, setWorkspacePersistenceBanner] = useState<WorkspacePersistenceBanner | null>(null);
   const [videoCompletionToasts, setVideoCompletionToasts] = useState<Array<{ id: string; message: string }>>([]);
   const [isGlobalTaskManagerOpen, setIsGlobalTaskManagerOpen] = useState(false);
   const [globalPipelineTasks, setGlobalPipelineTasks] = useState<GlobalPipelineTask[]>([]);
@@ -1498,6 +1545,9 @@ export default function App() {
     height: typeof window !== 'undefined' ? window.innerHeight : 900,
   }));
   const staleRecoveryDoneRef = useRef(false);
+  const persistenceSaveErrorToastTsRef = useRef(0);
+  const persistenceQuotaToastTsRef = useRef(0);
+  const workspacePersistenceDismissedRef = useRef<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const cancelledAssetJobKeysRef = useRef<Set<string>>(new Set());
   const assetJobAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -1668,8 +1718,53 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    saveWorkspace(workspace);
+    const persistence = saveWorkspace(workspace);
     workspaceRef.current = workspace;
+    const now = Date.now();
+
+    if (!persistence.ok) {
+      if (now - persistenceSaveErrorToastTsRef.current > 12_000) {
+        addToast('Save failed. Refresh may lose latest edits.', 'error');
+        persistenceSaveErrorToastTsRef.current = now;
+      }
+      const banner: WorkspacePersistenceBanner = {
+        kind: 'save-error',
+        message: `Save failed (${persistence.error || 'localStorage error'}). Latest edits are in-memory only until save recovers.`,
+      };
+      const signature = `${banner.kind}:${banner.level || ''}:${banner.message}`;
+      if (workspacePersistenceDismissedRef.current !== signature) {
+        setWorkspacePersistenceBanner((prev) => {
+          const prevSig = prev ? `${prev.kind}:${prev.level || ''}:${prev.message}` : '';
+          return prevSig === signature ? prev : banner;
+        });
+      }
+      return;
+    }
+
+    if (persistence.warning) {
+      if (now - persistenceQuotaToastTsRef.current > 20_000) {
+        addToast(
+          persistence.level === 'danger' ? 'Workspace is near storage limit.' : 'Workspace size is getting large.',
+          persistence.level === 'danger' ? 'error' : 'warning'
+        );
+        persistenceQuotaToastTsRef.current = now;
+      }
+      const banner: WorkspacePersistenceBanner = {
+        kind: 'quota-warning',
+        level: persistence.level,
+        message: persistence.warning,
+      };
+      const signature = `${banner.kind}:${banner.level || ''}:${banner.message}`;
+      if (workspacePersistenceDismissedRef.current !== signature) {
+        setWorkspacePersistenceBanner((prev) => {
+          const prevSig = prev ? `${prev.kind}:${prev.level || ''}:${prev.message}` : '';
+          return prevSig === signature ? prev : banner;
+        });
+      }
+      return;
+    }
+
+    setWorkspacePersistenceBanner((prev) => (prev?.kind === 'quota-warning' ? null : prev));
   }, [workspace]);
 
   useEffect(() => {
@@ -1796,7 +1891,7 @@ export default function App() {
 
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
 
-  const addToast = (message: string, type: 'success' | 'info' = 'info') => {
+  const addToast = (message: string, type: ToastType = 'info') => {
     const id = Math.random().toString(36).substring(7);
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
@@ -2785,7 +2880,10 @@ export default function App() {
                     ? x
                     : (() => {
                         const prevVariants = Array.isArray(x.production?.variants) ? x.production?.variants : [];
-                        const existingVariant = prevVariants.find((v: any) => String(v?.videoUrl || '').trim() === String(out.videoUrl || '').trim());
+                        const nextVideoUrlNorm = normalizeComparableAssetUrl(out.videoUrl);
+                        const existingVariant = prevVariants.find(
+                          (v: any) => normalizeComparableAssetUrl(v?.videoUrl) === nextVideoUrlNorm,
+                        );
                         const newVariant = {
                           id: nextVariantId,
                           videoUrl: out.videoUrl,
@@ -2802,6 +2900,7 @@ export default function App() {
                               actingDirection: composed.actingDirection,
                           },
                         };
+                        const nextVariants = dedupeProductionVariants(existingVariant ? prevVariants : [...prevVariants, newVariant]);
                         return {
                           ...x,
                           production: {
@@ -2816,7 +2915,7 @@ export default function App() {
                             resolution: '720p',
                             operationName: out.operationName,
                             videoUrl: out.videoUrl,
-                            variants: existingVariant ? prevVariants : [...prevVariants, newVariant],
+                            variants: nextVariants,
                             activeVariantId: String(existingVariant?.id || newVariant.id),
                           },
                         };
@@ -3076,6 +3175,36 @@ export default function App() {
       const timeScore = Number(row.endedAt || row.startedAt || row.enqueuedAt || 0);
       return statusScore * 1_000_000_000_000 + timeScore;
     };
+    const shotLocator = (sequenceIdRaw: unknown, shotIdRaw: unknown) => {
+      const sequenceId = String(sequenceIdRaw || '').trim();
+      const shotId = String(shotIdRaw || '').trim();
+      if (!sequenceId || !shotId) return { target: 'Shot Casting', locator: '' };
+      const seq = (activeStory.sequences || []).find((s) => String(s.id || '') === sequenceId);
+      const shot = (seq?.shots || []).find((s) => String(s.id || '') === shotId);
+      const pad2 = (n: number) => String(Math.max(1, Math.floor(n || 1))).padStart(2, '0');
+      const seqIdx = Math.max(
+        1,
+        (activeStory.sequences || []).findIndex((s) => String(s.id || '') === String(seq?.id || sequenceId)) + 1,
+      );
+      const scenes = Array.isArray((seq as any)?.scenes) ? ((seq as any).scenes as any[]) : [];
+      const sceneIdx =
+        Math.max(
+          1,
+          scenes.findIndex((sc: any) => Array.isArray(sc?.shots) && sc.shots.some((sh: any) => String(sh?.id || '') === String(shot?.id || shotId))) + 1,
+        ) || 1;
+      const shotNum = Math.max(1, (seq?.shots || []).findIndex((s) => String(s.id || '') === String(shot?.id || shotId)) + 1);
+      return {
+        target: `Part ${pad2(seqIdx)} Scene ${pad2(sceneIdx)} Shot ${pad2(shotNum)} Cast`,
+        locator: `story/part${pad2(seqIdx)}/scene${pad2(sceneIdx)}/shot${pad2(shotNum)}`,
+      };
+    };
+    const resolveCharacterName = (idOrNameRaw: unknown) => {
+      const idOrName = String(idOrNameRaw || '').trim();
+      if (!idOrName) return 'Character';
+      const byId = (activeStory.characters || []).find((c) => String(c.id || '') === idOrName);
+      if (byId?.name) return String(byId.name);
+      return idOrName;
+    };
     const normalizeAssetUrl = (raw: any) => String(raw || '').trim().split('?')[0].split('#')[0];
     const activeImageUrls = new Set(collectGeneratedAssetUrlsFromStory(activeStory).map((u) => normalizeAssetUrl(u)));
     const activeVideoUrls = new Set<string>();
@@ -3133,9 +3262,94 @@ export default function App() {
         error: String(task.error || '').trim(),
       };
     });
+    const actionRows = (() => {
+      const out: Array<{
+        id: string;
+        level: string;
+        target: string;
+        locator: string;
+        projectTitle: string;
+        category: GlobalTaskCategory;
+        parentGroup: 'story' | 'environment' | 'casting' | 'utility' | 'agent' | 'global';
+        status: string;
+        enqueuedAt?: number;
+        startedAt?: number;
+        endedAt?: number;
+        waitMs?: number;
+        durationMs?: number;
+        error?: string;
+      }> = [];
+      const history = Array.isArray(agentHistory) ? agentHistory : [];
+      for (const entry of history.slice(-120)) {
+        const actions = Array.isArray(entry?.actionDetails?.actions) ? (entry.actionDetails?.actions as AgentAction[]) : [];
+        if (!actions.length) continue;
+        const isErrorEntry =
+          String(entry?.actionDetails?.type || '').toUpperCase().includes('ERROR') ||
+          /failed|error/i.test(String(entry?.content || ''));
+        for (let i = 0; i < actions.length; i += 1) {
+          const action = actions[i] as AgentAction;
+          const type = String(action?.type || '').trim();
+          if (
+            type !== 'SET_CAST' &&
+            type !== 'CREATE_CHARACTER' &&
+            type !== 'UPDATE_CHARACTER' &&
+            type !== 'CREATE_CHARACTER_LOOK' &&
+            type !== 'UPDATE_CHARACTER_LOOK'
+          ) {
+            continue;
+          }
+          let level = 'Casting > Operation';
+          let target = 'Casting Update';
+          let locator = '';
+          if (type === 'SET_CAST') {
+            const hit = shotLocator((action as any)?.payload?.sequenceId, (action as any)?.payload?.shotId);
+            const cast = Array.isArray((action as any)?.payload?.cast) ? (action as any).payload.cast : [];
+            level = 'Casting > Shot Assignment';
+            target = cast.length ? `${hit.target} (${cast.length} assigned)` : hit.target;
+            locator = hit.locator;
+          } else if (type === 'CREATE_CHARACTER') {
+            const name = resolveCharacterName((action as any)?.payload?.name || (action as any)?.payload?.id);
+            level = 'Casting > Character';
+            target = `Create Character: ${name}`;
+            locator = `casting/${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'character'}`;
+          } else if (type === 'UPDATE_CHARACTER') {
+            const name = resolveCharacterName((action as any)?.payload?.name || (action as any)?.payload?.id);
+            level = 'Casting > Character';
+            target = `Update Character: ${name}`;
+            locator = `casting/${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'character'}`;
+          } else if (type === 'CREATE_CHARACTER_LOOK') {
+            const name = resolveCharacterName((action as any)?.payload?.characterId);
+            const lookName = String((action as any)?.payload?.name || '').trim();
+            level = 'Casting > Character Look';
+            target = `Create Look: ${name}${lookName ? ` / ${lookName}` : ''}`;
+            locator = `casting/${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'character'}/look`;
+          } else if (type === 'UPDATE_CHARACTER_LOOK') {
+            const name = resolveCharacterName((action as any)?.payload?.characterId);
+            const lookName = String((action as any)?.payload?.name || '').trim();
+            level = 'Casting > Character Look';
+            target = `Update Look: ${name}${lookName ? ` / ${lookName}` : ''}`;
+            locator = `casting/${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'character'}/look`;
+          }
+          out.push({
+            id: `casting-action-${entry.id}-${i}`,
+            level,
+            target,
+            locator,
+            projectTitle: String(activeStory.title || activeStory.id || 'Project'),
+            category: 'casting',
+            parentGroup: 'casting',
+            status: isErrorEntry ? 'error' : 'done',
+            endedAt: Number(entry.timestamp || 0) || Date.now(),
+            error: isErrorEntry ? String(entry.content || 'Casting action failed') : '',
+          });
+        }
+      }
+      return out;
+    })();
+    rows.push(...actionRows);
     rows.sort((a, b) => toScore(b) - toScore(a));
     return rows.slice(0, 120);
-  }, [activeStory, globalPipelineTasks, taskBindingIndex]);
+  }, [activeStory, agentHistory, globalPipelineTasks, taskBindingIndex]);
 
   const filteredGlobalTaskRows = useMemo(() => {
     return globalTaskRows.filter((r) => {
@@ -5582,6 +5796,7 @@ export default function App() {
                     [
                       { value: 'all', label: 'All' },
                       { value: 'asset-generation', label: 'Asset Gen' },
+                      { value: 'casting', label: 'Casting' },
                       { value: 'production', label: 'Production' },
                       { value: 'utility', label: 'Utility' },
                       { value: 'agent', label: 'Agent' },
@@ -5979,6 +6194,35 @@ export default function App() {
         <CinematicCompletionToast key={t.id} message={t.message} />
       ))}
 
+      {workspacePersistenceBanner && (
+        <div className="fixed top-5 left-1/2 z-[110] w-[min(920px,calc(100vw-32px))] -translate-x-1/2 rounded-xl border border-amber-300/30 bg-zinc-950/92 px-4 py-3 shadow-2xl backdrop-blur">
+          <div className="flex items-start gap-3">
+            {workspacePersistenceBanner.kind === 'save-error' ? (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
+            ) : (
+              <AlertTriangle
+                className={`mt-0.5 h-4 w-4 shrink-0 ${
+                  workspacePersistenceBanner.level === 'danger' ? 'text-rose-400' : 'text-amber-300'
+                }`}
+              />
+            )}
+            <span className="flex-1 text-sm text-zinc-100">{workspacePersistenceBanner.message}</span>
+            <button
+              type="button"
+              onClick={() => {
+                const signature = `${workspacePersistenceBanner.kind}:${workspacePersistenceBanner.level || ''}:${workspacePersistenceBanner.message}`;
+                workspacePersistenceDismissedRef.current = signature;
+                setWorkspacePersistenceBanner(null);
+              }}
+              className="rounded-md p-1 text-zinc-400 transition-colors hover:text-zinc-100"
+              aria-label="Dismiss workspace persistence warning"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Global Toast Notification */}
       <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-2 pointer-events-none">
         {toasts.map((toast) => (
@@ -5986,11 +6230,10 @@ export default function App() {
             key={toast.id}
             className="bg-zinc-900 text-white px-4 py-3 rounded-lg shadow-2xl border border-zinc-800 flex items-center gap-3 animate-in slide-in-from-right-10 fade-in duration-300"
           >
-            {toast.type === 'success' ? (
-              <CheckCircle className="w-4 h-4 text-emerald-500" />
-            ) : (
-              <Info className="w-4 h-4 text-blue-500" />
-            )}
+            {toast.type === 'success' && <CheckCircle className="w-4 h-4 text-emerald-500" />}
+            {toast.type === 'info' && <Info className="w-4 h-4 text-blue-500" />}
+            {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-300" />}
+            {toast.type === 'error' && <AlertTriangle className="w-4 h-4 text-rose-400" />}
             <span className="text-sm font-medium">{toast.message}</span>
           </div>
         ))}

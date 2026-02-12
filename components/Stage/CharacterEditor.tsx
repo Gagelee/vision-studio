@@ -594,26 +594,48 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
       return;
     }
     const picked = Array.from(files).slice(0, remaining);
-    const reads = picked.map(
-      (file) =>
-        new Promise<{ id: string; url: string; name?: string; createdAt?: number }>((resolve, reject) => {
-          if (!file.type.startsWith('image/')) {
-            reject(new Error(`Unsupported file: ${file.name}`));
-            return;
-          }
-          const reader = new FileReader();
-          reader.onload = () => {
-            resolve({
-              id: `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-              url: String(reader.result || ''),
-              name: file.name,
-              createdAt: Date.now(),
-            });
-          };
-          reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-          reader.readAsDataURL(file);
-        }),
-    );
+    const readAsDataUrl = (file: File) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+        reader.readAsDataURL(file);
+      });
+    const compressDataUrl = async (dataUrl: string, mimeType: string) => {
+      if (typeof document === 'undefined') return dataUrl;
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Failed to decode image'));
+        el.src = dataUrl;
+      });
+      const maxSide = 1400;
+      const scale = Math.min(1, maxSide / Math.max(img.width || 1, img.height || 1));
+      const width = Math.max(1, Math.round((img.width || 1) * scale));
+      const height = Math.max(1, Math.round((img.height || 1) * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return dataUrl;
+      ctx.drawImage(img, 0, 0, width, height);
+      const outputType = /png|webp/i.test(mimeType) ? 'image/webp' : 'image/jpeg';
+      return canvas.toDataURL(outputType, 0.82);
+    };
+    const reads = picked.map(async (file) => {
+      if (!file.type.startsWith('image/')) throw new Error(`Unsupported file: ${file.name}`);
+      const raw = await readAsDataUrl(file);
+      const optimized =
+        raw.length > 1_200_000
+          ? await compressDataUrl(raw, file.type).catch(() => raw)
+          : raw;
+      return {
+        id: `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        url: String(optimized || raw || ''),
+        name: file.name,
+        createdAt: Date.now(),
+      };
+    });
     const settled = await Promise.allSettled(reads);
     const success = settled
       .filter((r): r is PromiseFulfilledResult<{ id: string; url: string; name?: string; createdAt?: number }> => r.status === 'fulfilled')

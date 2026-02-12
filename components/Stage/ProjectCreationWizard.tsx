@@ -6,6 +6,7 @@ import { createLocalMockProject, scaffoldProjectStream, scaffoldProjectWithSetti
 import { runDirectorCommand } from '../../lib/ai/agent/direct';
 import { isAgentApiError } from '../../lib/ai/agent/apiError';
 import { applyAssetBlocked, applyAssetError, applyAssetQueued, applyAssetResult, applyAssetStart, applyAssetTaskBinding, buildAssetJobs, executeAssetJobs, getJobLabel, type AssetJob } from '../../lib/ai/assetExecutor';
+import { applyPreflightReferenceAssignments } from '../../lib/preflight/referenceAssignment';
 
 type PreflightMsg = { id: string; role: 'user' | 'agent' | 'system'; content: string; attachmentIds?: string[] };
 type PreflightAttachment = {
@@ -125,10 +126,14 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const preflightMessagesRef = useRef<HTMLDivElement | null>(null);
   const preflightScrollTimeoutRef = useRef<number | null>(null);
   const sharedInputAnchorRef = useRef<HTMLDivElement | null>(null);
+  const modeToggleRef = useRef<HTMLDivElement | null>(null);
+  const formatGridRef = useRef<HTMLDivElement | null>(null);
+  const sharedInputShellRef = useRef<HTMLDivElement | null>(null);
   const [sharedInputStartOffset, setSharedInputStartOffset] = useState<number>(130);
   const [sharedInputMeasured, setSharedInputMeasured] = useState(false);
   const [sharedInputTransitionEnabled, setSharedInputTransitionEnabled] = useState(false);
   const [isSharedInputFocused, setIsSharedInputFocused] = useState(false);
+  const sharedInputCenterNudgePx = 98;
   const formats: { label: string; ratio: AspectRatio; icon: any }[] = [
     { label: 'Cinema', ratio: '16:9', icon: Tv },
     { label: 'Social', ratio: '9:16', icon: Smartphone },
@@ -141,6 +146,23 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     const denom = Math.max(1, assetTotal);
     return 30 + Math.round((assetDone / denom) * 70);
   }, [assetDone, assetTotal, isProcessing, phase]);
+
+  function clearPreflightSession() {
+    setPreflightInput('');
+    setPreflightMessages([]);
+    setIsPreflightThinking(false);
+    setPreflightReady(false);
+    setPreflightBrief('');
+    setPreflightAttachments([]);
+    setPendingAttachments([]);
+    setKnownTargets(['global']);
+  }
+
+  function closePreflight(opts?: { clearSession?: boolean }) {
+    setIsPreflightOpen(false);
+    if (opts?.clearSession) clearPreflightSession();
+  }
+
   useEffect(() => {
     if (!isProcessing || phase !== 'assets') return;
     if (assetPreviewFeed.length <= 1) return;
@@ -160,9 +182,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   useEffect(() => {
     if (workflowMode === 'interaction') return;
     if (!isPreflightOpen) return;
-    setIsPreflightOpen(false);
-    setIsPreflightThinking(false);
-    setPreflightInput('');
+    closePreflight({ clearSession: true });
   }, [workflowMode, isPreflightOpen]);
 
   useEffect(() => {
@@ -176,14 +196,25 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   useEffect(() => {
     const measure = () => {
       if (typeof window === 'undefined') return;
-      const el = sharedInputAnchorRef.current;
-      if (!el) {
+      const modeRect = modeToggleRef.current?.getBoundingClientRect() || null;
+      const formatRect = formatGridRef.current?.getBoundingClientRect() || null;
+      const anchorRect = sharedInputAnchorRef.current?.getBoundingClientRect() || null;
+      const shellHeight = sharedInputShellRef.current?.getBoundingClientRect().height || 72;
+
+      const targetCenterY =
+        modeRect && formatRect
+          ? (modeRect.bottom + formatRect.top) / 2
+          : anchorRect
+            ? anchorRect.top + anchorRect.height / 2
+            : null;
+
+      if (targetCenterY == null) {
         setSharedInputMeasured(true);
         return;
       }
-      const rect = el.getBoundingClientRect();
-      const centerY = rect.top + rect.height / 2;
-      setSharedInputStartOffset(centerY - window.innerHeight / 2);
+
+      const targetTopY = targetCenterY - shellHeight / 2;
+      setSharedInputStartOffset(targetTopY - window.innerHeight / 2 + sharedInputCenterNudgePx);
     };
     const raf1 = requestAnimationFrame(() => {
       measure();
@@ -194,12 +225,20 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
       (window as any).__pcw_raf2 = raf2;
     });
     window.addEventListener('resize', measure);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => measure()) : null;
+    if (ro) {
+      if (modeToggleRef.current) ro.observe(modeToggleRef.current);
+      if (formatGridRef.current) ro.observe(formatGridRef.current);
+      if (sharedInputAnchorRef.current) ro.observe(sharedInputAnchorRef.current);
+      if (sharedInputShellRef.current) ro.observe(sharedInputShellRef.current);
+    }
     return () => {
       cancelAnimationFrame(raf1);
       if ((window as any).__pcw_raf2) cancelAnimationFrame((window as any).__pcw_raf2);
       window.removeEventListener('resize', measure);
+      ro?.disconnect();
     };
-  }, [workflowMode, ratio]);
+  }, [workflowMode, ratio, sharedInputCenterNudgePx]);
 
   useEffect(() => {
     if (!sharedInputMeasured) return;
@@ -916,51 +955,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
               aiSettings,
               allowSingleFallback: Boolean(opts?.allowSingleFallback),
             });
-        const normalized = (preflightAttachments || []).map((a) => ({
-          id: a.id,
-          url: a.url,
-          name: a.name,
-          createdAt: a.createdAt,
-          assignedTo: String(a.assignedTo || 'unassigned'),
-        }));
-        const globalRefs = normalized.filter((a) => a.assignedTo === 'global').map(({ assignedTo, ...x }) => x);
-        const charRefs = normalized.filter((a) => a.assignedTo.startsWith('character:'));
-        const locRefs = normalized.filter((a) => a.assignedTo.startsWith('location:'));
-        const enrichedStoryRaw = {
-          ...res.story,
-          referenceImages: globalRefs as any,
-          referenceMode: globalRefs.length ? 'auto' : (res.story as any).referenceMode,
-          characters: (res.story.characters || []).map((c) => {
-            const next = charRefs
-              .filter((r) => {
-                const name = String(r.assignedTo.split(':').slice(1).join(':') || '').trim().toLowerCase();
-                const cn = String(c.name || '').trim().toLowerCase();
-                return name && (cn.includes(name) || name.includes(cn));
-              })
-              .map(({ assignedTo, ...x }) => x);
-            if (!next.length) return c;
-            return {
-              ...c,
-              referenceImages: ([...(Array.isArray((c as any).referenceImages) ? (c as any).referenceImages : []), ...next].slice(-4) as any),
-              referenceMode: 'auto',
-            } as any;
-          }),
-          locations: (res.story.locations || []).map((l) => {
-            const next = locRefs
-              .filter((r) => {
-                const name = String(r.assignedTo.split(':').slice(1).join(':') || '').trim().toLowerCase();
-                const ln = String(l.name || '').trim().toLowerCase();
-                return name && (ln.includes(name) || name.includes(ln));
-              })
-              .map(({ assignedTo, ...x }) => x);
-            if (!next.length) return l;
-            return {
-              ...l,
-              referenceImages: ([...(Array.isArray((l as any).referenceImages) ? (l as any).referenceImages : []), ...next].slice(-4) as any),
-              referenceMode: 'auto',
-            } as any;
-          }),
-        } as Story;
+        const enrichedStoryRaw = applyPreflightReferenceAssignments(res.story, preflightAttachments || []);
         const enrichedStory = ensureRunProjectId(enrichedStoryRaw);
         const enrichedRes = { ...res, story: enrichedStory } as typeof res;
 	      lastScaffoldRef.current = enrichedRes;
@@ -1114,7 +1109,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
     const finalIntent = notes
       ? `${String(intent || '').trim()}\n\nInteraction Notes:\n${notes}`
       : String(intent || '').trim();
-    setIsPreflightOpen(false);
+    closePreflight();
     runScaffold({ allowSingleFallback: false, intentOverride: finalIntent }).catch((err) =>
       setError(err instanceof Error ? err.message : String(err)),
     );
@@ -1123,7 +1118,6 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
   const hasIntent = Boolean(String(intent || '').trim());
   const activeInputValue = String(isPreflightOpen ? preflightInput : intent || '').trim();
   const isSharedInputSelected = isSharedInputFocused || Boolean(activeInputValue);
-  const hasPreflightFooterContent = preflightAttachments.length > 0;
   const isInteractionMode = workflowMode === 'interaction';
   const isPreflightTransition = isPreflightOpen && !isProcessing;
   const stageDigestView = useMemo(
@@ -1276,7 +1270,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
           type="button"
           onClick={() => {
             if (isPreflightOpen) {
-              setIsPreflightOpen(false);
+              closePreflight({ clearSession: true });
               return;
             }
             onCancel();
@@ -1636,6 +1630,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                     <form onSubmit={handleSubmit} className="space-y-8">
                       <div className="space-y-8">
                         <div
+                          ref={modeToggleRef}
                           className={`flex justify-center transition-all duration-[900ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] ${
                             isPreflightTransition ? 'opacity-0 -translate-x-10 scale-95 blur-[1px] pointer-events-none' : 'opacity-100 translate-x-0 scale-100'
                           }`}
@@ -1670,6 +1665,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                         />
 
                         <div
+                          ref={formatGridRef}
                           className={`flex items-center justify-center gap-3 md:gap-4 transition-all duration-[900ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] ${
                             isPreflightTransition ? 'opacity-0 translate-x-12 scale-95 blur-[1px] pointer-events-none' : 'opacity-100 translate-x-0 scale-100'
                           }`}
@@ -1724,7 +1720,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                         />
 
                         <main
-                          className={`relative z-40 flex-1 min-h-0 w-full max-w-[min(96vw,1320px)] mx-auto flex flex-col overflow-hidden -mt-2 transition-all duration-[950ms] delay-75 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${
+                          className={`relative z-40 flex-1 min-h-0 w-full max-w-[min(96vw,1320px)] mx-auto flex flex-col overflow-hidden -mt-2 mb-[170px] transition-all duration-[950ms] delay-75 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${
                             isPreflightOpen ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-8 scale-[0.985]'
                           }`}
                         >
@@ -1737,7 +1733,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
 		                            <div className="pointer-events-none absolute inset-0 rounded-[30px] bg-black [mask-image:radial-gradient(140%_120%_at_50%_50%,black_0%,black_56%,rgba(0,0,0,0.72)_74%,rgba(0,0,0,0.28)_90%,transparent_100%)] [-webkit-mask-image:radial-gradient(140%_120%_at_50%_50%,black_0%,black_56%,rgba(0,0,0,0.72)_74%,rgba(0,0,0,0.28)_90%,transparent_100%)]" />
 		                            <div
 		                              ref={preflightMessagesRef}
-		                              className="pcw-scroll relative z-10 h-full overflow-y-auto px-6 md:px-10 pt-3 pb-2 space-y-5 flex flex-col"
+		                              className="pcw-scroll relative z-10 h-full overflow-y-auto px-6 md:px-10 pt-3 pb-[220px] space-y-5 flex flex-col"
 		                              data-scrolling={isPreflightScrolling ? '1' : '0'}
 		                              onScroll={() => {
 		                                setIsPreflightScrolling(true);
@@ -1789,64 +1785,56 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                             </div>
                           </div>
                         </main>
-
-                        {hasPreflightFooterContent && (
-                          <footer
-                            className={`relative z-[60] w-full max-w-[min(96vw,1320px)] mx-auto px-8 md:px-12 pb-1 pt-1 flex flex-col gap-2 transition-all duration-[980ms] delay-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${
-                              isPreflightOpen ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-10 scale-[0.985]'
-                            }`}
-                          >
-                            {preflightAttachments.length > 0 && (
-                              <div className="rounded-xl border border-white/12 bg-black/30 p-3 space-y-2">
-                                <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-300 font-black">Attachment Inbox</div>
-                                <div className="space-y-2 max-h-40 overflow-y-auto">
-                                  {preflightAttachments.map((a) => (
-                                    <div key={a.id} className="flex items-center gap-2">
-                                      <div className="text-[11px] text-white/80 truncate flex-1">{a.name || a.id}</div>
-                                      <select
-                                        value={a.assignedTo}
-                                        onChange={(e) => {
-                                          const v = String(e.target.value || 'unassigned');
-                                          setPreflightAttachments((prev) =>
-                                            prev.map((x) => (x.id === a.id ? { ...x, assignedTo: v } : x)),
-                                          );
-                                          if (v && !knownTargets.includes(v)) setKnownTargets((prev) => [...prev, v]);
-                                        }}
-                                        className="h-8 rounded-md bg-black/40 text-[11px] text-white px-2 focus:outline-none focus:ring-2 focus:ring-[#ee4d2d]/40"
-                                      >
-                                        <option value="unassigned">unassigned</option>
-                                        {knownTargets.map((t) => (
-                                          <option key={t} value={t}>
-                                            {t}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </footer>
-                        )}
                       </div>
 
-                      {!isProcessing && (
-                        <div
-                          className={`fixed left-1/2 top-1/2 w-[min(92vw,880px)] will-change-transform transition-[transform,opacity] ease-[cubic-bezier(0.2,0.8,0.2,1)] ${
-                            sharedInputTransitionEnabled ? 'duration-[980ms]' : 'duration-0'
-                          } ${
-                            isPreflightOpen ? 'z-[2450]' : 'z-[8]'
-                          }`}
-                          style={{
-                            transform: isPreflightOpen
-                              ? 'translate(-50%, calc(50vh - 160px))'
-                              : sharedInputMeasured
-                                ? `translate(-50%, ${sharedInputStartOffset + 27}px)`
-                                : 'translate(-50%, 0px)',
-                            opacity: 1,
-                          }}
-                        >
-                          <div className="relative group">
+                      <div className="contents">
+                          {isPreflightOpen && preflightAttachments.length > 0 && (
+                            <div className="fixed left-1/2 bottom-[164px] z-[2460] w-[min(92vw,880px)] -translate-x-1/2 rounded-xl border border-white/12 bg-black/40 p-3 backdrop-blur-xl">
+                              <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-300 font-black mb-2">Attachment Inbox</div>
+                              <div className="space-y-2 max-h-40 overflow-y-auto pcw-scroll">
+                                {preflightAttachments.map((a) => (
+                                  <div key={a.id} className="flex items-center gap-2">
+                                    <div className="text-[11px] text-white/80 truncate flex-1">{a.name || a.id}</div>
+                                    <select
+                                      value={a.assignedTo}
+                                      onChange={(e) => {
+                                        const v = String(e.target.value || 'unassigned');
+                                        setPreflightAttachments((prev) =>
+                                          prev.map((x) => (x.id === a.id ? { ...x, assignedTo: v } : x)),
+                                        );
+                                        if (v && !knownTargets.includes(v)) setKnownTargets((prev) => [...prev, v]);
+                                      }}
+                                      className="h-8 rounded-md bg-black/40 text-[11px] text-white px-2 focus:outline-none focus:ring-2 focus:ring-[#ee4d2d]/40"
+                                    >
+                                      <option value="unassigned">unassigned</option>
+                                      {knownTargets.map((t) => (
+                                        <option key={t} value={t}>
+                                          {t}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div
+                            ref={sharedInputShellRef}
+                            className={`fixed left-1/2 top-1/2 w-[min(92vw,880px)] will-change-transform transition-[transform,opacity] ease-[cubic-bezier(0.2,0.8,0.2,1)] ${
+                              sharedInputTransitionEnabled ? 'duration-[980ms]' : 'duration-0'
+                            } ${
+                              isPreflightOpen ? 'z-[2450]' : 'z-[8]'
+                            }`}
+                            style={{
+                              transform: isPreflightOpen
+                                ? 'translate(-50%, calc(50vh - 156px))'
+                                : sharedInputMeasured
+                                  ? `translate(-50%, ${sharedInputStartOffset}px)`
+                                  : 'translate(-50%, 0px)',
+                              opacity: 1,
+                            }}
+                          >
+                            <div className="relative group">
                             {isPreflightOpen && pendingAttachments.length > 0 && (
                               <div className="absolute left-0 right-0 bottom-full mb-2 z-30 rounded-2xl border border-white/12 bg-black/40 px-3 py-2 backdrop-blur-xl">
                                 <div className="flex gap-2 overflow-x-auto py-1 pcw-scroll">
@@ -2027,7 +2015,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                             </div>
                           </div>
                         </div>
-                      )}
+                    </div>
                     </form>
                 </div>
             )}

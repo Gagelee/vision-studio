@@ -9,6 +9,14 @@ export const CinematicClapperboardIcon: React.FC<{
 }> = ({ state, className = '', style }) => {
   const isClosed = state !== 'idle';
   const isCompleted = state === 'completed';
+  const bodyStops = { top: '#f4f5f7', mid1: '#eceef2', mid2: '#e1e4ea', bottom: '#d4d9e1' };
+  const barStops = { top: '#13151c', mid: '#0f1117', bottom: '#090b10' };
+  const lineColor = '#11161d';
+  const lineOpacity = 0.45;
+  const strokeColor = '#11161d';
+  const panelHeaderFill = '#0f1117';
+  const textFill = '#0e1319';
+  const textOpacity = 0.62;
   const uid = useId().replace(/:/g, '');
   const bodyGlossId = `cine-bodyGloss-${uid}`;
   const barGlossId = `cine-barGloss-${uid}`;
@@ -23,15 +31,15 @@ export const CinematicClapperboardIcon: React.FC<{
     >
       <defs>
         <linearGradient id={bodyGlossId} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#333" />
-          <stop offset="15%" stopColor="#222" />
-          <stop offset="85%" stopColor="#111" />
-          <stop offset="100%" stopColor="#050505" />
+          <stop offset="0%" stopColor={bodyStops.top} />
+          <stop offset="15%" stopColor={bodyStops.mid1} />
+          <stop offset="85%" stopColor={bodyStops.mid2} />
+          <stop offset="100%" stopColor={bodyStops.bottom} />
         </linearGradient>
         <linearGradient id={barGlossId} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#666" />
-          <stop offset="25%" stopColor="#555" />
-          <stop offset="100%" stopColor="#222" />
+          <stop offset="0%" stopColor={barStops.top} />
+          <stop offset="25%" stopColor={barStops.mid} />
+          <stop offset="100%" stopColor={barStops.bottom} />
         </linearGradient>
         <clipPath id={barClipId}>
           <rect x="0" y="0" width="92" height="12" rx="2" />
@@ -47,7 +55,7 @@ export const CinematicClapperboardIcon: React.FC<{
           transform: isCompleted ? undefined : isClosed ? 'rotate(0deg)' : 'rotate(-12deg)',
         }}
       >
-        <rect x="4" y="16" width="92" height="12" rx="2" fill={`url(#${barGlossId})`} stroke="#000" strokeWidth="0.5" />
+        <rect x="4" y="16" width="92" height="12" rx="2" fill={`url(#${barGlossId})`} stroke={strokeColor} strokeWidth="0.5" />
         <g clipPath={`url(#${barClipId})`} transform="translate(4, 16)">
           {[0, 15, 30, 45, 60, 75, 90].map((x) => (
             <path key={x} d={`M${x} 0 L${x + 8} 0 L${x + 18} 12 L${x + 10} 12 Z`} fill="white" fillOpacity="0.85" />
@@ -58,22 +66,22 @@ export const CinematicClapperboardIcon: React.FC<{
       </g>
 
       <g transform="translate(4, 28)">
-        <rect x="0" y="0" width="92" height="48" rx="4" fill={`url(#${bodyGlossId})`} stroke="#000" strokeWidth="1" />
-        <rect x="0" y="0" width="92" height="10" rx="1" fill="#222" />
+        <rect x="0" y="0" width="92" height="48" rx="4" fill={`url(#${bodyGlossId})`} stroke={strokeColor} strokeWidth="1" />
+        <rect x="0" y="0" width="92" height="10" rx="1" fill={panelHeaderFill} />
         <g clipPath={`url(#${barClipId})`}>
           {[0, 15, 30, 45, 60, 75, 90, 105].map((x) => (
             <path key={x} d={`M${x} 0 L${x + 8} 0 L${x - 2} 10 L${x - 10} 10 Z`} fill="white" fillOpacity="0.8" />
           ))}
         </g>
 
-        <g fill="white" fillOpacity="0.25" style={{ fontSize: '3.5px', fontWeight: '900', fontFamily: 'SF Pro, system-ui' }}>
+        <g fill={textFill} fillOpacity={textOpacity} style={{ fontSize: '3.5px', fontWeight: '900', fontFamily: 'SF Pro, system-ui' }}>
           <text x="6" y="15">ROLL</text>
           <text x="32" y="15">SCENE</text>
           <text x="62" y="15">TAKE</text>
-          <line x1="6" y1="18" x2="86" y2="18" stroke="white" strokeWidth="0.2" strokeOpacity="0.1" />
+          <line x1="6" y1="18" x2="86" y2="18" stroke={lineColor} strokeWidth="0.2" strokeOpacity={lineOpacity} />
           <text x="6" y="26">DIRECTOR</text>
           <text x="50" y="26">CAMERA</text>
-          <line x1="6" y1="29" x2="86" y2="29" stroke="white" strokeWidth="0.2" strokeOpacity="0.1" />
+          <line x1="6" y1="29" x2="86" y2="29" stroke={lineColor} strokeWidth="0.2" strokeOpacity={lineOpacity} />
         </g>
 
         <g transform="translate(6, 36)">
@@ -173,7 +181,7 @@ export const CinematicGenerateButton: React.FC<{
       disabled={disabled}
       title={title}
       className={`cine-generate-btn ${state === 'idle' && !disabled ? 'cine-generate-btn-idle' : ''} ${
-        disabled ? 'opacity-60 cursor-not-allowed' : ''
+        disabled ? 'cursor-not-allowed' : ''
       } ${buttonClassName}`}
       style={buttonStyle}
     >
@@ -204,7 +212,8 @@ export const CinematicCompletionToast: React.FC<{ message: string }> = ({ messag
                 width: `${size}px`,
                 height: `${size}px`,
                 backgroundColor: color,
-                animationDelay: `${0.35 + Math.random() * 0.2}s`,
+                // Align confetti with clapper impact moment.
+                animationDelay: `${0.78 + Math.random() * 0.14}s`,
               } as React.CSSProperties
             }
           />
@@ -215,6 +224,7 @@ export const CinematicCompletionToast: React.FC<{ message: string }> = ({ messag
 
   return (
     <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[170] pointer-events-none">
+      <div className="cine-complete-screen-bg" />
       <div className="relative flex flex-col items-center justify-center gap-2 cine-complete-stack">
         <div className="relative cine-complete-drop">
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">{confettiParticles}</div>

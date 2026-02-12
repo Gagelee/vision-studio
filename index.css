@@ -91,6 +91,11 @@
   100% { transform: translateY(8px); opacity: 1; }
 }
 
+@keyframes cineBackdropDropNoRebound {
+  0% { transform: translate(-50%, -160px); opacity: 0; filter: blur(12px); }
+  100% { transform: translate(-50%, 8px); opacity: 1; filter: blur(0px); }
+}
+
 @keyframes dropInNoRotate {
   0% { transform: translateY(-800px); opacity: 0; filter: blur(20px); }
   40% { transform: translateY(38px); opacity: 1; filter: blur(0px); }
@@ -246,6 +251,28 @@
   padding: 8px 18px 10px;
 }
 
+.cine-complete-screen-bg {
+  position: absolute;
+  left: 50%;
+  top: -120px;
+  width: 100vw;
+  height: 420px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.995) 0%,
+    rgba(0, 0, 0, 0.985) 20%,
+    rgba(0, 0, 0, 0.965) 42%,
+    rgba(0, 0, 0, 0.86) 62%,
+    rgba(0, 0, 0, 0.58) 78%,
+    rgba(0, 0, 0, 0.22) 92%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  animation: cineBackdropDropNoRebound 1.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: none;
+  z-index: -1;
+}
+
 .cine-complete-backdrop {
   position: absolute;
   inset: -8px -16px -10px -16px;
@@ -275,6 +302,7 @@
 
 .cine-complete-icon {
   transform: scale(1.35);
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.46));
 }
 
 .cine-confetti-burst {

@@ -43,7 +43,36 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   onToggleImmersive,
   imageSettings,
 }) => {
-  const allVersions = Array.isArray(shot.versions) ? shot.versions.filter(Boolean) : [];
+  const normalizeImageUrl = (u: any) => {
+    const s = String(u || '').trim();
+    if (!s) return '';
+    const stripTail = (v: string) => v.split('#')[0].split('?')[0];
+    const generatedPrefix = '/__generated__/';
+    try {
+      const parsed = new URL(s);
+      const path = stripTail(String(parsed.pathname || '').trim()).replace(/\/$/, '');
+      const generatedIdx = path.indexOf(generatedPrefix);
+      if (generatedIdx >= 0) return path.slice(generatedIdx);
+      return `${parsed.origin}${path}`;
+    } catch {
+      const path = stripTail(s).replace(/\/$/, '');
+      const generatedIdx = path.indexOf(generatedPrefix);
+      if (generatedIdx >= 0) return path.slice(generatedIdx);
+      return path;
+    }
+  };
+  const allVersionsRaw = Array.isArray(shot.versions) ? shot.versions.filter(Boolean) : [];
+  const allVersions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ShotVersion[] = [];
+    for (const v of allVersionsRaw as any[]) {
+      const key = normalizeImageUrl((v as any)?.imageUrl) || String((v as any)?.id || '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(v as ShotVersion);
+    }
+    return out;
+  }, [allVersionsRaw]);
   const nonPlaceholderVersions = allVersions.filter((v) => String(v?.type || '') !== 'placeholder');
   const displayVersions = nonPlaceholderVersions.length ? nonPlaceholderVersions : allVersions;
   const activeVersion =
@@ -74,9 +103,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
   const [activePanelIndex, setActivePanelIndex] = useState(0);
   const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string>('');
-  const normalizeImageUrl = (u: any) => String(u || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
-
-	  useEffect(() => {
+		  useEffect(() => {
 	    setVideoLoadFailed(false);
 	  }, [activeVideoUrl, activeVideoVariant?.id]);
 
@@ -1520,7 +1547,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             {/* Start Production Button (moved from top bar) */}
             {onStartProduction && (
               <div
-                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-1 text-zinc-500 hover:border-zinc-700 hover:bg-zinc-900/40 transition-all overflow-hidden"
+                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-[0px] text-zinc-500 hover:border-zinc-700 hover:bg-zinc-900/40 transition-all overflow-hidden"
                 onClick={(e) => e.stopPropagation()}
               >
                 <CinematicGenerateButton
@@ -1529,10 +1556,10 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                   onClick={onStartProduction}
                   titleIdle="Start Production"
                   titleGenerating="Rendering VEO-3.1"
-                  buttonClassName="w-[124px] h-[124px] rounded-2xl"
-                  iconClassName="w-[110px] h-[110px]"
+                  buttonClassName="w-[130px] h-[130px] rounded-2xl"
+                  iconClassName="w-[120px] h-[120px]"
                 />
-                <span className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-400">
+                <span className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-400 -mt-[12px]">
                   {isProducingVideo ? 'Rendering…' : 'Start Generation'}
                 </span>
               </div>

@@ -141,5 +141,7 @@ describe('videoPromptComposer.buildActingDirection', () => {
     expect(out.includes('Performance:')).toBe(true);
     expect(out.includes('Dialogue:')).toBe(true);
     expect(out.includes('LINA: "Don\'t die, Detective!"')).toBe(true);
+    expect(out.includes('intent=')).toBe(false);
+    expect(out.includes('I perform')).toBe(false);
   });
 });

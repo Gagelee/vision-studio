@@ -2971,6 +2971,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 		        const aspectRatio = body?.aspectRatio ? String(body.aspectRatio) : undefined;
 		        const referencesRaw = Array.isArray(body?.references) ? body.references : [];
 		        const requireAllReferences = Boolean(body?.requireAllReferences);
+		        const audit = body?.audit && typeof body.audit === 'object' ? body.audit : undefined;
 		        const settings = body?.settings || {};
 		        const provider = String(settings?.provider || 'gemini');
 		        const model = String(settings?.model || 'nano-banana-pro');
@@ -3139,7 +3140,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              .map((r: any) => ({ url: String(r?.url || '').trim(), label: r?.label ? String(r.label) : undefined }))
 	              .filter((r: any) => r.url);
 
-	            const loadedRefs: Array<{ mimeType: string; bytes: Buffer; label?: string }> = [];
+	            const loadedRefs: Array<{ mimeType: string; bytes: Buffer; label?: string; url?: string }> = [];
 	            const missingRefs: Array<{ url: string; label?: string }> = [];
 	            for (const r of references) {
 	              try {
@@ -3153,7 +3154,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                  missingRefs.push({ url: r.url, label: r.label });
 	                  continue;
 	                }
-	                loadedRefs.push({ ...loaded, label: r.label });
+	                loadedRefs.push({ ...loaded, label: r.label, url: r.url });
 	              } catch {
 	                missingRefs.push({ url: r.url, label: r.label });
 	              }
@@ -3270,7 +3271,12 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 				                promptUsedPreview: String(promptUsed || '').slice(0, 240),
 				                promptUsed: String(promptUsed || ''),
 				                composed,
+                        audit,
+                        requestReferences: references.map((r) => ({ url: r.url, label: r.label })),
 				                references: loadedRefs.map((r) => ({ mimeType: r.mimeType, bytes: r.bytes.length, label: r.label })),
+                        loadedReferenceCount: loadedRefs.length,
+                        requestReferenceCount: references.length,
+                        missingReferenceCount: missingRefs.length,
 				                requireAllReferences,
 				                missingReferences: missingRefs,
 				              },
@@ -3336,7 +3342,7 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	                      ? {
 	                          transport: out.debug.transport,
 	                          provider: out.debug.provider,
-	                          model: out.debug.model,
+                            model: out.debug.model,
                             gateway: out.debug.gateway,
                             attemptedTransports: Array.isArray(out.debug.attemptedTransports)
                               ? out.debug.attemptedTransports
@@ -3344,6 +3350,18 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                             transportErrors: Array.isArray(out.debug.transportErrors)
                               ? out.debug.transportErrors.slice(0, 6)
                               : undefined,
+                            audit: out.debug.audit && typeof out.debug.audit === 'object' ? out.debug.audit : undefined,
+                            requestReferences: Array.isArray(out.debug.requestReferences)
+                              ? out.debug.requestReferences.slice(0, 10)
+                              : undefined,
+                            references: Array.isArray(out.debug.references) ? out.debug.references.slice(0, 10) : undefined,
+                            missingReferences: Array.isArray(out.debug.missingReferences)
+                              ? out.debug.missingReferences.slice(0, 10)
+                              : undefined,
+                            requestReferenceCount: Number(out.debug.requestReferenceCount || 0) || undefined,
+                            loadedReferenceCount: Number(out.debug.loadedReferenceCount || 0) || undefined,
+                            missingReferenceCount: Number(out.debug.missingReferenceCount || 0) || undefined,
+                            requireAllReferences: Boolean(out.debug.requireAllReferences),
 	                          promptUsedPreview: String(out.debug.promptUsedPreview || '').slice(0, 240),
 	                          promptUsed: String(out.debug.promptUsed || ''),
 	                        }
