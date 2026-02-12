@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ElementType, Sequence, Shot, Location, AspectRatio } from '../../types';
 import { ShotCard } from './ShotCard';
 import { Clock, Plus, Maximize2, Minimize2, Play, LayoutGrid, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2, List, ScrollText, Copy, Check, Pencil } from 'lucide-react';
-import { getShotPreviewImageUrl } from '../../lib/ai/assetRefs';
+import { getShotPreviewImageUrl, resolveShotActiveVideo } from '../../lib/ai/assetRefs';
 
 interface StageViewProps {
   sequence: Sequence;
@@ -387,7 +387,11 @@ export const StageView: React.FC<StageViewProps> = ({
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Story Part Strip</span>
               </div>
               <div className="flex items-center gap-3 py-2">
-                  {sequence.shots.map((shot, idx) => (
+                  {sequence.shots.map((shot, idx) => {
+                    const hasPlayableVideo = Boolean(
+                      String(resolveShotActiveVideo(shot, { allowLegacyUnboundFallback: true }).videoUrl || '').trim(),
+                    );
+                    return (
                       <div 
                         key={shot.id} 
                         onClick={() => onSelectShot(shot.id)}
@@ -404,8 +408,17 @@ export const StageView: React.FC<StageViewProps> = ({
                           <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-transparent transition-all">
                               <span className="text-[10px] font-mono font-bold text-white drop-shadow-lg">0{idx + 1}</span>
                           </div>
+                          {hasPlayableVideo && (
+                            <>
+                              <div className="pointer-events-none absolute inset-0 bg-emerald-400/18" />
+                              <div className="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-emerald-500/22 border border-emerald-400/35 text-[8px] font-black uppercase tracking-wider text-emerald-100">
+                                Video
+                              </div>
+                            </>
+                          )}
                       </div>
-                  ))}
+                    );
+                  })}
                   <button 
                     onClick={() => onAddShot()}
                     className="w-12 aspect-video rounded-lg border-2 border-dashed border-zinc-200 dark:border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-500 dark:hover:border-zinc-500 transition-all shrink-0 bg-white dark:bg-zinc-900"

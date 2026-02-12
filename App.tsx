@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle, Info, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Clock3, Info, ListTodo, Loader2, X } from 'lucide-react';
 import { Sidebar } from './components/Layout/Sidebar';
 import { ScriptEditorModal } from './components/Stage/ScriptEditorModal';
 import { DirectorConsole } from './components/Console/DirectorConsole';
@@ -15,6 +15,7 @@ import { ShotEditor } from './components/Stage/ShotEditor';
 import { StageView } from './components/Stage/StageView';
 import { AiSettingsModal } from './components/Settings/AiSettingsModal';
 import { StartProductionModal } from './components/Production/StartProductionModal';
+import { CinematicCompletionToast } from './components/ui/CinematicGenerateButton';
 import { DebugPanel } from './components/Debug/DebugPanel';
 import { ImageLightbox } from './components/Overlay/ImageLightbox';
 import { createDemoProject, loadWorkspace, saveWorkspace } from './lib/workspaceStorage';
@@ -24,7 +25,7 @@ import { runDirectorCommand, runDirectorCommandStream, type DirectorCommandRespo
 import { isAgentApiError } from './lib/ai/agent/apiError';
 import { addDebugEvent } from './lib/debug/eventLog';
 import { buildCharacterAvatarPrompt, buildCharacterLookPrompt, buildLocationPreviewPrompt } from './lib/ai/prompts';
-import { getCharacterActiveAvatarUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
+import { getCharacterActiveAvatarUrl, getLocationActivePreviewUrl, getLookActivePreviewUrl, isLikelyPlaceholderImageUrl } from './lib/ai/assetRefs';
 import {
   applyAssetBlocked,
   applyAssetError,
@@ -37,6 +38,7 @@ import {
   clearAssetTaskLedgerByTaskId,
   collectAssetTaskLedgerBindings,
   executeAssetJobs,
+  getJobLabel,
   type AssetJob,
 } from './lib/ai/assetExecutor';
 import { generateVideoFromImage } from './lib/ai/video/generate';
@@ -82,6 +84,22 @@ interface PendingInteractionGeneration {
   concurrency: number;
   story: Story;
 }
+
+type GlobalPipelineTask = {
+  id: string;
+  route?: string;
+  kind?: string;
+  userId?: string;
+  status?: string;
+  enqueuedAt?: number;
+  startedAt?: number;
+  endedAt?: number;
+  waitMs?: number;
+  durationMs?: number;
+  error?: string;
+};
+
+type GlobalTaskCategory = 'asset-generation' | 'production' | 'utility' | 'agent' | 'other';
 
 const cloneStory = (story: Story): Story => JSON.parse(JSON.stringify(story)) as Story;
 const STALE_GENERATION_MAX_AGE_MS = 8 * 60_000;
@@ -1438,6 +1456,14 @@ export default function App() {
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
   const [masterPlayerShots, setMasterPlayerShots] = useState<Shot[] | null>(null);
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'info' }>>([]);
+  const [videoCompletionToasts, setVideoCompletionToasts] = useState<Array<{ id: string; message: string }>>([]);
+  const [isGlobalTaskManagerOpen, setIsGlobalTaskManagerOpen] = useState(false);
+  const [globalPipelineTasks, setGlobalPipelineTasks] = useState<GlobalPipelineTask[]>([]);
+  const [globalTaskManagerLoading, setGlobalTaskManagerLoading] = useState(false);
+  const [globalTaskCategoryFilter, setGlobalTaskCategoryFilter] = useState<'all' | GlobalTaskCategory>('all');
+  const [globalTaskStatusFilter, setGlobalTaskStatusFilter] = useState<'all' | 'running' | 'done' | 'error'>('all');
+  const [globalTaskPanelOffset, setGlobalTaskPanelOffset] = useState({ x: 0, y: 0 });
+  const [isGlobalTaskPanelDragging, setIsGlobalTaskPanelDragging] = useState(false);
   const [pendingDirectorFallback, setPendingDirectorFallback] = useState<null | { projectId: string; res: DirectorCommandResponse }>(null);
   const [pendingDirectorFallbackArmed, setPendingDirectorFallbackArmed] = useState(false);
   const [pendingDirectorMultiAgentFailure, setPendingDirectorMultiAgentFailure] = useState<
@@ -1477,12 +1503,133 @@ export default function App() {
   const assetJobAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const shotProductionAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const pipelineReconcileInFlightRef = useRef(false);
+  const globalTaskPanelDragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
 
   const activeStory = useMemo<Story | null>(() => {
     if (!workspace.activeProjectId) return null;
     return workspace.projects.find((p) => p.id === workspace.activeProjectId) || null;
   }, [workspace]);
   const workspaceRef = useRef(workspace);
+
+  const taskBindingIndex = useMemo(() => {
+    const byTaskId = new Map<
+      string,
+      {
+        level: string;
+        target: string;
+        locator: string;
+        projectTitle: string;
+        category: GlobalTaskCategory;
+        parentGroup: 'story' | 'environment' | 'casting' | 'utility' | 'agent' | 'global';
+      }
+    >();
+    const slug = (raw: string) =>
+      String(raw || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'item';
+    const pad2 = (n: number) => String(Math.max(1, Math.floor(n || 1))).padStart(2, '0');
+    const projects = activeStory ? [activeStory] : [];
+    for (const project of projects) {
+      const bindings = collectStoryPipelineBindings(project);
+      for (const b of bindings.assets) {
+        const taskId = String(b.taskId || '').trim();
+        if (!taskId || byTaskId.has(taskId)) continue;
+        const projectSeg = slug(String(project.title || project.id || 'story'));
+        let level = 'Asset > Image Generation';
+        let target = getJobLabel(b.job, project);
+        let locator = `story/${projectSeg}`;
+        let category: GlobalTaskCategory = 'asset-generation';
+        level =
+          b.job.kind === 'masterkv'
+            ? 'Asset > Master KV'
+            : b.job.kind === 'location'
+              ? 'Asset > Environment'
+              : b.job.kind === 'character'
+                ? 'Asset > Character Avatar'
+                : b.job.kind === 'look'
+                  ? 'Asset > Character Look'
+                  : 'Asset > Shot Keyframe';
+        if (b.job.kind === 'masterkv') {
+          target = 'Master KV';
+          locator = `story/${projectSeg}/master-kv`;
+        } else if (b.job.kind === 'location') {
+          const loc = (project.locations || []).find((l) => String(l.id || '') === String(b.job.locationId || ''));
+          target = String(loc?.name || b.job.locationId || 'Environment');
+          locator = `environment/${slug(String(loc?.name || b.job.locationId || 'env'))}`;
+        } else if (b.job.kind === 'character') {
+          const ch = (project.characters || []).find((c) => String(c.id || '') === String(b.job.characterId || ''));
+          target = `${String(ch?.name || b.job.characterId || 'Character')} Avatar`;
+          locator = `casting/${slug(String(ch?.name || b.job.characterId || 'character'))}/avatar`;
+        } else if (b.job.kind === 'look') {
+          const ch = (project.characters || []).find((c) => String(c.id || '') === String(b.job.characterId || ''));
+          const lookIndex = Math.max(
+            1,
+            ((ch?.looks || []).findIndex((lk) => String(lk.id || '') === String(b.job.lookId || '')) || 0) + 1,
+          );
+          const look = (ch?.looks || []).find((lk) => String(lk.id || '') === String(b.job.lookId || ''));
+          target = `${String(ch?.name || b.job.characterId || 'Character')} Look ${pad2(lookIndex)}`;
+          locator = `casting/${slug(String(ch?.name || b.job.characterId || 'character'))}/look${pad2(lookIndex)}`;
+        } else if (b.job.kind === 'shot') {
+          const seq = (project.sequences || []).find((s) => String(s.id || '') === String(b.job.sequenceId || ''));
+          const shot = (seq?.shots || []).find((s) => String(s.id || '') === String(b.job.shot?.id || ''));
+          const seqIdx = Math.max(
+            1,
+            (project.sequences || []).findIndex((s) => String(s.id || '') === String(seq?.id || '')) + 1,
+          );
+          const scenes = Array.isArray((seq as any)?.scenes) ? ((seq as any).scenes as any[]) : [];
+          const sceneIdx =
+            Math.max(
+              1,
+              scenes.findIndex((sc: any) => Array.isArray(sc?.shots) && sc.shots.some((sh: any) => String(sh?.id || '') === String(shot?.id || ''))) + 1,
+            ) || 1;
+          const shotNum = Math.max(1, (seq?.shots || []).findIndex((s) => String(s.id || '') === String(shot?.id || '')) + 1);
+          target = `Part ${pad2(seqIdx)} Scene ${pad2(sceneIdx)} Shot ${pad2(shotNum)} Keyframe`;
+          locator = `story/part${pad2(seqIdx)}/scene${pad2(sceneIdx)}/shot${pad2(shotNum)}`;
+        }
+        byTaskId.set(taskId, {
+          level,
+          target,
+          locator,
+          projectTitle: String(project.title || project.id || 'Project'),
+          category,
+          parentGroup:
+            b.job.kind === 'location'
+              ? 'environment'
+              : b.job.kind === 'character' || b.job.kind === 'look'
+                ? 'casting'
+                : 'story',
+        });
+      }
+      for (const b of bindings.productions) {
+        const taskId = String(b.taskId || '').trim();
+        if (!taskId || byTaskId.has(taskId)) continue;
+        const seq = (project.sequences || []).find((s) => String(s.id || '') === String(b.sequenceId || ''));
+        const shot = (seq?.shots || []).find((s) => String(s.id || '') === String(b.shotId || ''));
+        const seqIdx = Math.max(
+          1,
+          (project.sequences || []).findIndex((s) => String(s.id || '') === String(seq?.id || '')) + 1,
+        );
+        const scenes = Array.isArray((seq as any)?.scenes) ? ((seq as any).scenes as any[]) : [];
+        const sceneIdx =
+          Math.max(
+            1,
+            scenes.findIndex((sc: any) => Array.isArray(sc?.shots) && sc.shots.some((sh: any) => String(sh?.id || '') === String(shot?.id || ''))) + 1,
+          ) || 1;
+        const shotNum = Math.max(1, (seq?.shots || []).findIndex((s) => String(s.id || '') === String(shot?.id || '')) + 1);
+        byTaskId.set(taskId, {
+          level: 'Production > Shot Video',
+          target: `Part ${pad2(seqIdx)} Scene ${pad2(sceneIdx)} Shot ${pad2(shotNum)} Video`,
+          locator: `story/part${pad2(seqIdx)}/scene${pad2(sceneIdx)}/shot${pad2(shotNum)}`,
+          projectTitle: String(project.title || project.id || 'Project'),
+          category: 'production',
+          parentGroup: 'story',
+        });
+      }
+    }
+    return byTaskId;
+  }, [activeStory]);
 
   const agentHistory = useMemo<AgentLogEntry[]>(() => {
     if (!workspace.activeProjectId) return [];
@@ -1528,6 +1675,60 @@ export default function App() {
   useEffect(() => {
     saveAiSettings(aiSettings);
   }, [aiSettings]);
+
+  useEffect(() => {
+    if (!isGlobalTaskManagerOpen) return;
+    let cancelled = false;
+    const load = async (initial = false) => {
+      if (initial) setGlobalTaskManagerLoading(true);
+      try {
+        const url = `/api/pipeline/tasks?limit=180&userId=${encodeURIComponent(currentUserId)}`;
+        const res = await fetch(url, { method: 'GET', headers: getVisionUserRequestHeaders() });
+        if (!res.ok) return;
+        const json = (await res.json().catch(() => null)) as any;
+        const list = Array.isArray(json?.tasks) ? (json.tasks as GlobalPipelineTask[]) : [];
+        if (!cancelled) setGlobalPipelineTasks(list);
+      } finally {
+        if (!cancelled) setGlobalTaskManagerLoading(false);
+      }
+    };
+    void load(true);
+    const timer = window.setInterval(() => void load(false), 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [currentUserId, isGlobalTaskManagerOpen]);
+
+  useEffect(() => {
+    if (!isGlobalTaskPanelDragging) return;
+    const onMove = (e: MouseEvent) => {
+      const drag = globalTaskPanelDragRef.current;
+      if (!drag) return;
+      const panelWidth = Math.min(430, Math.max(320, viewport.width * 0.92));
+      const panelHeight = Math.min(Math.round(viewport.height * 0.78), Math.max(360, viewport.height - 120));
+      const minX = -Math.max(0, viewport.width - panelWidth - 24);
+      const maxX = 24;
+      const minY = -40;
+      const maxY = Math.max(20, viewport.height - panelHeight - 24);
+      const nextX = drag.baseX + (e.clientX - drag.startX);
+      const nextY = drag.baseY + (e.clientY - drag.startY);
+      setGlobalTaskPanelOffset({
+        x: Math.min(maxX, Math.max(minX, nextX)),
+        y: Math.min(maxY, Math.max(minY, nextY)),
+      });
+    };
+    const onUp = () => {
+      setIsGlobalTaskPanelDragging(false);
+      globalTaskPanelDragRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isGlobalTaskPanelDragging, viewport.height, viewport.width]);
 
   useEffect(() => {
     if (staleRecoveryDoneRef.current) return;
@@ -1600,6 +1801,23 @@ export default function App() {
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   };
+  const addVideoCompletionToast = (message: string) => {
+    const id = `video-done-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    setVideoCompletionToasts((prev) => [...prev, { id, message }].slice(-3));
+    window.setTimeout(() => {
+      setVideoCompletionToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5600);
+  };
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as any;
+    w.__visionDebugVideoDoneToast = (message?: string) => {
+      addVideoCompletionToast(String(message || 'Video ready · Shot #1 · Debug Location'));
+    };
+    return () => {
+      if (w.__visionDebugVideoDoneToast) delete w.__visionDebugVideoDoneToast;
+    };
+  }, []);
 
   const updateStoryById = (projectId: string, updater: (prev: Story) => Story) => {
     setWorkspace((prev) => {
@@ -2285,6 +2503,34 @@ export default function App() {
       return;
     }
 
+    // Enter running state immediately so UI can animate during prompt/hydration preflight.
+    updateActiveStory((prev) => ({
+      ...prev,
+      sequences: prev.sequences.map((s) =>
+        s.id !== args.sequenceId
+          ? s
+          : {
+              ...s,
+              shots: s.shots.map((x) =>
+                x.id !== args.shotId
+                  ? x
+                  : {
+                      ...x,
+                      production: {
+                        ...x.production,
+                        status: 'running',
+                        lastStartedAt: now,
+                        lastError: '',
+                        pipelineTaskId: '',
+                        pipelineStatusUrl: '',
+                        pipelineUpdatedAt: now,
+                      },
+                    },
+              ),
+            },
+      ),
+    }));
+
     let effectiveActiveVersion: any = activeVersion;
     try {
       const hydration = await hydrateStackPanelDescriptions({
@@ -2321,6 +2567,31 @@ export default function App() {
     const imageUrl = String(sourceBundle.sourceImageUrl || '').trim();
     if (!imageUrl) {
       addToast('Start Production blocked: generate/select a keyframe first.', 'info');
+      updateActiveStory((prev) => ({
+        ...prev,
+        sequences: prev.sequences.map((s) =>
+          s.id !== args.sequenceId
+            ? s
+            : {
+                ...s,
+                shots: s.shots.map((x) =>
+                  x.id !== args.shotId
+                    ? x
+                    : {
+                        ...x,
+                        production: {
+                          ...x.production,
+                          status: 'error',
+                          lastError: 'Missing keyframe source image.',
+                          pipelineTaskId: '',
+                          pipelineStatusUrl: '',
+                          pipelineUpdatedAt: Date.now(),
+                        },
+                      },
+                ),
+              },
+        ),
+      }));
       return;
     }
     const sourceSignature = buildVideoPromptSourceSignature({ sourceBundle, activeVersion: effectiveActiveVersion });
@@ -2374,6 +2645,14 @@ export default function App() {
                               videoPromptReadyAt: now,
                             },
                           },
+                        },
+                        production: {
+                          ...x.production,
+                          status: 'error',
+                          lastError: 'Video prompt not ready.',
+                          pipelineTaskId: '',
+                          pipelineStatusUrl: '',
+                          pipelineUpdatedAt: Date.now(),
                         },
                       },
                 ),
@@ -2546,7 +2825,14 @@ export default function App() {
               },
         ),
       }));
-      addToast(`Shot production complete (${durationSeconds}s, 720p)`, 'success');
+      const locationName = String(
+        storyNow.locations.find((l) => String(l.id || '') === String(shot.locationId || ''))?.name || '',
+      ).trim();
+      addVideoCompletionToast(
+        locationName
+          ? `Video ready · Shot #${shot.sequence} · ${locationName}`
+          : `Video ready · Shot #${shot.sequence}`,
+      );
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
       const aborted =
@@ -2654,6 +2940,231 @@ export default function App() {
   const consoleContextType: 'story' | 'sequence' | 'shot' =
     selection.type === 'shot' ? 'shot' : selection.type === 'sequence' ? 'sequence' : 'story';
   const isCompactLayout = viewport.width < 1400 || viewport.height < 860;
+
+  const globalTaskRows = useMemo(() => {
+    if (!activeStory) return [];
+    const normalizeStatus = (raw: any) => {
+      const s = String(raw || '').toLowerCase();
+      if (s === 'success') return 'done';
+      if (s === 'failed') return 'error';
+      if (!s) return 'unknown';
+      return s;
+    };
+    const kindLabel = (kind: string, route: string) => {
+      if (kind === 'asset.image.generate')
+        return {
+          level: 'Asset > Image Generation',
+          target: 'asset/image/generate',
+          category: 'asset-generation' as const,
+          parentGroup: 'story' as const,
+        };
+      if (kind === 'asset.video.generate')
+        return {
+          level: 'Production > Shot Video',
+          target: 'asset/video/generate',
+          category: 'production' as const,
+          parentGroup: 'story' as const,
+        };
+      if (kind === 'asset.image.describe')
+        return {
+          level: 'Utility > Describe Image',
+          target: 'utility/image/describe',
+          category: 'utility' as const,
+          parentGroup: 'utility' as const,
+        };
+      if (kind === 'asset.image.store')
+        return {
+          level: 'Utility > Store Asset',
+          target: 'utility/image/store',
+          category: 'utility' as const,
+          parentGroup: 'utility' as const,
+        };
+      if (kind === 'agent.scaffold')
+        return { level: 'Agent > Scaffold', target: 'agent/scaffold', category: 'agent' as const, parentGroup: 'agent' as const };
+      if (kind === 'agent.direct')
+        return { level: 'Agent > Director', target: 'agent/direct', category: 'agent' as const, parentGroup: 'agent' as const };
+      if (route.includes('/api/asset/video'))
+        return {
+          level: 'Production > Shot Video',
+          target: 'asset/video/generate',
+          category: 'production' as const,
+          parentGroup: 'story' as const,
+        };
+      if (route.includes('/api/asset/image'))
+        return {
+          level: 'Asset > Image Generation',
+          target: 'asset/image/generate',
+          category: 'asset-generation' as const,
+          parentGroup: 'story' as const,
+        };
+      if (route.includes('/api/agent/scaffold'))
+        return { level: 'Agent > Scaffold', target: 'agent/scaffold', category: 'agent' as const, parentGroup: 'agent' as const };
+      return {
+        level: kind || route || 'Pipeline Task',
+        target: String(kind || route || 'task/unknown'),
+        category: 'other' as const,
+        parentGroup: 'global' as const,
+      };
+    };
+    const compactText = (raw: string, max = 42) => {
+      const s = String(raw || '').replace(/\s+/g, ' ').trim();
+      if (!s) return '';
+      return s.length > max ? `${s.slice(0, max - 1)}...` : s;
+    };
+    const extractPromptLine = (prompt: string, label: string) => {
+      const re = new RegExp(`-\\s*${label}\\s*:\\s*([^\\n]+)`, 'i');
+      const m = re.exec(String(prompt || ''));
+      return compactText(String(m?.[1] || ''));
+    };
+    const deriveUnboundReadable = (task: any, fallbackTarget: string) => {
+      const kind = String(task?.kind || '');
+      const debug = task?.result?.debug && typeof task.result.debug === 'object' ? task.result.debug : null;
+      const prompt = String(debug?.promptUsed || debug?.promptUsedPreview || '');
+      if (kind === 'asset.image.generate') {
+        const setting = extractPromptLine(prompt, 'Setting');
+        const scene = extractPromptLine(prompt, 'Scene');
+        const detail = setting || scene;
+        return detail || 'Image Asset';
+      }
+      if (kind === 'asset.video.generate') {
+        const op = compactText(String(task?.result?.operationName || ''), 24);
+        return op ? `Video (${op})` : 'Video Asset';
+      }
+      if (kind === 'asset.image.store') {
+        const imageUrl = String(task?.result?.imageUrl || '');
+        const file = imageUrl.split('/').pop() || '';
+        return file ? `Stored ${compactText(file, 28)}` : 'Stored Image';
+      }
+      if (kind === 'asset.image.describe') {
+        const summary = compactText(String(task?.result?.summary || task?.result?.caption || ''), 34);
+        return summary ? summary : 'Describe Image';
+      }
+      return fallbackTarget;
+    };
+    const normText = (raw: string) =>
+      String(raw || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    const locationNorms = (activeStory.locations || [])
+      .map((l) => ({ raw: String(l.name || '').trim(), norm: normText(String(l.name || '')) }))
+      .filter((x) => x.norm);
+    const characterNorms = (activeStory.characters || [])
+      .map((c) => ({ raw: String(c.name || '').trim(), norm: normText(String(c.name || '')) }))
+      .filter((x) => x.norm);
+    const inferUnboundClassification = (
+      task: any,
+      target: string,
+      fallback: { level: string; parentGroup: 'story' | 'environment' | 'casting' | 'utility' | 'agent' | 'global' },
+    ) => {
+      const kind = String(task?.kind || '').trim();
+      if (!kind.startsWith('asset.image.')) return fallback;
+      const t = normText(target);
+      if (!t) return fallback;
+      const hitLocation = locationNorms.some((loc) => t.includes(loc.norm) || loc.norm.includes(t));
+      if (hitLocation) return { level: 'Asset > Environment', parentGroup: 'environment' as const };
+      const hitCharacter = characterNorms.some((ch) => t.includes(ch.norm) || ch.norm.includes(t));
+      if (hitCharacter) return { level: 'Asset > Character', parentGroup: 'casting' as const };
+      if (/part\s*\d+|scene\s*\d+|shot\s*\d+|keyframe/i.test(target)) {
+        return { level: 'Asset > Shot Keyframe', parentGroup: 'story' as const };
+      }
+      return fallback;
+    };
+    const toScore = (row: any) => {
+      const status = String(row.status || '');
+      const statusScore = status === 'running' || status === 'queued' ? 3 : status === 'error' ? 2 : status === 'done' ? 1 : 0;
+      const timeScore = Number(row.endedAt || row.startedAt || row.enqueuedAt || 0);
+      return statusScore * 1_000_000_000_000 + timeScore;
+    };
+    const normalizeAssetUrl = (raw: any) => String(raw || '').trim().split('?')[0].split('#')[0];
+    const activeImageUrls = new Set(collectGeneratedAssetUrlsFromStory(activeStory).map((u) => normalizeAssetUrl(u)));
+    const activeVideoUrls = new Set<string>();
+    for (const seq of activeStory.sequences || []) {
+      for (const shot of seq.shots || []) {
+        const videoUrl = normalizeAssetUrl((shot as any)?.production?.videoUrl || '');
+        if (videoUrl) activeVideoUrls.add(videoUrl);
+        const variants = Array.isArray((shot as any)?.production?.variants) ? (shot as any).production.variants : [];
+        for (const v of variants) {
+          const vu = normalizeAssetUrl((v as any)?.videoUrl || '');
+          if (vu) activeVideoUrls.add(vu);
+        }
+      }
+    }
+    const scopedTasks = (globalPipelineTasks || []).filter((task) => {
+      const taskId = String(task?.id || '').trim();
+      if (taskBindingIndex.has(taskId)) return true;
+      const kind = String(task?.kind || '').trim();
+      const status = String(task?.status || '').toLowerCase();
+      if (status !== 'success') return false;
+      if (kind === 'asset.image.generate' || kind === 'asset.image.store') {
+        const imageUrl = normalizeAssetUrl(task?.result?.imageUrl || '');
+        return Boolean(imageUrl) && activeImageUrls.has(imageUrl);
+      }
+      if (kind === 'asset.video.generate') {
+        const videoUrl = normalizeAssetUrl(task?.result?.videoUrl || '');
+        return Boolean(videoUrl) && activeVideoUrls.has(videoUrl);
+      }
+      return false;
+    });
+    const rows = scopedTasks.map((task) => {
+      const taskId = String(task.id || '').trim();
+      const route = String(task.route || '');
+      const kind = String(task.kind || '');
+      const binding = taskBindingIndex.get(taskId);
+      const fallback = kindLabel(kind, route);
+      const status = normalizeStatus(task.status);
+      const target = binding?.target || deriveUnboundReadable(task, fallback.target);
+      const locator = binding?.locator || '';
+      const inferred = !binding ? inferUnboundClassification(task, target, fallback) : null;
+      return {
+        id: taskId,
+        level: binding?.level || inferred?.level || fallback.level,
+        target,
+        locator,
+        projectTitle: binding?.projectTitle || '',
+        category: binding?.category || fallback.category,
+        parentGroup: binding?.parentGroup || inferred?.parentGroup || fallback.parentGroup,
+        status,
+        enqueuedAt: Number(task.enqueuedAt || 0) || undefined,
+        startedAt: Number(task.startedAt || 0) || undefined,
+        endedAt: Number(task.endedAt || 0) || undefined,
+        waitMs: Number(task.waitMs || 0) || undefined,
+        durationMs: Number(task.durationMs || 0) || undefined,
+        error: String(task.error || '').trim(),
+      };
+    });
+    rows.sort((a, b) => toScore(b) - toScore(a));
+    return rows.slice(0, 120);
+  }, [activeStory, globalPipelineTasks, taskBindingIndex]);
+
+  const filteredGlobalTaskRows = useMemo(() => {
+    return globalTaskRows.filter((r) => {
+      if (globalTaskCategoryFilter !== 'all' && r.category !== globalTaskCategoryFilter) return false;
+      if (globalTaskStatusFilter === 'running' && !(r.status === 'running' || r.status === 'queued')) return false;
+      if (globalTaskStatusFilter === 'done' && r.status !== 'done') return false;
+      if (globalTaskStatusFilter === 'error' && r.status !== 'error') return false;
+      return true;
+    });
+  }, [globalTaskRows, globalTaskCategoryFilter, globalTaskStatusFilter]);
+
+  const globalTaskCounts = useMemo(() => {
+    let running = 0;
+    let done = 0;
+    let error = 0;
+    for (const r of globalTaskRows) {
+      if (r.status === 'running' || r.status === 'queued') running += 1;
+      else if (r.status === 'done') done += 1;
+      else if (r.status === 'error') error += 1;
+    }
+    return { running, done, error };
+  }, [globalTaskRows]);
+
+  const formatTaskTime = (ts?: number) => {
+    const n = Number(ts || 0);
+    if (!n) return '—';
+    const d = new Date(n);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  };
 
   // ----- Project Editing Handlers -----
 
@@ -3139,23 +3650,23 @@ export default function App() {
     // TODO: structured dialogue lines (future).
   };
 
-  const isJobCancelledOrMissing = (projectId: string, job: AssetJob): boolean => {
+  const getJobCancellationReason = (projectId: string, job: AssetJob): string | null => {
     const key = assetJobKey(projectId, job);
-    if (cancelledAssetJobKeysRef.current.has(key)) return true;
+    if (cancelledAssetJobKeysRef.current.has(key)) return 'cancelled: key-marked';
     const project = workspaceRef.current.projects.find((p) => p.id === projectId);
-    if (!project) return true;
-    if (job.kind === 'masterkv') return false;
-    if (job.kind === 'location') return !(project.locations || []).some((l) => l.id === job.locationId);
-    if (job.kind === 'character') return !(project.characters || []).some((c) => c.id === job.characterId);
+    if (!project) return 'cancelled: project-missing';
+    if (job.kind === 'masterkv') return null;
+    if (job.kind === 'location') return (project.locations || []).some((l) => l.id === job.locationId) ? null : 'cancelled: location-missing';
+    if (job.kind === 'character') return (project.characters || []).some((c) => c.id === job.characterId) ? null : 'cancelled: character-missing';
     if (job.kind === 'look') {
       const ch = (project.characters || []).find((c) => c.id === job.characterId);
-      return !ch || !(ch.looks || []).some((lk) => lk.id === job.lookId);
+      return ch && (ch.looks || []).some((lk) => lk.id === job.lookId) ? null : 'cancelled: look-missing';
     }
     const seq = (project.sequences || []).find((s) => s.id === job.sequenceId);
-    if (seq && (seq.shots || []).some((s) => s.id === job.shot.id)) return false;
+    if (seq && (seq.shots || []).some((s) => s.id === job.shot.id)) return null;
     // Sequence ID may be stale after reorder/move; fall back to global shot-id lookup.
     const existsByShotId = (project.sequences || []).some((s) => (s.shots || []).some((x) => x.id === job.shot.id));
-    return !existsByShotId;
+    return existsByShotId ? null : 'cancelled: shot-missing';
   };
 
   const runAssetJobsForDirector = (args: {
@@ -3263,7 +3774,8 @@ export default function App() {
                   aspectRatio: storyRef.aspectRatio,
                   concurrency,
                   getStoryForRefs: () => storyRef,
-                  shouldCancelJob: (job) => isJobCancelledOrMissing(projectId, job),
+                  shouldCancelJob: (job) => Boolean(getJobCancellationReason(projectId, job)),
+                  getCancelReasonForJob: (job) => getJobCancellationReason(projectId, job) || undefined,
                   getSignalForJob: (job) => {
                     const key = assetJobKey(projectId, job);
                     if (cancelledAssetJobKeysRef.current.has(key)) return undefined;
@@ -3319,7 +3831,8 @@ export default function App() {
         aspectRatio: story.aspectRatio,
         concurrency,
         getStoryForRefs: () => storyRef,
-        shouldCancelJob: (job) => isJobCancelledOrMissing(projectId, job),
+        shouldCancelJob: (job) => Boolean(getJobCancellationReason(projectId, job)),
+        getCancelReasonForJob: (job) => getJobCancellationReason(projectId, job) || undefined,
         getSignalForJob: (job) => {
           const key = assetJobKey(projectId, job);
           if (cancelledAssetJobKeysRef.current.has(key)) return undefined;
@@ -4054,7 +4567,15 @@ export default function App() {
         const locId = String(shot.locationId || '').trim();
         if (locId) {
           const loc = storyAfterUpdates.locations.find((l) => l.id === locId);
-          if (loc) addJob(`location:${locId}`, { kind: 'location', locationId: locId, prompt: buildLocationPreviewPrompt(loc, styleGuide) });
+          const activeLocUrl = loc ? String(getLocationActivePreviewUrl(loc, { activeOnly: true }) || '').trim() : '';
+          const hasLocationReady =
+            !!loc &&
+            isAssetDone((loc as any)?.assetState) &&
+            !!activeLocUrl &&
+            !isLikelyPlaceholderImageUrl(activeLocUrl);
+          if (loc && !hasLocationReady) {
+            addJob(`location:${locId}`, { kind: 'location', locationId: locId, prompt: buildLocationPreviewPrompt(loc, styleGuide) });
+          }
         }
 
         const cast = (shot.elements as any)?.CASTING?.metadata?.characters;
@@ -4064,21 +4585,34 @@ export default function App() {
           if (!characterId) continue;
           const ch = storyAfterUpdates.characters.find((x) => x.id === characterId);
           if (!ch) continue;
-          addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch, styleGuide) });
+          const avatarUrl = String(getCharacterActiveAvatarUrl(ch, { activeOnly: true }) || '').trim();
+          const hasCharacterReady = isAssetDone((ch as any)?.assetState) && !!avatarUrl && !isLikelyPlaceholderImageUrl(avatarUrl);
+          if (!hasCharacterReady) {
+            addJob(`character:${characterId}`, { kind: 'character', characterId, prompt: buildCharacterAvatarPrompt(ch, styleGuide) });
+          }
 
           const lookId = String(c?.activeLookId || '').trim();
           if (!lookId) continue;
           const lk = ch.looks?.find((x) => x.id === lookId);
           if (!lk) continue;
-          addJob(`look:${characterId}:${lookId}`, {
-            kind: 'look',
-            characterId,
-            lookId,
-            prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
-            // Do not pin to a possibly stale avatar version in shot prerequisite batches.
-            // If character jobs run in the same batch, look jobs must bind to the latest active avatar.
-            avatarVersionId: undefined,
-          });
+          const lookUrl = String(getLookActivePreviewUrl(lk, { activeOnly: true }) || '').trim();
+          const avatarVersionId = String((ch as any).activeAvatarVersionId || '').trim();
+          const hasLookReady =
+            isAssetDone((lk as any)?.assetState) &&
+            !!lookUrl &&
+            !isLikelyPlaceholderImageUrl(lookUrl) &&
+            isLookBoundToAvatar(lk, avatarVersionId);
+          if (!hasLookReady) {
+            addJob(`look:${characterId}:${lookId}`, {
+              kind: 'look',
+              characterId,
+              lookId,
+              prompt: buildCharacterLookPrompt(ch, lk, styleGuide),
+              // Do not pin to a possibly stale avatar version in shot prerequisite batches.
+              // If character jobs run in the same batch, look jobs must bind to the latest active avatar.
+              avatarVersionId: undefined,
+            });
+          }
         }
       }
     };
@@ -4990,6 +5524,167 @@ export default function App() {
         />
       )}
 
+      {!isPlayingMaster && (
+        <>
+          <button
+            type="button"
+            onClick={() => setIsGlobalTaskManagerOpen((v) => !v)}
+            className="fixed bottom-6 left-6 z-[120] h-11 px-4 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/95 dark:bg-zinc-950/95 backdrop-blur text-zinc-900 dark:text-zinc-100 shadow-xl flex items-center gap-2 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors"
+            title="Global Task Manager"
+          >
+            {globalTaskManagerLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListTodo className="w-4 h-4" />}
+            <span className="text-[11px] font-black uppercase tracking-wider">Tasks</span>
+            <span className="min-w-5 h-5 px-1 rounded-full bg-zinc-900 text-white dark:bg-white dark:text-black text-[10px] font-bold flex items-center justify-center">
+              {globalTaskCounts.running}
+            </span>
+          </button>
+
+          {isGlobalTaskManagerOpen && (
+            <div
+              className="fixed top-16 right-6 z-[130] w-[430px] max-w-[92vw] max-h-[78vh] rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/95 dark:bg-zinc-950/95 backdrop-blur shadow-2xl overflow-hidden"
+              style={{ transform: `translate(${globalTaskPanelOffset.x}px, ${globalTaskPanelOffset.y}px)` }}
+            >
+              <div
+                className={`h-12 px-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between select-none ${
+                  isGlobalTaskPanelDragging ? 'cursor-grabbing' : 'cursor-grab'
+                }`}
+                onMouseDown={(e) => {
+                  if ((e.target as HTMLElement)?.closest('button')) return;
+                  globalTaskPanelDragRef.current = {
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    baseX: globalTaskPanelOffset.x,
+                    baseY: globalTaskPanelOffset.y,
+                  };
+                  setIsGlobalTaskPanelDragging(true);
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <ListTodo className="w-4 h-4 text-zinc-500" />
+                  <span className="text-[11px] font-black uppercase tracking-wider">Global Task Manager</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsGlobalTaskManagerOpen(false)}
+                  className="w-7 h-7 rounded-lg border border-zinc-200 dark:border-zinc-700 flex items-center justify-center hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 text-[10px] uppercase tracking-wider text-zinc-500 flex items-center gap-4">
+                <span>Running {globalTaskCounts.running}</span>
+                <span>Done {globalTaskCounts.done}</span>
+                <span>Error {globalTaskCounts.error}</span>
+              </div>
+              <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 space-y-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(
+                    [
+                      { value: 'all', label: 'All' },
+                      { value: 'asset-generation', label: 'Asset Gen' },
+                      { value: 'production', label: 'Production' },
+                      { value: 'utility', label: 'Utility' },
+                      { value: 'agent', label: 'Agent' },
+                      { value: 'other', label: 'Other' },
+                    ] as Array<{ value: 'all' | GlobalTaskCategory; label: string }>
+                  ).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setGlobalTaskCategoryFilter(opt.value)}
+                      className={`h-6 px-2 rounded-md border text-[10px] uppercase tracking-wider ${
+                        globalTaskCategoryFilter === opt.value
+                          ? 'border-zinc-900 dark:border-zinc-100 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-black'
+                          : 'border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(
+                    [
+                      { value: 'all', label: 'Status All' },
+                      { value: 'running', label: 'Running' },
+                      { value: 'done', label: 'Done' },
+                      { value: 'error', label: 'Error' },
+                    ] as Array<{ value: 'all' | 'running' | 'done' | 'error'; label: string }>
+                  ).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setGlobalTaskStatusFilter(opt.value)}
+                      className={`h-6 px-2 rounded-md border text-[10px] uppercase tracking-wider ${
+                        globalTaskStatusFilter === opt.value
+                          ? 'border-zinc-900 dark:border-zinc-100 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-black'
+                          : 'border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="max-h-[calc(78vh-5rem)] overflow-y-auto custom-scrollbar p-3 space-y-2">
+                {filteredGlobalTaskRows.length === 0 ? (
+                  <div className="px-3 py-8 text-center text-sm text-zinc-500">
+                    {activeStory ? 'No tasks for current project.' : 'Enter a project to view scoped tasks.'}
+                  </div>
+                ) : (
+                  filteredGlobalTaskRows.map((row) => (
+                    <div key={row.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/50 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wider font-bold text-zinc-400 truncate">{row.parentGroup}</div>
+                          <div className="text-[11px] uppercase tracking-wider text-zinc-500 truncate">{row.level}</div>
+                          <div className="text-sm font-semibold truncate">{row.target}</div>
+                          {row.locator && row.locator !== row.target ? (
+                            <div className="text-[10px] font-mono text-zinc-500 truncate">{row.locator}</div>
+                          ) : null}
+                          <div className="text-[10px] font-mono text-zinc-500 truncate" title={row.id}>
+                            task: {row.id}
+                          </div>
+                          {row.projectTitle ? <div className="text-[11px] text-zinc-500 truncate">{row.projectTitle}</div> : null}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 text-[9px] uppercase tracking-wider text-zinc-500">
+                            {row.category}
+                          </span>
+                          <span
+                            className={`text-[10px] uppercase tracking-wider font-bold ${
+                              row.status === 'done'
+                                ? 'text-emerald-500'
+                                : row.status === 'error'
+                                  ? 'text-rose-500'
+                                  : row.status === 'running' || row.status === 'queued'
+                                    ? 'text-amber-500'
+                                    : 'text-zinc-500'
+                            }`}
+                          >
+                            {row.status}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
+                        <div className="flex items-center gap-1"><Clock3 className="w-3 h-3" />Start {formatTaskTime(row.startedAt || row.enqueuedAt)}</div>
+                        <div className="flex items-center gap-1"><Clock3 className="w-3 h-3" />End {formatTaskTime(row.endedAt)}</div>
+                      </div>
+                      {(row.waitMs || row.durationMs) && (
+                        <div className="mt-1 text-[10px] text-zinc-500">
+                          wait {Math.max(0, Number(row.waitMs || 0))}ms · run {Math.max(0, Number(row.durationMs || 0))}ms
+                        </div>
+                      )}
+                      {row.error ? <div className="mt-1 text-[11px] text-rose-500 line-clamp-2">{row.error}</div> : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
       {isAiSettingsOpen && (
         <AiSettingsModal
           settings={aiSettings}
@@ -5279,6 +5974,10 @@ export default function App() {
           onClose={() => setProductionTarget(null)}
         />
       )}
+
+      {videoCompletionToasts.map((t) => (
+        <CinematicCompletionToast key={t.id} message={t.message} />
+      ))}
 
       {/* Global Toast Notification */}
       <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-2 pointer-events-none">

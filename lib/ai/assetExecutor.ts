@@ -962,6 +962,7 @@ export const executeAssetJobs = async (args: {
   concurrency?: number;
   getStoryForRefs?: () => Story | null;
   shouldCancelJob?: (job: AssetJob) => boolean;
+  getCancelReasonForJob?: (job: AssetJob) => string | undefined;
   getSignalForJob?: (job: AssetJob) => AbortSignal | undefined;
   maxAttempts?: number;
   stopAfterMasterKvFailure?: boolean;
@@ -982,6 +983,11 @@ export const executeAssetJobs = async (args: {
         error: e instanceof Error ? e.message : String(e),
       });
     }
+  };
+  const getCancellationReason = (job: AssetJob): string | null => {
+    const detailed = String(args.getCancelReasonForJob?.(job) || '').trim();
+    if (detailed) return detailed;
+    return args.shouldCancelJob?.(job) ? 'cancelled' : null;
   };
 
   const resolveShotFromStory = (story: Story, sequenceId: string, shotId: string): Shot | null => {
@@ -1186,17 +1192,19 @@ export const executeAssetJobs = async (args: {
   };
 
   const worker = async (job: AssetJob) => {
-    if (args.shouldCancelJob?.(job)) {
+    const cancelBeforeStart = getCancellationReason(job);
+    if (cancelBeforeStart) {
       done += 1;
-      emitEvent({ type: 'blocked', job, done, total, reason: 'cancelled' });
+      emitEvent({ type: 'blocked', job, done, total, reason: cancelBeforeStart });
       return;
     }
     emitEvent({ type: 'start', job, done, total });
     try {
       const snapshot = args.getStoryForRefs?.() || null;
-      if (args.shouldCancelJob?.(job)) {
+      const cancelAfterStart = getCancellationReason(job);
+      if (cancelAfterStart) {
         done += 1;
-        emitEvent({ type: 'blocked', job, done, total, reason: 'cancelled' });
+        emitEvent({ type: 'blocked', job, done, total, reason: cancelAfterStart });
         return;
       }
       const blocked = checkBlocked(job, snapshot);
@@ -1211,7 +1219,8 @@ export const executeAssetJobs = async (args: {
 
       const attemptOnce = async () => {
         const signal = args.getSignalForJob?.(job);
-        if (signal?.aborted || args.shouldCancelJob?.(job)) throw new DOMException('Aborted', 'AbortError');
+        const cancelBeforeAttempt = getCancellationReason(job);
+        if (signal?.aborted || cancelBeforeAttempt) throw new DOMException('Aborted', 'AbortError');
         const withTaskBinding = <T extends Record<string, any>>(payload: T): T => {
           return {
             ...payload,
@@ -1448,15 +1457,17 @@ export const executeAssetJobs = async (args: {
 
       for (let i = 1; i <= maxAttempts; i++) {
         try {
-          if (args.shouldCancelJob?.(job)) throw new DOMException('Aborted', 'AbortError');
+          const cancelAtLoop = getCancellationReason(job);
+          if (cancelAtLoop) throw new DOMException('Aborted', 'AbortError');
           const out = await attemptOnce();
           done += 1;
           emitEvent({ type: 'success', job, done, total, imageUrl: out.imageUrl, debug: out.debug, meta: out.meta });
           return;
         } catch (e) {
-          if (isAbortLikeError(e) || args.shouldCancelJob?.(job)) {
+          const cancelAfterErr = getCancellationReason(job);
+          if (isAbortLikeError(e) || cancelAfterErr) {
             done += 1;
-            emitEvent({ type: 'blocked', job, done, total, reason: 'cancelled' });
+            emitEvent({ type: 'blocked', job, done, total, reason: cancelAfterErr || 'cancelled' });
             return;
           }
           lastErr = e;

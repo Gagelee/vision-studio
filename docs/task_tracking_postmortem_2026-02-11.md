@@ -43,6 +43,26 @@ Use mock only for model responses, not for orchestration:
 3. Increase reconcile cadence to reduce stale queued/running perception.
 4. Add heavy debug harness (`scripts/debug-iteration.mjs`) for realistic mock interaction tests.
 
+## Follow-up hardening (2026-02-11, later)
+
+1. `cancelled` reason is now explicit and machine-readable.
+- Previous behavior: many blocked jobs surfaced as generic `reason: "cancelled"`, which made root-cause analysis ambiguous.
+- New behavior: executor now propagates detailed cancellation causes from app-level checks, e.g.
+  - `cancelled: key-marked`
+  - `cancelled: project-missing`
+  - `cancelled: location-missing`
+  - `cancelled: character-missing`
+  - `cancelled: look-missing`
+  - `cancelled: shot-missing`
+
+2. `CREATE_SHOT` prerequisite auto-jobs now run only when dependencies are missing.
+- Previous behavior: when a shot job was present, prerequisite jobs (environment/avatar/look) were enqueued aggressively.
+- New behavior: prerequisite scheduler first checks readiness:
+  - Environment: `assetState=done` + active preview URL present + not placeholder.
+  - Character: `assetState=done` + active avatar URL present + not placeholder.
+  - Look: `assetState=done` + active look URL present + bound to current avatar + not placeholder.
+- Result: fewer unnecessary jobs, lower cost, less queue noise, and fewer accidental cancellations during structural edits.
+
 ## Process change
 
 For major pipeline refactors and hard-to-locate state bugs:

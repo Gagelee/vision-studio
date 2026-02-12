@@ -7,16 +7,18 @@ import { describeImageForRefine } from '../../lib/ai/image/describe';
 import { buildRefineFromDescribePrompt, buildShotKeyframePrompt } from '../../lib/ai/prompts';
 import { selectContactSheetPanelCount } from '../../lib/ai/prompts/image';
 import { ChevronLeft, Play, RefreshCw, Layers, MonitorPlay, Maximize2, Minimize2, Download, ChevronDown, ChevronUp, Info, ChevronRight } from 'lucide-react';
-import {
-  getCharacterActiveAvatarUrl,
-  getLocationActivePreviewUrl,
-  getLookActivePreviewUrl,
-  resolveShotActiveVideo,
-} from '../../lib/ai/assetRefs';
+  import {
+    getCharacterActiveAvatarUrl,
+    getLocationActivePreviewUrl,
+    getLookActivePreviewUrl,
+    getShotVideoVariantsForVersion,
+    resolveShotActiveVideo,
+  } from '../../lib/ai/assetRefs';
 import { openLightbox } from '../../lib/ui/lightboxStore';
 import { addDebugEvent } from '../../lib/debug/eventLog';
 import { computeGridPanelBBoxes } from '../../lib/ui/gridSplit';
 import { getVisionUserRequestHeaders } from '../../lib/userSession';
+import { CinematicGenerateButton } from '../ui/CinematicGenerateButton';
 
 interface ShotEditorProps {
   shot: Shot;
@@ -65,6 +67,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	  const probedVideoUrlsRef = useRef<Set<string>>(new Set());
 	  const [previewMode, setPreviewMode] = useState<'video' | 'frame'>('frame');
 	  const prevVideoUrlRef = useRef<string>('');
+  const suppressAutoVideoSwitchRef = useRef(false);
 
   const [isSplittingGrid, setIsSplittingGrid] = useState(false);
   const [splitError, setSplitError] = useState<string | null>(null);
@@ -81,7 +84,14 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	    // Default: whenever a (new) video URL exists, prefer previewing video.
 	    const prev = prevVideoUrlRef.current;
 	    if (!activeVideoUrl) setPreviewMode('frame');
-	    if (activeVideoUrl && activeVideoUrl !== prev) setPreviewMode('video');
+	    if (activeVideoUrl && activeVideoUrl !== prev) {
+      if (suppressAutoVideoSwitchRef.current) {
+        setPreviewMode('frame');
+        suppressAutoVideoSwitchRef.current = false;
+      } else {
+        setPreviewMode('video');
+      }
+    }
 	    prevVideoUrlRef.current = activeVideoUrl;
 	  }, [activeVideoUrl]);
 
@@ -207,6 +217,49 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     const idx = Number.isFinite(Number(activePanelIndex)) ? Number(activePanelIndex) : 0;
     const hit = panels.find((p: any) => Number(p?.index) === idx) || panels[0];
     return String(hit?.refinedImageUrl || hit?.imageUrl || activeVersion.imageUrl || '').trim();
+  };
+
+  const handleDownloadPreview = async () => {
+    const mediaType = previewMode === 'video' && activeVideoUrl && !videoLoadFailed ? 'video' : 'frame';
+    const mediaUrl = mediaType === 'video' ? String(activeVideoUrl || '').trim() : String(getActivePreviewImageUrl() || '').trim();
+    if (!mediaUrl) return;
+
+    const safeExtFromUrl = (url: string, fallback: string) => {
+      const clean = String(url || '').split('?')[0].split('#')[0];
+      const ext = clean.includes('.') ? clean.slice(clean.lastIndexOf('.') + 1).toLowerCase() : '';
+      if (!ext || ext.length > 5) return fallback;
+      return ext;
+    };
+
+    const versionTag = String(activeVersion?.id || `shot-${shot.sequence}`).replace(/[^a-zA-Z0-9_-]+/g, '-');
+    const ext = mediaType === 'video' ? safeExtFromUrl(mediaUrl, 'mp4') : safeExtFromUrl(mediaUrl, 'png');
+    const filename = mediaType === 'video' ? `shot-${shot.sequence}-${versionTag}.video.${ext}` : `shot-${shot.sequence}-${versionTag}.frame.${ext}`;
+
+    try {
+      const res = await fetch(mediaUrl, { cache: 'no-store' as any });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+    } catch (e) {
+      addDebugEvent({
+        level: 'error',
+        scope: mediaType === 'video' ? 'asset.video' : 'asset.image',
+        message: 'Download failed',
+        data: {
+          mediaType,
+          mediaUrl,
+          error: e instanceof Error ? e.message : String(e),
+        },
+      });
+      window.open(mediaUrl, '_blank', 'noopener,noreferrer');
+    }
   };
 
   const handleSplitGrid = async (panelCount: 4 | 9) => {
@@ -691,6 +744,9 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
     });
 	    const nextActive = created[0] || null;
 	    if (!nextActive) return;
+      // Keep ungroup result on frame mode even if the source stack already had a playable video.
+      suppressAutoVideoSwitchRef.current = true;
+      setPreviewMode('frame');
 	    onUpdateShot({
 	      ...shot,
 	      versions: [...baseListWithoutGroup, ...created],
@@ -1138,34 +1194,20 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                     {isImmersive ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                 </button>
             )}
-            {onStartProduction && (
-              <div className="relative group">
-                <button
-                  onClick={onStartProduction}
-                  disabled={isProducingVideo}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-colors ${
-                    isProducingVideo
-                      ? 'bg-[#E50914] text-white shadow-lg shadow-red-900/40 animate-[pulse_1.6s_ease-in-out_infinite] cursor-not-allowed'
-                      : 'bg-[#E50914] hover:bg-[#B20710] text-white shadow-lg shadow-red-900/30'
-                  }`}
-                  title={isProducingVideo ? 'Generating Video' : 'Generate Video'}
-                >
-                  <span className="relative w-4 h-4 min-w-4 min-h-4 block">
-                    <span className="absolute inset-0 rounded-full border-2 border-white/85" />
-                    <span className="absolute inset-[4px] rounded-full bg-white" />
-                  </span>
-                </button>
-                {!isProducingVideo && (
-                  <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 -bottom-8 px-2 py-1 rounded-md bg-black/85 border border-white/15 text-[10px] font-bold uppercase tracking-wide text-white opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                    Start Generation
-                  </div>
-                )}
-              </div>
-            )}
-	             <button className="flex items-center gap-2 bg-white text-black hover:bg-zinc-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-white/5">
-	                <Download className="w-3.5 h-3.5" />
-	                Export Frame
-	            </button>
+            <button
+              type="button"
+              onClick={handleGenerateVersion}
+              disabled={isBusyGenerating}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-colors ${
+                isBusyGenerating
+                  ? 'bg-white/10 text-white/50 cursor-not-allowed'
+                  : 'bg-indigo-500 text-white hover:bg-indigo-400 shadow-lg shadow-indigo-500/20'
+              }`}
+              title={assetStatus === 'queued' ? 'Queued' : isBusyGenerating ? 'Generating Variant' : 'Regenerate Variant'}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isBusyGenerating ? 'animate-spin' : ''}`} />
+              <span>{assetStatus === 'queued' ? 'Queued…' : isBusyGenerating ? 'Generating…' : isPlaceholderActive ? 'Generate' : 'Variant'}</span>
+            </button>
 		            {activeVersion && !isPlaceholderActive && isContactSheetGrid && String((activeVersion as any)?.type || '') !== 'panel_group' && (
 		              <>
 	                <button
@@ -1230,11 +1272,19 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 		                </button>
 		              </div>
 		            )}
-		        </div>
-		      </div>
+	             <button
+                type="button"
+                onClick={() => void handleDownloadPreview()}
+                className="w-8 h-8 rounded-lg bg-white text-black hover:bg-zinc-200 flex items-center justify-center transition-colors shadow-lg shadow-white/5"
+                title="Download"
+              >
+	                <Download className="w-3.5 h-3.5" />
+	            </button>
+        </div>
+      </div>
 
       {/* Main Preview Area */}
-      <div className="flex-1 relative flex items-center justify-center bg-black/80 p-8 overflow-hidden min-h-0">
+      <div className="flex-[1_1_0%] min-h-0 relative flex items-center justify-center bg-black/80 p-3 md:p-8 overflow-hidden">
         <div className="relative w-full h-full flex items-center justify-center group">
             <div className={`${ratioStyles[aspectRatio]} w-full bg-zinc-900 rounded-lg shadow-2xl border border-zinc-800 overflow-hidden relative transition-all duration-500 ease-in-out`}>
 		                {previewMode === 'video' && activeVideoUrl && !videoLoadFailed ? (
@@ -1447,7 +1497,7 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
       </div>
 
       {/* Bottom: Version Control Timeline */}
-      <div className={`border-t border-zinc-800 bg-zinc-950 flex flex-col transition-all duration-300 ease-in-out shrink-0 ${isImmersive ? 'h-0 overflow-hidden opacity-0' : (isHistoryOpen ? 'h-64' : 'h-10')}`}>
+      <div className={`border-t border-zinc-800 bg-zinc-950 flex-none flex flex-col transition-all duration-300 ease-in-out ${isImmersive ? 'h-0 overflow-hidden opacity-0' : (isHistoryOpen ? 'h-64 min-h-64' : 'h-10')}`}>
         <div 
             className="h-10 border-b border-zinc-800 flex items-center px-4 justify-between bg-zinc-900/50 cursor-pointer hover:bg-zinc-900 transition-colors"
             onClick={() => setIsHistoryOpen(!isHistoryOpen)}
@@ -1466,20 +1516,27 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
             </div>
         </div>
         
-        <div className={`flex-1 pt-4 px-4 pb-10 overflow-x-auto flex items-center gap-4 custom-scrollbar transition-opacity duration-300 ${isHistoryOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-            {/* Generate New Button */}
-	            <button 
-	                onClick={(e) => { e.stopPropagation(); handleGenerateVersion(); }}
-	                disabled={isBusyGenerating}
-	                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-indigo-400 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all group disabled:opacity-40 disabled:cursor-not-allowed"
-	            >
-                <div className="p-3 rounded-full bg-zinc-900 group-hover:bg-indigo-500/20 transition-colors">
-                    <RefreshCw className={`w-6 h-6 ${isBusyGenerating ? 'animate-spin' : 'group-hover:animate-spin'}`} />
-                </div>
-                <span className="text-xs font-bold uppercase tracking-wide">
-                  {assetStatus === 'queued' ? 'Queued…' : isBusyGenerating ? 'Generating...' : isPlaceholderActive ? 'Generate' : 'Generate Variant'}
-	                </span>
-	            </button>
+        <div className={`flex-1 pt-4 px-4 pb-4 overflow-x-auto overflow-y-hidden flex items-start gap-4 custom-scrollbar transition-opacity duration-300 ${isHistoryOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+            {/* Start Production Button (moved from top bar) */}
+            {onStartProduction && (
+              <div
+                className="flex-shrink-0 w-48 h-32 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center gap-1 text-zinc-500 hover:border-zinc-700 hover:bg-zinc-900/40 transition-all overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <CinematicGenerateButton
+                  isGenerating={isProducingVideo}
+                  disabled={isProducingVideo}
+                  onClick={onStartProduction}
+                  titleIdle="Start Production"
+                  titleGenerating="Rendering VEO-3.1"
+                  buttonClassName="w-[124px] h-[124px] rounded-2xl"
+                  iconClassName="w-[110px] h-[110px]"
+                />
+                <span className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-400">
+                  {isProducingVideo ? 'Rendering…' : 'Start Generation'}
+                </span>
+              </div>
+            )}
 
 	            {selectedVersionIds.length > 0 && (
 	              <div className="flex-shrink-0 h-32 w-64 rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 flex flex-col justify-between">
@@ -1521,12 +1578,15 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
 	            )}
 
 	            {/* Version List */}
-	            {timelineVersions.map((version, index) => {
-	                const isActive = version.id === shot.activeVersionId;
-	                const isSelected = selectedSet.has(String(version.id || ''));
-	                const versionNumber = displayVersions.length - index;
-	                return (
-	                    <div 
+		            {timelineVersions.map((version, index) => {
+		                const isActive = version.id === shot.activeVersionId;
+		                const isSelected = selectedSet.has(String(version.id || ''));
+		                const versionNumber = displayVersions.length - index;
+                    const hasPlayableVideo = getShotVideoVariantsForVersion(shot, version, { allowLegacyUnboundFallback: true }).some(
+                      (v) => Boolean(String(v?.videoUrl || '').trim()),
+                    );
+		                return (
+		                    <div 
 	                        key={version.id}
 	                        onClick={(e) => onVersionCardClick(e, version.id)}
 	                        className={`relative flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden border-2 cursor-pointer transition-all group shadow-lg ${
@@ -1605,12 +1665,20 @@ export const ShotEditor: React.FC<ShotEditorProps> = ({
                           </button>
                         )}
                         
-                        <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <span className="bg-white text-black text-[10px] font-bold px-2 py-1 rounded shadow-lg uppercase tracking-widest">Select</span>
-                        </div>
-                    </div>
-                );
-            })}
+		                        <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+		                            <span className="bg-white text-black text-[10px] font-bold px-2 py-1 rounded shadow-lg uppercase tracking-widest">Select</span>
+		                        </div>
+                        {hasPlayableVideo && (
+                          <>
+                            <div className="pointer-events-none absolute inset-0 bg-emerald-400/16" />
+                            <div className="absolute bottom-2 left-2 bg-emerald-500/22 backdrop-blur px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider text-emerald-100 border border-emerald-400/35">
+                              Video Ready
+                            </div>
+                          </>
+                        )}
+		                    </div>
+		                );
+		            })}
         </div>
 	        {generationError && !isImmersive && (
 	          <div className="px-4 pb-4">

@@ -3168,23 +3168,11 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
 	              throw new Error(`Missing required reference image(s): ${list || 'unknown'}`);
 	            }
 
-                type ImageTransport = { id: 'gemini-direct' | 'compass-gateway'; apiKey: string; baseUrl: string };
-                const compassOnly = asBool(
-                  debugMock?.compassOnly,
-                  asBool(env.VISION_IMAGE_COMPASS_ONLY, true),
-                );
-                const dualChannelEnabled =
-                  !compassOnly &&
-                  asBool(
-                    debugMock?.enableDualChannel,
-                    asBool(env.VISION_IMAGE_DUAL_CHANNEL, false),
-                  );
-                const geminiDirectApiKey = String(env.GEMINI_IMAGE_GEMINI_API_KEY || env.GEMINI_VIDEO_API_KEY || '').trim();
+                type ImageTransport = { id: 'gemini-direct'; apiKey: string; baseUrl: string };
+                const geminiDirectApiKey = String(
+                  env.GEMINI_IMAGE_GEMINI_API_KEY || env.GEMINI_VIDEO_API_KEY || env.GEMINI_API_KEY || '',
+                ).trim();
                 const geminiDirectBaseUrl = String(env.GEMINI_IMAGE_GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta')
-                  .trim()
-                  .replace(/\/$/, '');
-                const compassApiKey = String(env.GEMINI_IMAGE_COMPASS_API_KEY || env.COMPASS_API_KEY || '').trim();
-                const compassBaseUrl = String(env.GEMINI_IMAGE_COMPASS_BASE_URL || env.COMPASS_GATEWAY_URL || '')
                   .trim()
                   .replace(/\/$/, '');
                 const forceFailTransports = new Set(
@@ -3193,26 +3181,12 @@ const agentApiPlugin = (env: Record<string, string>): Plugin => {
                 );
                 const forceAllTransportsFail = asBool(debugMock?.forceAllTransportsFail, false);
 
-                const singleTransport: ImageTransport = {
-                  id: 'compass-gateway',
-                  apiKey: compassApiKey,
-                  baseUrl: compassBaseUrl,
-                };
-                const transportCandidates: ImageTransport[] = dualChannelEnabled
-                  ? [
-                      { id: 'gemini-direct', apiKey: geminiDirectApiKey, baseUrl: geminiDirectBaseUrl },
-                      { id: 'compass-gateway', apiKey: compassApiKey, baseUrl: compassBaseUrl },
-                    ]
-                  : [singleTransport];
+                const transportCandidates: ImageTransport[] = [{ id: 'gemini-direct', apiKey: geminiDirectApiKey, baseUrl: geminiDirectBaseUrl }];
                 const eligibleTransports = (simulateGemini
                   ? transportCandidates
                   : transportCandidates.filter((t) => Boolean(t.apiKey) && Boolean(t.baseUrl))) as ImageTransport[];
                 if (!eligibleTransports.length) {
-                  throw new Error(
-                    dualChannelEnabled
-                      ? 'Image dual-channel enabled but no usable transport credentials configured'
-                      : 'Missing image transport credentials',
-                  );
+                  throw new Error('Missing GEMINI_API_KEY');
                 }
 
                 const attemptedTransports: string[] = [];

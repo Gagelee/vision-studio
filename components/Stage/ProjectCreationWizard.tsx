@@ -22,6 +22,9 @@ type StageDigest = {
   summary: string;
   status: 'pending' | 'running' | 'done' | 'error';
   timestamp: number;
+  startedAt?: number;
+  completedAt?: number;
+  taskId?: string;
 };
 type AssetPreviewCard = {
   id: string;
@@ -281,13 +284,33 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
       const idx = prev.findIndex((x) => x.id === next.id);
       if (idx < 0) return [...prev, next];
       const out = prev.slice();
+      const prevStartedAt = Number(out[idx].startedAt || 0);
+      const nextStartedAt = Number(next.startedAt || 0);
+      const mergedStartedAt =
+        prevStartedAt && nextStartedAt
+          ? Math.min(prevStartedAt, nextStartedAt)
+          : prevStartedAt || nextStartedAt || undefined;
+      const prevCompletedAt = Number(out[idx].completedAt || 0);
+      const nextCompletedAt = Number(next.completedAt || 0);
+      const mergedCompletedAt =
+        prevCompletedAt && nextCompletedAt
+          ? Math.max(prevCompletedAt, nextCompletedAt)
+          : nextCompletedAt || prevCompletedAt || undefined;
       out[idx] = {
         ...out[idx],
         ...next,
         summary: next.summary || out[idx].summary,
+        startedAt: mergedStartedAt,
+        completedAt: mergedCompletedAt,
       };
       return out;
     });
+  };
+  const formatClock = (ts?: number) => {
+    const n = Number(ts || 0);
+    if (!n) return '—';
+    const d = new Date(n);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
   };
 
   const fallbackSummaryForAgent = (agent: string) => {
@@ -669,6 +692,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                   summary: `Working on ${getJobLabel(ev.job, storyRef.current)}.`,
                   status: 'running',
                   timestamp: Date.now(),
+                  startedAt: Date.now(),
                 });
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
@@ -679,9 +703,10 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                   upsertStageDigest({
                     id: `asset-${ev.job.kind}-${(ev.job as any).characterId || (ev.job as any).locationId || (ev.job as any).lookId || (ev.job as any).shot?.id || 'job'}`,
                     title: `Asset • ${ev.job.kind.toUpperCase()}`,
-                    summary: `${getJobLabel(ev.job, storyRef.current)} queued in pipeline (${String(ev.taskId || '').slice(0, 12)}…).`,
+                    summary: `${getJobLabel(ev.job, storyRef.current)} queued in pipeline.`,
                     status: 'running',
                     timestamp: Date.now(),
+                    taskId: String(ev.taskId || '').trim() || undefined,
                   });
                   if (storyRef.current) onDraftProject?.(storyRef.current);
                   return;
@@ -710,6 +735,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                   summary: `${getJobLabel(ev.job, storyRef.current)} generated.`,
                   status: 'done',
                   timestamp: Date.now(),
+                  completedAt: Date.now(),
                 });
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
@@ -727,6 +753,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                   summary: `${getJobLabel(ev.job, storyRef.current)} blocked: ${String(ev.reason || 'dependency').slice(0, 120)}`,
                   status: 'error',
                   timestamp: Date.now(),
+                  completedAt: Date.now(),
                 });
                 if (storyRef.current) onDraftProject?.(storyRef.current);
 	              return;
@@ -748,6 +775,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                 summary: `${getJobLabel(ev.job, storyRef.current)} failed: ${String(ev.error || 'error').slice(0, 120)}`,
                 status: 'error',
                 timestamp: Date.now(),
+                taskId: String(ev.taskId || '').trim() || undefined,
+                completedAt: Date.now(),
               });
               if (storyRef.current) onDraftProject?.(storyRef.current);
 		          },
@@ -845,6 +874,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                       summary: provider && model ? `Running on ${provider}/${model}.` : 'Running.',
                       status: 'running',
                       timestamp: Date.now(),
+                      startedAt: Date.now(),
                     });
                   }
                   if (ev.event === 'trace') {
@@ -862,6 +892,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                             : 'Processing stage update.',
                       status: ev.data?.ok === true ? 'done' : ev.data?.ok === false ? 'error' : 'running',
                       timestamp: Date.now(),
+                      completedAt: ev.data?.ok === true || ev.data?.ok === false ? Date.now() : undefined,
                     });
                   }
                   if (ev.event === 'hello') {
@@ -872,6 +903,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                       summary: 'Initializing multi-agent planning and context.',
                       status: 'done',
                       timestamp: Date.now(),
+                      startedAt: Date.now(),
+                      completedAt: Date.now(),
                     });
                   }
                 },
@@ -949,6 +982,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
               summary: summary || 'Returned stage output.',
               status: tm?.ok === false ? 'error' : 'done',
               timestamp: Date.now(),
+              startedAt: Date.now() - Math.max(0, Number(tm?.ms || 0)),
+              completedAt: Date.now(),
             });
           }
         } else if (enrichedRes.plan?.steps?.length) {
@@ -959,6 +994,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
               summary: step.status === 'done' ? 'Completed.' : 'In progress.',
               status: step.status === 'done' ? 'done' : step.status === 'error' ? 'error' : 'running',
               timestamp: Date.now(),
+              startedAt: Date.now(),
+              completedAt: step.status === 'done' || step.status === 'error' ? Date.now() : undefined,
             });
           }
         }
@@ -1384,19 +1421,32 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({
                                 <div key={d.id} className="rounded-xl border border-white/10 bg-black/25 px-3 py-2.5">
                                   <div className="flex items-center justify-between gap-3">
                                     <div className="text-[11px] font-black uppercase tracking-[0.15em] text-white/75">{d.title}</div>
-                                    <span
-                                      className={`text-[9px] uppercase tracking-[0.16em] ${
-                                        d.status === 'done'
-                                          ? 'text-emerald-300'
-                                          : d.status === 'error'
-                                            ? 'text-rose-300'
-                                            : 'text-zinc-300'
-                                      }`}
-                                    >
-                                      {d.status}
-                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      {d.taskId ? (
+                                        <span
+                                          className="w-1.5 h-1.5 rounded-full bg-white/40"
+                                          title={`task ${d.taskId}`}
+                                          aria-label="task badge"
+                                        />
+                                      ) : null}
+                                      <span
+                                        className={`text-[9px] uppercase tracking-[0.16em] ${
+                                          d.status === 'done'
+                                            ? 'text-emerald-300'
+                                            : d.status === 'error'
+                                              ? 'text-rose-300'
+                                              : 'text-zinc-300'
+                                        }`}
+                                      >
+                                        {d.status}
+                                      </span>
+                                    </div>
                                   </div>
                                   <div className="mt-1 text-[12px] leading-relaxed text-white/68">{d.summary}</div>
+                                  <div className="mt-1.5 flex items-center gap-3 text-[10px] uppercase tracking-[0.14em] text-white/45">
+                                    <span>Start {formatClock(d.startedAt)}</span>
+                                    <span>End {formatClock(d.completedAt)}</span>
+                                  </div>
                                 </div>
                               ))
                             )}

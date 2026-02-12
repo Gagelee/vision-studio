@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cinematic Generate UI</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          keyframes: {
+            dropIn: {
+              '0%': { transform: 'translateY(-800px) rotate(-20deg)', opacity: '0', filter: 'blur(20px)' },
+              '40%': { transform: 'translateY(30px) rotate(3deg)', opacity: '1', filter: 'blur(0px)' },
+              '55%': { transform: 'translateY(-25px) rotate(-2deg)' },
+              '75%': { transform: 'translateY(10px) rotate(1deg)' },
+              '100%': { transform: 'translateY(0) rotate(0deg)', opacity: '1' },
+            },
+            clapSnap: {
+              '0%': { transform: 'rotate(-32deg)' }, 
+              '40%': { transform: 'rotate(-32deg)' }, // Keep open during flight
+              '44%': { transform: 'rotate(6deg)' },   // Sharp SNAP impact overshoot
+              '52%': { transform: 'rotate(0deg)' },   // Quick settle
+              '62%': { transform: 'rotate(-3deg)' },  // Micro bounce
+              '70%': { transform: 'rotate(0deg)' }    // Final lock
+            },
+            progress: {
+              '0%': { transform: 'scaleX(0)' },
+              '100%': { transform: 'scaleX(1)' },
+            },
+            pulseDot: {
+              '0%, 100%': { opacity: '1', transform: 'scale(1)', filter: 'drop-shadow(0 0 8px #ff3b30)' },
+              '50%': { opacity: '0.3', transform: 'scale(0.85)', filter: 'drop-shadow(0 0 0px transparent)' }
+            },
+            confettiBurst: {
+              '0%': { transform: 'translate(0, 0) scale(0)', opacity: '1' },
+              '20%': { opacity: '1' },
+              '100%': { transform: 'translate(var(--tw-translate-x), var(--tw-translate-y)) scale(1.2)', opacity: '0' }
+            },
+            confettiTumble: {
+              '0%': { transform: 'rotateX(0deg) rotateY(0deg) rotateZ(0deg)' },
+              '100%': { transform: 'rotateX(720deg) rotateY(360deg) rotateZ(180deg)' }
+            }
+          },
+          animation: {
+            // Overall duration extended to 1.6s for more weight
+            dropIn: 'dropIn 1.6s cubic-bezier(0.22, 1, 0.36, 1) forwards',
+            // Snap is faster relative to the whole sequence for a "decisive" hit
+            clapSnap: 'clapSnap 1.8s cubic-bezier(0.1, 0.9, 0.2, 1) forwards',
+            progress: 'progress 3.5s cubic-bezier(0.4, 0, 0.2, 1) forwards',
+            pulseDot: 'pulseDot 1.2s ease-in-out infinite',
+            confettiBurst: 'confettiBurst 2.2s cubic-bezier(0.1, 0.8, 0.2, 1) forwards',
+            confettiTumble: 'confettiTumble 3s linear infinite'
+          }
+        }
+      }
+    }
+  </script>
+<script type="importmap">
+{
+  "imports": {
+    "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-zinc-950 text-white min-h-screen flex items-center justify-center overflow-hidden selection:bg-amber-500/30">
+  <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

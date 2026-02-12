@@ -178,6 +178,15 @@ export const getShotVideoVariantsForVersion = (
   if (!all.length) return [];
   const matched = all.filter((v) => isVariantBoundToVersion(v, version));
   if (matched.length) return matched;
+  // If current version was split out of a stack/group, allow inheriting videos bound to the parent group version.
+  const sourcePanelGroupId = String((version as any)?.metadata?.source?.sourcePanelGroupId || '').trim();
+  if (sourcePanelGroupId) {
+    const inherited = all.filter((v) => {
+      const sourceVersionId = String((v as any)?.metadata?.sourceShotVersionId || '').trim();
+      return sourceVersionId === sourcePanelGroupId;
+    });
+    if (inherited.length) return inherited;
+  }
   const allowLegacyUnboundFallback = Boolean(opts?.allowLegacyUnboundFallback);
   if (!allowLegacyUnboundFallback) return [];
   const hasAnyExplicitBinding = all.some((v) => {
