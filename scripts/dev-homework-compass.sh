@@ -87,8 +87,8 @@ export GEMINI_VIDEO_API_KEY="${video_key}"
 export GEMINI_VIDEO_BASE_URL="${video_base%/}"
 export VISION_IMAGE_COMPASS_ONLY=1
 export VISION_IMAGE_DUAL_CHANNEL=0
-export GEMINI_IMAGE_GEMINI_API_KEY="${video_key}"
-export GEMINI_IMAGE_GEMINI_BASE_URL="${video_base%/}"
+export GEMINI_IMAGE_GEMINI_API_KEY="${compass_key}"
+export GEMINI_IMAGE_GEMINI_BASE_URL="${compass_gateway%/}"
 export GEMINI_IMAGE_COMPASS_API_KEY="${compass_key}"
 export GEMINI_IMAGE_COMPASS_BASE_URL="${compass_gateway%/}"
 
